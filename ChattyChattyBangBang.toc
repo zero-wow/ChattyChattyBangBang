@@ -1,0 +1,50 @@
+## Interface: 30300
+## Title: ChattyChattyBangBang
+## Notes: Organized chat tabs, conversation windows, spam control, and social tools for Wrath and Ascension
+## Notes-zhTW: 一個輕量級的聊天增強插件
+## Notes-zhCN: 一个轻量级的聊天增强插件
+## Author: Antiarc
+## OptionalDeps: Ace3, LibSharedMedia-3.0, SharedMedia, LibSink-2.0, LibDataBroker-1.1, LibDBIcon-1.0
+## X-Category: Chat/Communication
+## Version: 2.21.0
+## SavedVariables: ChattyChattyBangBangDB
+## X-Curse-Packaged-Version: 2.21.0
+## X-Curse-Project-Name: ChattyChattyBangBang
+## X-Curse-Project-ID: ChattyChattyBangBang
+## X-Curse-Repository-ID: wow/ChattyChattyBangBang/mainline
+## IconTexture: Interface\AddOns\ChattyChattyBangBang\Media\ChattyChattyBangBang-Icon.tga
+
+#@no-lib-strip@
+Libs\embeds.xml
+Libs\AceTab-3.0\AceTab-3.0.xml
+Libs\LibSink-2.0\lib.xml
+#@end-no-lib-strip@
+
+
+Localization\enUS.lua
+Localization\ruRU.lua
+Localization\deDE.lua
+Localization\frFR.lua
+Localization\esES.lua
+Localization\zhCN.lua
+Localization\zhTW.lua
+Localization\koKR.lua
+
+ChattyChattyBangBang.lua
+Core\Settings.lua
+Core\ModuleCatalog.lua
+Core\Theme.lua
+Core\ChatColors.lua
+Core\Compatibility.lua
+Providers\Ascension.lua
+Core\SpamControl.lua
+Core\BlockControl.lua
+Core\MessageEngine.lua
+Core\KeywordSuggestions.lua
+Core\Alerts.lua
+Core\Presentation.lua
+Core\ConversationWindows.lua
+Core\SmartDock.lua
+Core\Launcher.lua
+Core\Config.lua
+modules.xml

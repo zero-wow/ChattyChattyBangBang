@@ -1,0 +1,30 @@
+# Codex/project-local workflow metadata
+/AGENTS.md
+
+# WoW runtime state belongs outside an addon source repository
+/WTF/
+/SavedVariables/
+
+# Editors, operating systems, caches, and generated output
+/.vscode/
+/.idea/
+/.cache/
+/coverage/
+/node_modules/
+__pycache__/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# Local environment files may contain credentials
+.env
+.env.*
+!.env.example
