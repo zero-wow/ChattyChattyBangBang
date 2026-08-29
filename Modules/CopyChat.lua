@@ -1,5 +1,6 @@
 local mod = ChattyChattyBangBang:NewModule("Chat Copy", "AceHook-3.0")
 local L = LibStub("AceLocale-3.0"):GetLocale("ChattyChattyBangBang")
+local Theme = ChattyChattyBangBang.Theme
 mod.modName = L["Copy Chat"]
 
 local lines = {}
@@ -48,7 +49,16 @@ function mod:OnInitialize()
 	
 	local scrollArea = CreateFrame("ScrollFrame", "ChattyChattyBangBangCopyScroll", frame, "UIPanelScrollFrameTemplate")
 	scrollArea:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -30)
-	scrollArea:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 8)
+	scrollArea:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 8)
+	-- The copied legacy module used Blizzard's wide arrow-capped scrollbar.
+	-- Reuse Chatty's thumb-only Colorway treatment and reclaim the cap space,
+	-- leaving four pixels between the hit lane and text plus six to the frame.
+	local scrollBar = Theme and Theme.SkinScrollFrame and Theme:SkinScrollFrame(scrollArea)
+	if scrollBar then
+		scrollBar:ClearAllPoints()
+		scrollBar:SetPoint("TOPLEFT", scrollArea, "TOPRIGHT", 4, 0)
+		scrollBar:SetPoint("BOTTOMLEFT", scrollArea, "BOTTOMRIGHT", 4, 0)
+	end
 	
 	local editBox = CreateFrame("EditBox", nil, frame)
 	editBox:SetMultiLine(true)

@@ -299,7 +299,7 @@ end
 local function getAddonVersion()
 	local version = addon.GetVersion and addon:GetVersion() or addon.VERSION
 	if type(version) ~= "string" or version == "" then
-		return "2.21.0"
+		return "2.21.1"
 	end
 	return version
 end
@@ -1472,9 +1472,9 @@ function Config:BuildDockPage()
 			and "Composer hides while idle and chat fills its space. Enter, /, or reply reveals it temporarily."
 			or "Composer stays visible while idle.", "success")
 	end
-	self.dockScrollToggle = createDockToggle(page, "SCROLL BUTTONS", PAGE_GUTTER, 342, 150, "showScrollButtons")
+	self.dockScrollToggle = createDockToggle(page, "SLIM SCROLLBAR", PAGE_GUTTER, 342, 150, "showScrollButtons")
 	self.dockCompactTitleToggle = createDockToggle(page, "COMPACT TITLE", 170, 342, 150, "compactHeader")
-	setControlTooltip(self.dockScrollToggle, "Scroll buttons", "Shows the small jump-to-top and jump-to-bottom controls on the chat window.")
+	setControlTooltip(self.dockScrollToggle, "Slim scrollbar", "Shows a narrow Colorway-aware drag thumb. A bottom-jump icon appears only while you are scrolled up; the mouse wheel always works over chat.")
 	setControlTooltip(self.dockCompactTitleToggle, "Compact title", "Uses the shorter title-bar treatment to reserve more room for messages.")
 	-- Keep this explicit: it affects only the background/border behind the
 	-- shared typing field, not the channel selector, route menu, or chat frame.

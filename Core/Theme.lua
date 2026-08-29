@@ -733,6 +733,9 @@ Theme.texts = {}
 Theme.textures = {}
 Theme.callbacks = {}
 Theme.tightButtons = {}
+Theme.scrollBars = {}
+
+local SCROLLBAR_TEXTURE = [[Interface\Buttons\WHITE8x8]]
 
 -- Button labels need a little more room than their reported glyph width.
 -- Older clients can round scaled font metrics differently while painting, and
@@ -832,6 +835,151 @@ function Theme:RegisterRefreshCallback(callback)
 	table.insert(self.callbacks, callback)
 end
 
+local function hideScrollBarRegion(region)
+	if not region then return end
+	if region.Hide then region:Hide() end
+	if region.SetAlpha then region:SetAlpha(0) end
+	if region.EnableMouse then region:EnableMouse(false) end
+end
+
+local function resolveNamedScrollBarRegion(scrollBar, suffix)
+	if not scrollBar or not scrollBar.GetName then return nil end
+	local name = scrollBar:GetName()
+	return name and _G[name .. suffix] or nil
+end
+
+-- Scrollbars are deliberately quieter than ordinary controls.  The eight-pixel
+-- interaction lane has no painted rail or arrow caps; only a six-pixel thumb is
+-- visible, using the current Colorway's accent and gold hover colors.
+function Theme:ApplyScrollBar(scrollBar)
+	local style = scrollBar and self.scrollBars[scrollBar]
+	if not style then return end
+
+	if scrollBar.SetWidth then scrollBar:SetWidth(style.width or 8) end
+	if scrollBar.SetOrientation then scrollBar:SetOrientation(style.orientation or "VERTICAL") end
+
+	local thumb = style.thumb
+		or (scrollBar.GetThumbTexture and scrollBar:GetThumbTexture())
+		or resolveNamedScrollBarRegion(scrollBar, "ThumbTexture")
+	style.thumb = thumb
+	if thumb then
+		if thumb.SetTexture then thumb:SetTexture(SCROLLBAR_TEXTURE) end
+		if thumb.SetWidth then thumb:SetWidth(style.thumbWidth or 6) end
+		if thumb.SetHeight then thumb:SetHeight(style.thumbHeight or 28) end
+		local colorName = style.hovered and "goldBright" or "accent"
+		local r, g, b, a = self:GetColor(colorName)
+		if thumb.SetVertexColor then thumb:SetVertexColor(r, g, b, a) end
+		if style.thumbVisible == false then
+			hideScrollBarRegion(thumb)
+		else
+			if thumb.SetAlpha then thumb:SetAlpha(a or 1) end
+			if thumb.Show then thumb:Show() end
+		end
+	end
+
+	-- Wrath's UIPanelScrollFrameTemplate paints several separate rail pieces.
+	-- Hide every known piece idempotently; callers retain all native scrolling,
+	-- range, and value behavior.
+	local hidden = style.hiddenRegions or {}
+	for index = 1, #hidden do hideScrollBarRegion(hidden[index]) end
+	for _, suffix in ipairs({
+		"ScrollUpButton", "ScrollDownButton", "Background",
+		"Top", "Middle", "Bottom",
+	}) do
+		hideScrollBarRegion(resolveNamedScrollBarRegion(scrollBar, suffix))
+	end
+end
+
+function Theme:SetScrollBarThumbVisible(scrollBar, visible)
+	local style = scrollBar and self.scrollBars[scrollBar]
+	if not style then return end
+	style.thumbVisible = visible and true or false
+	self:ApplyScrollBar(scrollBar)
+end
+
+function Theme:SetScrollBarThumbSize(scrollBar, width, height)
+	local style = scrollBar and self.scrollBars[scrollBar]
+	if not style then return end
+	style.thumbWidth = math.max(2, tonumber(width) or style.thumbWidth or 6)
+	style.thumbHeight = math.max(8, tonumber(height) or style.thumbHeight or 28)
+	self:ApplyScrollBar(scrollBar)
+end
+
+function Theme:SkinScrollBar(scrollBar, options)
+	if not scrollBar then return nil end
+	options = options or {}
+	local style = self.scrollBars[scrollBar] or {}
+	style.width = tonumber(options.width) or style.width or 8
+	style.thumbWidth = tonumber(options.thumbWidth) or style.thumbWidth or 6
+	style.thumbHeight = tonumber(options.thumbHeight) or style.thumbHeight or 28
+	style.orientation = options.orientation or style.orientation or "VERTICAL"
+	style.thumbVisible = options.thumbVisible ~= false
+	style.hiddenRegions = style.hiddenRegions or {}
+	for _, region in ipairs(options.hiddenRegions or {}) do
+		table.insert(style.hiddenRegions, region)
+	end
+
+	if not style.thumb and scrollBar.SetThumbTexture then
+		scrollBar:SetThumbTexture(SCROLLBAR_TEXTURE)
+		style.thumb = scrollBar.GetThumbTexture and scrollBar:GetThumbTexture() or nil
+	end
+	style.thumb = style.thumb or options.thumb
+	self.scrollBars[scrollBar] = style
+
+	if not scrollBar._themeScrollBarBound and scrollBar.HookScript then
+		scrollBar._themeScrollBarBound = true
+		scrollBar:HookScript("OnEnter", function(self)
+			local current = Theme.scrollBars[self]
+			if current then current.hovered = true end
+			Theme:ApplyScrollBar(self)
+		end)
+		scrollBar:HookScript("OnLeave", function(self)
+			local current = Theme.scrollBars[self]
+			if current then current.hovered = false end
+			Theme:ApplyScrollBar(self)
+		end)
+		scrollBar:HookScript("OnMouseDown", function(self)
+			local current = Theme.scrollBars[self]
+			if current then current.hovered = true end
+			Theme:ApplyScrollBar(self)
+		end)
+		scrollBar:HookScript("OnMouseUp", function(self)
+			local current = Theme.scrollBars[self]
+			if current then current.hovered = self.IsMouseOver and self:IsMouseOver() or false end
+			Theme:ApplyScrollBar(self)
+		end)
+	end
+
+	self:ApplyScrollBar(scrollBar)
+	return scrollBar
+end
+
+function Theme:CreateSlimScrollbar(parent)
+	local scrollBar = CreateFrame("Slider", nil, parent)
+	scrollBar:SetOrientation("VERTICAL")
+	scrollBar:SetWidth(8)
+	scrollBar:SetMinMaxValues(0, 0)
+	scrollBar:SetValueStep(1)
+	self:SkinScrollBar(scrollBar, {
+		width = 8,
+		thumbWidth = 6,
+		thumbHeight = 28,
+		orientation = "VERTICAL",
+	})
+	return scrollBar
+end
+
+function Theme:SkinScrollFrame(scrollFrame, options)
+	if not scrollFrame then return nil end
+	options = options or {}
+	local scrollBar = options.scrollBar
+	if not scrollBar and scrollFrame.GetName then
+		local name = scrollFrame:GetName()
+		scrollBar = name and _G[name .. "ScrollBar"] or nil
+	end
+	return self:SkinScrollBar(scrollBar, options)
+end
+
 function Theme:Refresh()
 	for frame, style in pairs(self.frames) do
 		if frame then
@@ -852,6 +1000,10 @@ function Theme:Refresh()
 			local r, g, b, a = self:GetColor(colorName)
 			texture:SetVertexColor(r, g, b, a)
 		end
+	end
+
+	for scrollBar in pairs(self.scrollBars) do
+		if scrollBar then self:ApplyScrollBar(scrollBar) end
 	end
 
 	-- Font objects may be replaced by another addon after Chatty constructed

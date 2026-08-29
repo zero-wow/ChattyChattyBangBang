@@ -355,6 +355,8 @@ config.dockLayoutCategoryButtons.input.scripts.OnClick(config.dockLayoutCategory
 assert(config.dockHistoryToggle:IsShown() and config.dockHistoryLinesEdit:IsShown()
 	and config.dockClearHistoryButton:IsShown(),
 	"Input & Controls did not expose received-chat history as one bounded task")
+assert(config.dockScrollToggle.text:GetText() == "SLIM SCROLLBAR",
+	"Input & Controls still described the removed +/- buttons instead of the thumb-only scrollbar")
 config.dockHistoryLinesEdit:SetText("2500")
 config.dockHistoryLinesEdit.scripts.OnEditFocusLost(config.dockHistoryLinesEdit)
 assert(settings.historyCapacity == 2500, "history lines/source did not persist through the fallback path")

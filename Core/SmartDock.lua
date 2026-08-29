@@ -77,6 +77,21 @@ local RAIL_MOUSE_WHEEL_STEP = 44
 local ALIGNMENT_SETTINGS_FULL_LABEL_MIN_CONTENT_WIDTH = 320
 local ALIGNMENT_SETTINGS_LABEL_PADDING = 8
 local ALIGNMENT_SETTINGS_CONTROL_GAP = 4
+-- The message scroller is intentionally thumb-only.  Its eight-pixel hit lane
+-- sits three pixels from both the outer edge and rendered text, so neither the
+-- control nor its hit target touches a border or steals a wide chat column.
+local MESSAGE_SCROLLBAR_WIDTH = 8
+local MESSAGE_SCROLLBAR_THUMB_WIDTH = 6
+local MESSAGE_SCROLLBAR_MIN_THUMB_HEIGHT = 18
+local MESSAGE_SCROLLBAR_RIGHT_INSET = 3
+local MESSAGE_SCROLLBAR_TEXT_GUTTER = 3
+local MESSAGE_SCROLLBAR_VERTICAL_INSET = 4
+local MESSAGE_SCROLL_TO_BOTTOM_WIDTH = 10
+local MESSAGE_SCROLL_TO_BOTTOM_HEIGHT = 16
+local MESSAGE_SCROLL_TO_BOTTOM_GAP = 4
+local MESSAGE_SCROLLBAR_DISPLAY_INSET = MESSAGE_SCROLLBAR_RIGHT_INSET
+	+ math.max(MESSAGE_SCROLLBAR_WIDTH, MESSAGE_SCROLL_TO_BOTTOM_WIDTH)
+	+ MESSAGE_SCROLLBAR_TEXT_GUTTER
 -- When the title bar is intentionally hidden, the unused portion of the tab
 -- rail becomes its quiet replacement grab area.  Use the same small movement
 -- threshold as tab reordering so a simple click in the rail never nudges the
@@ -871,11 +886,105 @@ function Dock:RefreshVisibleAlignment()
 end
 
 function Dock:HandleDisplayViewportChanged()
+	local rebuilt = false
 	if self:IsAlignmentVisibleOnly() then
-		return self:RefreshVisibleAlignment()
+		rebuilt = self:RefreshVisibleAlignment()
+	else
+		self:RefreshMessageBands()
 	end
-	self:RefreshMessageBands()
-	return false
+	self:RefreshMessageScrollbar()
+	return rebuilt
+end
+
+function Dock:SetMessageScrollbarOffset(value)
+	local display = self.display
+	local scrollBar = self.messageScrollbar
+	if not display or not scrollBar or scrollBar._messageScrollUpdating then return false end
+	local maximum = math.max(0, math.floor(tonumber(scrollBar._messageScrollMaximum) or 0))
+	local sliderValue = math.max(0, math.min(maximum, math.floor((tonumber(value) or 0) + 0.5)))
+	-- A vertical WoW Slider places its minimum at the top and maximum at the
+	-- bottom. ScrollingMessageFrame is inverse: offset 0 is the newest/bottom.
+	-- Translate at this boundary so dragging down always moves toward newest.
+	local scrollOffset = maximum - sliderValue
+	local current = display.GetCurrentScroll
+		and math.max(0, math.floor((tonumber(display:GetCurrentScroll()) or 0) + 0.5)) or 0
+	if scrollOffset ~= current then
+		if display.SetScrollOffset then
+			display:SetScrollOffset(scrollOffset)
+		else
+			local step = scrollOffset > current and 1 or -1
+			while current ~= scrollOffset do
+				if step > 0 and display.ScrollUp then display:ScrollUp()
+				elseif step < 0 and display.ScrollDown then display:ScrollDown()
+				else break end
+				current = current + step
+			end
+		end
+	end
+	if scrollOffset == 0 or (display.AtBottom and display:AtBottom()) then
+		self:ClearPendingMessages()
+	end
+	self:HandleDisplayViewportChanged()
+	self:ScheduleMessageBlockActionRefresh()
+	return true
+end
+
+function Dock:ScrollMessageDisplayToBottom()
+	if not self.display then return false end
+	if self.display.ScrollToBottom then self.display:ScrollToBottom() end
+	self:ClearPendingMessages()
+	self:HandleDisplayViewportChanged()
+	self:ScheduleMessageBlockActionRefresh()
+	return true
+end
+
+function Dock:RefreshMessageScrollbar()
+	local scrollBar = self.messageScrollbar
+	local display = self.display
+	if not scrollBar or not display then return false end
+	local settings = addon.GetSmartSettings and addon:GetSmartSettings() or nil
+	local dockSettings = settings and settings.dock or {}
+	local enabled = dockSettings.showScrollButtons ~= false
+	if not enabled then
+		scrollBar:Hide()
+		if self.scrollToBottomButton then self.scrollToBottomButton:Hide() end
+		return false
+	end
+
+	scrollBar:Show()
+	local _, geometry = self:GetVisibleDisplayRecordEntries()
+	local totalLines = geometry and math.max(0, tonumber(geometry.totalLines) or 0) or 0
+	local capacity = geometry and math.max(1, tonumber(geometry.capacity) or 1) or 1
+	local maximum = math.max(0, math.floor(totalLines - capacity))
+	local scrollOffset = display.GetCurrentScroll
+		and math.max(0, math.floor((tonumber(display:GetCurrentScroll()) or 0) + 0.5)) or 0
+	scrollOffset = math.min(maximum, scrollOffset)
+	local sliderValue = maximum - scrollOffset
+
+	scrollBar._messageScrollUpdating = true
+	scrollBar._messageScrollMaximum = maximum
+	if scrollBar.SetMinMaxValues then scrollBar:SetMinMaxValues(0, maximum) end
+	if scrollBar.SetValue then scrollBar:SetValue(sliderValue) end
+	scrollBar._messageScrollUpdating = nil
+
+	local overflow = maximum > 0
+	if scrollBar.EnableMouse then scrollBar:EnableMouse(overflow) end
+	if Theme.SetScrollBarThumbVisible then
+		Theme:SetScrollBarThumbVisible(scrollBar, overflow)
+	end
+	if overflow and Theme.SetScrollBarThumbSize then
+		local scrollBarHeight = scrollBar.GetHeight and tonumber(scrollBar:GetHeight()) or 0
+		local height = math.max(MESSAGE_SCROLLBAR_MIN_THUMB_HEIGHT,
+			math.floor(scrollBarHeight * math.min(1, capacity / totalLines) + 0.5))
+		Theme:SetScrollBarThumbSize(scrollBar, MESSAGE_SCROLLBAR_THUMB_WIDTH, height)
+	end
+
+	local atBottom = scrollOffset == 0 or (display.AtBottom and display:AtBottom())
+	if self.scrollToBottomButton then
+		if overflow and not atBottom then self.scrollToBottomButton:Show()
+		else self.scrollToBottomButton:Hide() end
+	end
+	return overflow
 end
 
 function Dock:RebuildActiveViewPreservingScroll()
@@ -894,6 +1003,7 @@ function Dock:RebuildActiveViewPreservingScroll()
 	else
 		self:RefreshMessageBands()
 	end
+	self:RefreshMessageScrollbar()
 	return true
 end
 
@@ -3365,6 +3475,7 @@ function Dock:AppendDisplayRecord(record)
 	self:TrimDisplayRecordCache()
 	if not self.rebuildingDisplay then
 		self:RefreshMessageBands()
+		self:RefreshMessageScrollbar()
 	end
 end
 
@@ -4267,6 +4378,7 @@ function Dock:RebuildActiveView(alignmentRecords, skipVisibleAlignmentRefresh)
 	self.displayRecordViewId = self.activeView
 	self.display:ScrollToBottom()
 	self:RefreshMessageBands()
+	self:RefreshMessageScrollbar()
 	self:ClearPendingMessages()
 	self:UpdateEmptyState(#visibleRecords)
 	if visibleOnly and not skipVisibleAlignmentRefresh then
@@ -5935,7 +6047,7 @@ function Dock:ApplyLayout()
 	-- parent remains shown at alpha zero (see RefreshComposerVisibility), so
 	-- Blizzard can still reveal ChatFrame1EditBox through every native route.
 	local reserveComposerSpace = self:ShouldReserveComposerSpace()
-	local showScrollButtons = dockSettings.showScrollButtons ~= false
+	local showMessageScrollbar = dockSettings.showScrollButtons ~= false
 	local bottomOffset = reserveComposerSpace and COMPOSER_RESERVED_HEIGHT or COMPOSER_INSET
 	self.composerSpaceReserved = not collapsed and reserveComposerSpace or false
 
@@ -6055,14 +6167,15 @@ function Dock:ApplyLayout()
 
 	self.display:ClearAllPoints()
 	self.display:SetPoint("TOPLEFT", self.content, "TOPLEFT", 4, -4)
-	self.display:SetPoint("BOTTOMRIGHT", self.content, "BOTTOMRIGHT", showScrollButtons and -18 or -4, 4)
-	if showScrollButtons then
-		self.scrollUp:Show()
-		self.scrollDown:Show()
-	else
-		self.scrollUp:Hide()
-		self.scrollDown:Hide()
+	self.display:SetPoint("BOTTOMRIGHT", self.content, "BOTTOMRIGHT",
+		showMessageScrollbar and -MESSAGE_SCROLLBAR_DISPLAY_INSET or -4, 4)
+	if showMessageScrollbar and self.messageScrollbar then
+		self.messageScrollbar:Show()
+	elseif self.messageScrollbar then
+		self.messageScrollbar:Hide()
+		if self.scrollToBottomButton then self.scrollToBottomButton:Hide() end
 	end
+	self:RefreshMessageScrollbar()
 
 	self.composer:ClearAllPoints()
 	self.composer:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", 2, 2)
@@ -6329,8 +6442,9 @@ function Dock:DiscardPartialBuild()
 	self.messageBandPool = nil
 	self.messageBandVisibleCount = nil
 	self.content = nil
-	self.scrollUp = nil
-	self.scrollDown = nil
+	self.messageScrollbar = nil
+	self.scrollToBottomButton = nil
+	self.scrollToBottomGlyph = nil
 	self.emptyState = nil
 	self.newButton = nil
 	self.newMessageIndicatorDefaultFontObject = nil
@@ -7438,8 +7552,8 @@ function Dock:BuildSourceColumnAlignmentControl()
 	-- so the live surface is now informational and never mutates either setting.
 	local button = createTightButton(self.content, "ALIGN SETTINGS", 18, false)
 	button:SetFrameLevel(self.content:GetFrameLevel() + 17)
-	if self.scrollUp then
-		button:SetPoint("TOPRIGHT", self.scrollUp, "TOPLEFT", -ALIGNMENT_SETTINGS_CONTROL_GAP, 0)
+	if self.messageScrollbar then
+		button:SetPoint("TOPRIGHT", self.messageScrollbar, "TOPLEFT", -ALIGNMENT_SETTINGS_CONTROL_GAP, 0)
 	else
 		button:SetPoint("TOPRIGHT", self.content, "TOPRIGHT", -ALIGNMENT_SETTINGS_CONTROL_GAP,
 			-ALIGNMENT_SETTINGS_CONTROL_GAP)
@@ -7957,23 +8071,51 @@ function Dock:Build()
 	empty:SetText("No messages yet.")
 	self.emptyState = empty
 
-	local scrollUp = createTightButton(content, "+", 18, false)
-	scrollUp:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, -2)
-	scrollUp:SetScript("OnClick", function()
-		display:ScrollUp()
-		Dock:HandleDisplayViewportChanged()
+	local messageScrollbar = Theme:CreateSlimScrollbar(content)
+	messageScrollbar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+		-MESSAGE_SCROLLBAR_VERTICAL_INSET)
+	messageScrollbar:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+		MESSAGE_SCROLLBAR_VERTICAL_INSET + MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP)
+	messageScrollbar:EnableMouseWheel(true)
+	messageScrollbar:SetScript("OnValueChanged", function(_, value)
+		Dock:SetMessageScrollbarOffset(value)
 	end)
-	local scrollDown = createTightButton(content, "-", 18, false)
-	scrollDown:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 0, 2)
-	scrollDown:SetScript("OnClick", function()
-		display:ScrollDown()
+	messageScrollbar:SetScript("OnMouseWheel", function(_, delta)
+		if delta > 0 then display:ScrollUp() else display:ScrollDown() end
 		Dock:HandleDisplayViewportChanged()
+		if display:AtBottom() then Dock:ClearPendingMessages() end
+		Dock:ScheduleMessageBlockActionRefresh()
 	end)
+	self.messageScrollbar = messageScrollbar
+	self:BindHeaderHover(messageScrollbar)
 
-	self.scrollUp = scrollUp
-	self.scrollDown = scrollDown
-	self:BindHeaderHover(scrollUp)
-	self:BindHeaderHover(scrollDown)
+	-- Keep the jump affordance inside the dedicated right lane instead of
+	-- overlaying a readable or clickable message. The small V is the familiar
+	-- scrollbar-end cue; its full meaning is stated in the hover tooltip.
+	local scrollToBottom = CreateFrame("Button", nil, content)
+	scrollToBottom:SetSize(MESSAGE_SCROLL_TO_BOTTOM_WIDTH, MESSAGE_SCROLL_TO_BOTTOM_HEIGHT)
+	scrollToBottom:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+		MESSAGE_SCROLLBAR_VERTICAL_INSET)
+	scrollToBottom:SetFrameLevel(content:GetFrameLevel() + 17)
+	local scrollToBottomGlyph = Theme:CreateText(scrollToBottom, "GameFontNormalSmall", "accent")
+	scrollToBottomGlyph:SetAllPoints(scrollToBottom)
+	scrollToBottomGlyph:SetJustifyH("CENTER")
+	scrollToBottomGlyph:SetText("V")
+	scrollToBottom:HookScript("OnEnter", function()
+		Theme:RegisterText(scrollToBottomGlyph, "goldBright")
+	end)
+	scrollToBottom:HookScript("OnLeave", function()
+		Theme:RegisterText(scrollToBottomGlyph, "accent")
+	end)
+	scrollToBottom:SetScript("OnClick", function()
+		Dock:ScrollMessageDisplayToBottom()
+	end)
+	scrollToBottom:Hide()
+	self.scrollToBottomButton = scrollToBottom
+	self.scrollToBottomGlyph = scrollToBottomGlyph
+	self:BindHeaderHover(scrollToBottom)
+	self:BindDockControlTooltip(scrollToBottom, "Go to latest message",
+		"Jumps directly to the bottom of this tab and clears its new-message marker.")
 
 	-- Keep the typing lane part of the same dark surface as the message body.
 	-- The optional field treatment below is the only element that may add its
