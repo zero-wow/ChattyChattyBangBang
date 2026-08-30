@@ -39,6 +39,8 @@ local messengerVisibilityAliases = {
 	auto = "auto",
 	hover = "auto",
 	mouseover = "auto",
+	click = "click",
+	onclick = "click",
 	hidden = "hidden",
 	hide = "hidden",
 }
@@ -207,8 +209,8 @@ local defaults = {
 		autoOpenWhispers = true,
 		deferInCombat = true,
 		-- INHERIT follows this one Messenger-wide chrome preference. Individual
-		-- regions may instead be pinned on, shown only while interacting, or
-		-- removed completely without changing whisper capture.
+		-- regions may instead be pinned on, shown on hover or click, or removed
+		-- completely without changing whisper capture.
 		chromeAutoHide = false,
 		titleBarVisibility = "inherit",
 		actionVisibility = "inherit",
@@ -216,6 +218,8 @@ local defaults = {
 		-- Kept as a small, explicit preference so Messenger can switch its
 		-- contextual actions without rebuilding any stored conversation data.
 		actionButtonStyle = "text",
+		actionStripCollapsed = false,
+		actionStripOrientation = "horizontal",
 		windowWidth = 360,
 		windowHeight = 250,
 	},
@@ -3603,6 +3607,18 @@ local function migrateSmartSettings(settings)
 		actionButtonStyle = "text"
 	end
 	conversations.actionButtonStyle = actionButtonStyle
+	local actionStripOrientation = type(conversations.actionStripOrientation) == "string"
+		and string.lower(trim(conversations.actionStripOrientation, 24)) or "horizontal"
+	if actionStripOrientation == "side" or actionStripOrientation == "right" then
+		actionStripOrientation = "vertical"
+	elseif actionStripOrientation == "top" then
+		actionStripOrientation = "horizontal"
+	end
+	if actionStripOrientation ~= "vertical" then
+		actionStripOrientation = "horizontal"
+	end
+	conversations.actionStripOrientation = actionStripOrientation
+	conversations.actionStripCollapsed = conversations.actionStripCollapsed == true
 	conversations.autoOpenWhispers = conversations.autoOpenWhispers ~= false
 	conversations.deferInCombat = conversations.deferInCombat ~= false
 	conversations.chromeAutoHide = conversations.chromeAutoHide == true
@@ -3810,6 +3826,8 @@ function addon:GetMessengerSettings()
 		deferInCombat = settings.deferInCombat ~= false,
 		chromeAutoHide = autoHide,
 		actionButtonStyle = settings.actionButtonStyle == "icons" and "icons" or "text",
+		actionStripCollapsed = settings.actionStripCollapsed == true,
+		actionStripOrientation = settings.actionStripOrientation == "vertical" and "vertical" or "horizontal",
 		titleBarVisibility = settings.titleBarVisibility,
 		actionVisibility = settings.actionVisibility,
 		composerVisibility = settings.composerVisibility,
@@ -3872,6 +3890,29 @@ function addon:SetMessengerActionButtonStyle(style)
 	settings.actionButtonStyle = style
 	refreshMessenger(self)
 	return true, style
+end
+
+function addon:SetMessengerActionStripCollapsed(collapsed)
+	local settings = self:GetSmartSettings().conversations
+	settings.actionStripCollapsed = collapsed and true or false
+	refreshMessenger(self)
+	return true, settings.actionStripCollapsed
+end
+
+function addon:SetMessengerActionStripOrientation(orientation)
+	orientation = type(orientation) == "string" and string.lower(orientation) or ""
+	if orientation == "side" or orientation == "right" then
+		orientation = "vertical"
+	elseif orientation == "top" then
+		orientation = "horizontal"
+	end
+	if orientation ~= "horizontal" and orientation ~= "vertical" then
+		return false, "invalid-orientation"
+	end
+	local settings = self:GetSmartSettings().conversations
+	settings.actionStripOrientation = orientation
+	refreshMessenger(self)
+	return true, orientation
 end
 
 -- Received-message history is source-owned rather than view-owned. A line

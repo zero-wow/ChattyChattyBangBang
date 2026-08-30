@@ -185,10 +185,15 @@ end
 
 local function setTightButtonLabel(button, label)
 	label = tostring(label or "")
+	if button.SetTextAutoFit then
+		button:SetTextAutoFit(true)
+		button:SetLabel(label)
+		return
+	end
 	button:SetLabel(label)
 	local textWidth = button.text and button.text.GetStringWidth and button.text:GetStringWidth()
 	local minimum = button.GetHeight and button:GetHeight() or 16
-	button:SetWidth(math.max(minimum, math.ceil(textWidth or (string.len(label) * 6)) + 4))
+	button:SetWidth(math.max(minimum, math.ceil(textWidth or (string.len(label) * 6)) + 10))
 end
 
 local function getConversationSettings()
@@ -207,10 +212,13 @@ local function normalizeVisibilityMode(value)
 		value = "always"
 	elseif value == "hover" or value == "mouseover" then
 		value = "auto"
+	elseif value == "onclick" then
+		value = "click"
 	elseif value == "hide" then
 		value = "hidden"
 	end
-	if value ~= "inherit" and value ~= "always" and value ~= "auto" and value ~= "hidden" then
+	if value ~= "inherit" and value ~= "always" and value ~= "auto"
+		and value ~= "click" and value ~= "hidden" then
 		value = "inherit"
 	end
 	return value
@@ -222,6 +230,14 @@ local function resolveVisibilityMode(value, settings)
 		return settings.chromeAutoHide == true and "auto" or "always"
 	end
 	return mode
+end
+
+local function getActionStripOrientation()
+	return getConversationSettings().actionStripOrientation == "vertical" and "vertical" or "horizontal"
+end
+
+local function isActionStripCollapsed()
+	return getConversationSettings().actionStripCollapsed == true
 end
 
 local function isFrameDescendant(frame, ancestor)
@@ -479,16 +495,52 @@ function Window:GetVisibilityState()
 		if mode == "always" then
 			return true
 		end
-		return mode == "auto" and hovered or false
+		if mode == "auto" then
+			return hovered
+		end
+		return mode == "click" and self.clickChromeRevealed == true or false
 	end
 	return {
 		titleMode = titleMode,
 		actionMode = actionMode,
 		composerMode = composerMode,
+		actionOrientation = getActionStripOrientation(),
+		actionsCollapsed = isActionStripCollapsed(),
 		title = visible(titleMode),
 		actions = visible(actionMode),
 		composer = visible(composerMode, focused or self.transientComposer == true),
 	}
+end
+
+function Window:HasClickVisibilityMode()
+	local settings = getConversationSettings()
+	return resolveVisibilityMode(settings.titleBarVisibility, settings) == "click"
+		or resolveVisibilityMode(settings.actionVisibility, settings) == "click"
+		or resolveVisibilityMode(settings.composerVisibility, settings) == "click"
+end
+
+function Window:ToggleClickChrome()
+	if not self:HasClickVisibilityMode() then
+		return false
+	end
+	self.clickChromeRevealed = not self.clickChromeRevealed
+	self:ApplyChromeLayout(true)
+	return self.clickChromeRevealed
+end
+
+function Window:SetActionStripCollapsed(collapsed)
+	collapsed = collapsed and true or false
+	if type(addon.SetMessengerActionStripCollapsed) == "function" then
+		addon:SetMessengerActionStripCollapsed(collapsed)
+	else
+		getConversationSettings().actionStripCollapsed = collapsed
+		self:ApplyChromeLayout(true)
+	end
+	return collapsed
+end
+
+function Window:ToggleActionStrip()
+	return self:SetActionStripCollapsed(not isActionStripCollapsed())
 end
 
 function Window:UpdateRouteLabel(session)
@@ -509,18 +561,31 @@ function Window:ApplyChromeLayout(force)
 		return
 	end
 	local state = self:GetVisibilityState()
+	local modeSignature = table.concat({ state.titleMode, state.actionMode, state.composerMode }, ":")
+	if self.visibilityModeSignature and self.visibilityModeSignature ~= modeSignature then
+		self.clickChromeRevealed = false
+		state = self:GetVisibilityState()
+	end
+	self.visibilityModeSignature = modeSignature
 	local previous = self.visibilityState
 	if not force and previous
 		and previous.title == state.title
 		and previous.actions == state.actions
-		and previous.composer == state.composer then
+		and previous.composer == state.composer
+		and previous.actionOrientation == state.actionOrientation
+		and previous.actionsCollapsed == state.actionsCollapsed then
 		return
 	end
 	self.visibilityState = state
+	local actionsExpanded = state.actions and not state.actionsCollapsed
+	local sizingWidth = math.max(1, (self.frame:GetWidth() or 300) - 4)
+	self:RefreshActionButtonSizing(state, sizingWidth)
+	local sideInset = actionsExpanded and state.actionOrientation == "vertical"
+		and ((tonumber(self.actionWidth) or 24) + 3) or 0
 
 	self.header:ClearAllPoints()
 	self.header:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 2, -2)
-	self.header:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -2, -2)
+	self.header:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -2 - sideInset, -2)
 	if state.title then
 		self.header:Show()
 	else
@@ -533,7 +598,7 @@ function Window:ApplyChromeLayout(force)
 		self.tabStrip:SetPoint("TOPRIGHT", self.header, "BOTTOMRIGHT", 0, -2)
 	else
 		self.tabStrip:SetPoint("TOPLEFT", self.frame, "TOPLEFT", 2, -2)
-		self.tabStrip:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -2, -2)
+		self.tabStrip:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -2 - sideInset, -2)
 	end
 
 	self.close:ClearAllPoints()
@@ -547,7 +612,24 @@ function Window:ApplyChromeLayout(force)
 	end
 	self.close:Show()
 
-	if state.actions then
+	if self.actionToggle then
+		if state.actions then
+			self.actionToggle:Show()
+			self.actionToggle:SetLabel(state.actionsCollapsed and "+" or "-")
+		else
+			self.actionToggle:Hide()
+		end
+	end
+	if actionsExpanded then
+		if self.actions.SetParent then
+			self.actions:SetParent(state.actionOrientation == "vertical" and self.frame or self.tabStrip)
+		end
+		self.actions:ClearAllPoints()
+		if state.actionOrientation == "vertical" then
+			self.actions:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -2, -2)
+			self.actions:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -2, 2)
+			self.actions:SetWidth(tonumber(self.actionWidth) or 24)
+		end
 		self.actions:Show()
 	else
 		self.actions:Hide()
@@ -555,12 +637,19 @@ function Window:ApplyChromeLayout(force)
 
 	self.content:ClearAllPoints()
 	self.content:SetPoint("TOPLEFT", self.tabStrip, "BOTTOMLEFT", 0, -2)
+	self.composer:ClearAllPoints()
+	self.composer:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", 2, 2)
+	self.composer:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -2 - sideInset, 2)
 	if state.composer then
 		self.composer:Show()
-		self.content:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -2, 28)
+		self.content:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -2 - sideInset, 28)
 	else
 		self.composer:Hide()
-		self.content:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -2, 2)
+		self.content:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -2 - sideInset, 2)
+	end
+	if self.grip then
+		self.grip:ClearAllPoints()
+		self.grip:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -2 - sideInset, -1)
 	end
 
 	self:RefreshTabs()
@@ -646,6 +735,7 @@ end
 
 function Window:Hide()
 	self.transientComposer = false
+	self.clickChromeRevealed = false
 	self.editBox:ClearFocus()
 	self.confirm:Hide()
 	self.frame:Hide()
@@ -785,12 +875,42 @@ function Window:UpdateTab(session)
 
 	local textWidth = tab.text.GetStringWidth and tab.text:GetStringWidth() or (string.len(label) * 6)
 	local badgeWidth = unread > 0 and ((unread > 99 and 18) or (string.len(tostring(unread)) * 6 + 2)) or 0
-	tab:SetWidth(math.max(46, math.min(118, math.ceil(textWidth) + 20 + badgeWidth)))
+	tab.naturalWidth = math.max(46, math.min(118, math.ceil(textWidth) + 20 + badgeWidth))
+	tab:SetWidth(tab.naturalWidth)
 	if session.playerKey == self.playerKey then
 		tab:SetTheme("accentSoft", "gold", "goldBright")
 	else
 		tab:SetTheme("surface", "borderMuted", "textMuted")
 	end
+end
+
+function Window:RefreshActionButtonSizing(state, stripWidth)
+	state = state or self.visibilityState or self:GetVisibilityState()
+	stripWidth = tonumber(stripWidth) or 0
+	local orientation = state.actionOrientation == "vertical" and "vertical" or "horizontal"
+	self:UpdateActionButtons(false, orientation)
+
+	local compact = false
+	if state.actions and not state.actionsCollapsed and orientation == "horizontal"
+		and getActionButtonStyle() == "text" then
+		-- Reserve one maximum-width player tab and both pager controls. Unlike a
+		-- fixed pixel breakpoint, this responds to the live font metrics, the
+		-- hidden-header close button, and the actual action-label widths.
+		local required = 2 + 118 + 38 + 4
+		if not state.title then
+			required = required + 18
+		end
+		if self.actionToggle then
+			required = required + (self.actionToggle:GetWidth() or 18) + 3
+		end
+		required = required + (tonumber(self.actionWidth) or 0) + 3
+		compact = stripWidth < required
+		if compact then
+			self:UpdateActionButtons(true, orientation)
+		end
+	end
+	self.actionsCompactForWidth = compact
+	return compact
 end
 
 function Window:RefreshTabs()
@@ -806,15 +926,9 @@ function Window:RefreshTabs()
 	if not stripWidth or stripWidth < 1 then
 		stripWidth = self.frame:GetWidth() - 4
 	end
-	-- At the minimum Messenger width, five text actions plus one useful tab do
-	-- not physically fit. Preserve every action by temporarily using its authored
-	-- icon pack; the saved TEXT preference returns automatically when widened.
-	local compactActions = getActionButtonStyle() == "text" and stripWidth < 340
-	if compactActions ~= self.actionsCompactForWidth then
-		self.actionsCompactForWidth = compactActions
-		self:UpdateActionButtons(compactActions)
-	end
 	local state = self.visibilityState or self:GetVisibilityState()
+	local actionsExpanded = state.actions and not state.actionsCollapsed
+	self:RefreshActionButtonSizing(state, stripWidth)
 	local closeOnStrip = not state.title
 	local rightReserve = 2
 	local rightAnchor = self.tabStrip
@@ -824,10 +938,17 @@ function Window:RefreshTabs()
 		rightAnchor = self.close
 		rightAnchorPoint = "LEFT"
 	end
-	self.actions:ClearAllPoints()
-	if state.actions then
-		self.actions:SetPoint("RIGHT", rightAnchor, rightAnchorPoint, -2, 0)
-		rightReserve = rightReserve + (tonumber(self.actionWidth) or 0) + 2
+	if state.actions and self.actionToggle then
+		self.actionToggle:ClearAllPoints()
+		self.actionToggle:SetPoint("RIGHT", rightAnchor, rightAnchorPoint, -3, 0)
+		rightReserve = rightReserve + (self.actionToggle:GetWidth() or 18) + 3
+		rightAnchor = self.actionToggle
+		rightAnchorPoint = "LEFT"
+	end
+	if actionsExpanded and state.actionOrientation == "horizontal" then
+		self.actions:ClearAllPoints()
+		self.actions:SetPoint("RIGHT", rightAnchor, rightAnchorPoint, -3, 0)
+		rightReserve = rightReserve + (tonumber(self.actionWidth) or 0) + 3
 		rightAnchor = self.actions
 		rightAnchorPoint = "LEFT"
 	end
@@ -851,6 +972,7 @@ function Window:RefreshTabs()
 	local controlsVisible = total > (stripWidth - rightReserve)
 	local available = stripWidth - rightReserve - (controlsVisible and 38 or 4)
 	available = math.max(40, available)
+	self.tabAvailableWidth = available
 	if controlsVisible then
 		self.tabPrevious:Show()
 		self.tabNext:Show()
@@ -868,8 +990,13 @@ function Window:RefreshTabs()
 		if tab then
 			tab:Hide()
 			if index >= self.tabOffset then
-				local nextWidth = tab:GetWidth() + (previous and 2 or 0)
-				if not previous or used + nextWidth <= available then
+				local naturalWidth = tonumber(tab.naturalWidth) or tab:GetWidth()
+				local leadingGap = previous and 2 or 0
+				local remaining = math.max(0, available - used - leadingGap)
+				local fittedWidth = math.min(naturalWidth, remaining)
+				local nextWidth = fittedWidth + leadingGap
+				if (not previous) or (fittedWidth >= 40 and used + nextWidth <= available) then
+					tab:SetWidth(math.max(40, fittedWidth))
 					tab:ClearAllPoints()
 					if previous then
 						tab:SetPoint("LEFT", previous, "RIGHT", 2, 0)
@@ -878,7 +1005,7 @@ function Window:RefreshTabs()
 					end
 					tab:Show()
 					previous = tab
-					used = used + nextWidth
+					used = used + math.max(40, fittedWidth) + leadingGap
 				end
 			end
 		end
@@ -894,10 +1021,24 @@ function Window:MoveTabOffset(delta)
 	self:RefreshTabs()
 end
 
-function Window:UpdateActionButtons(forceIcons)
+function Window:EnsureTabVisible(key)
+	for index = 1, #(Manager.tabOrder or {}) do
+		if Manager.tabOrder[index] == key then
+			self.tabOffset = index
+			self:RefreshTabs()
+			return true
+		end
+	end
+	return false
+end
+
+function Window:UpdateActionButtons(forceIcons, orientation)
+	orientation = orientation == "vertical" and "vertical" or "horizontal"
 	local style = getActionButtonStyle()
 	local useIcons = style == "icons" or forceIcons == true
 	local totalWidth = 0
+	local totalHeight = 0
+	local maximumWidth = 0
 	for index = 1, #self.actionButtons do
 		local button = self.actionButtons[index]
 		local definition = button.definition
@@ -913,9 +1054,19 @@ function Window:UpdateActionButtons(forceIcons)
 			setTightButtonLabel(button, definition.label)
 		end
 		button:Show()
-		totalWidth = totalWidth + (button.GetWidth and button:GetWidth() or 20)
-		if index > 1 then
-			totalWidth = totalWidth + 2
+		local buttonWidth = button.GetWidth and button:GetWidth() or 20
+		local buttonHeight = button.GetHeight and button:GetHeight() or 18
+		maximumWidth = math.max(maximumWidth, buttonWidth)
+		if orientation == "horizontal" then
+			totalWidth = totalWidth + buttonWidth
+			if index > 1 then
+				totalWidth = totalWidth + 2
+			end
+		else
+			totalHeight = totalHeight + buttonHeight
+			if index > 1 then
+				totalHeight = totalHeight + 3
+			end
 		end
 	end
 
@@ -923,16 +1074,24 @@ function Window:UpdateActionButtons(forceIcons)
 	for index = 1, #self.actionButtons do
 		local button = self.actionButtons[index]
 		button:ClearAllPoints()
-		if previous then
+		if orientation == "vertical" then
+			button:SetWidth(maximumWidth)
+			if previous then
+				button:SetPoint("TOP", previous, "BOTTOM", 0, -3)
+			else
+				button:SetPoint("TOP", self.actions, "TOP", 0, -4)
+			end
+		elseif previous then
 			button:SetPoint("LEFT", previous, "RIGHT", 2, 0)
 		else
 			button:SetPoint("LEFT", self.actions, "LEFT", 2, 0)
 		end
 		previous = button
 	end
-	self.actionWidth = totalWidth + 4
+	self.actionWidth = (orientation == "vertical" and maximumWidth or totalWidth) + 4
+	self.actionHeight = (orientation == "vertical" and totalHeight or 16) + 4
 	self.actions:SetWidth(self.actionWidth)
-	self.actions:SetHeight(20)
+	self.actions:SetHeight(self.actionHeight)
 end
 
 function Window:OnThemeRefresh()
@@ -946,6 +1105,8 @@ end
 function Window:Reset()
 	self:Hide()
 	self.hovered = false
+	self.clickChromeRevealed = false
+	self.visibilityModeSignature = nil
 	self.transientComposer = false
 	self.playerName = nil
 	self.playerKey = nil
@@ -1083,6 +1244,18 @@ function Manager:BuildWindow()
 	end)
 	window.tabNext = tabNext
 
+	-- This is deliberately separate from the < / > tab pager. It is always a
+	-- compact, obvious control for the selected player's social-action strip.
+	local actionToggle = Theme:CreateTightButton(tabStrip, "+", 18, false)
+	actionToggle:SetWidth(18)
+	actionToggle:SetScript("OnClick", function()
+		window:ToggleActionStrip()
+	end)
+	if actionToggle.SetTooltip then
+		actionToggle:SetTooltip("Player actions", "Show or hide Reply, Invite, Friend, Mute, and Block. The choice is saved.")
+	end
+	window.actionToggle = actionToggle
+
 	tabStrip:SetScript("OnSizeChanged", function()
 		window:RefreshTabs()
 	end)
@@ -1172,6 +1345,7 @@ function Manager:BuildWindow()
 	window:UpdateActionButtons()
 
 	local content = Theme:CreatePanel(frame, "inset", "borderMuted")
+	content:EnableMouse(true)
 	window.content = content
 
 	local display = CreateFrame("ScrollingMessageFrame", nil, content)
@@ -1207,6 +1381,19 @@ function Manager:BuildWindow()
 			SetItemRef(link, text, button)
 		end
 	end)
+	display:SetScript("OnHyperlinkEnter", function()
+		window.hoveredHyperlink = true
+	end)
+	display:SetScript("OnHyperlinkLeave", function()
+		window.hoveredHyperlink = false
+	end)
+	local function toggleClickChrome(_, button)
+		if button == "LeftButton" and not window.hoveredHyperlink then
+			window:ToggleClickChrome()
+		end
+	end
+	content:SetScript("OnMouseUp", toggleClickChrome)
+	display:SetScript("OnMouseUp", toggleClickChrome)
 	window.display = display
 
 	local empty = Theme:CreateText(content, "GameFontHighlight", "textMuted")
@@ -1329,9 +1516,12 @@ function Manager:BuildWindow()
 		frame:StopMovingOrSizing()
 		window:SavePosition()
 	end)
+	window.grip = grip
 
 	local confirm = Theme:CreatePanel(frame, "background", "danger")
-	confirm:SetSize(300, 104)
+	-- The Messenger minimum is 300px wide. Keep a visible eight-pixel gutter
+	-- between this modal and the shell border even at that exact minimum.
+	confirm:SetSize(284, 104)
 	confirm:SetPoint("CENTER", frame, "CENTER", 0, 0)
 	confirm:Hide()
 	window.confirm = confirm
@@ -1342,7 +1532,7 @@ function Manager:BuildWindow()
 
 	local confirmText = Theme:CreateText(confirm, "GameFontHighlightSmall", "text")
 	confirmText:SetPoint("TOPLEFT", confirmTitle, "BOTTOMLEFT", 0, -4)
-	confirmText:SetWidth(284)
+	confirmText:SetWidth(268)
 	confirmText:SetJustifyH("LEFT")
 	window.confirmText = confirmText
 
@@ -1580,18 +1770,32 @@ function Manager:OnMessage(record)
 
 	local session = self.sessionsByKey[key]
 	local shell = self.shell
-	if session and shell and shell.frame:IsShown() then
+	local shellWasShown = shell and shell.frame:IsShown() or false
+	-- Tab intake is not popup behavior. Every incoming whisper gets a session
+	-- immediately so an already-open Messenger cannot silently omit a new
+	-- player, and a hidden Messenger retains the tab for its next manual open.
+	if not session and record.event == "CHAT_MSG_WHISPER" then
+		session = self:AcquireSession(name)
+		shell = self.shell
+	end
+	if session and shellWasShown and shell then
 		if shell.playerKey == key then
 			shell:AddRecord(record)
 		elseif record.direction ~= "outgoing" then
 			session.unread = (tonumber(session.unread) or 0) + 1
 			session.lastUsed = now()
 			shell:RefreshTabs()
+			shell:EnsureTabVisible(key)
 		end
 		return
 	end
 
 	local settings = getConversationSettings()
+	if record.event == "CHAT_MSG_WHISPER" and session and shell then
+		session.unread = (tonumber(session.unread) or 0) + 1
+		session.lastUsed = now()
+		shell:RefreshTabs()
+	end
 	if record.event == "CHAT_MSG_WHISPER" and settings.autoOpenWhispers then
 		self:OpenForRecord(record)
 	end

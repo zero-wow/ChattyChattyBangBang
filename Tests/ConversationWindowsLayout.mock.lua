@@ -97,7 +97,8 @@ ChatFontNormal = {}
 function CreateFrame(kind, _, parent) return newFrame(kind, parent) end
 function UnitFactionGroup() return "Alliance" end
 function GetTime() return 100 end
-function InCombatLockdown() return false end
+local inCombat = false
+function InCombatLockdown() return inCombat end
 function MouseIsOver() return false end
 function GetMouseFocus() return nil end
 
@@ -143,6 +144,8 @@ local settings = {
 		actionVisibility = "inherit",
 		composerVisibility = "inherit",
 		actionButtonStyle = "text",
+		actionStripCollapsed = false,
+		actionStripOrientation = "horizontal",
 		windowWidth = 360,
 		windowHeight = 250,
 	},
@@ -175,6 +178,8 @@ window:ApplyChromeLayout(true)
 
 expect(window.header:IsShown(), "default inherited title should be visible")
 expect(window.actions:IsShown(), "default inherited actions should be visible")
+expect(window.actionToggle:IsShown() and window.actionToggle.labelValue == "-",
+	"Messenger should expose a separate compact action-strip control")
 expect(window.composer:IsShown(), "default inherited composer should be visible")
 expect(window.actions.parent == window.tabStrip, "actions must share the tab rail")
 expect(rawget(window.actions, "themedPanel") ~= true, "actions must not create a second boxed toolbar")
@@ -183,6 +188,14 @@ expect(window.close.label:GetText() == "x" and rawget(window.close, "themedButto
 for index = 1, #window.actionButtons do
 	expect(window.actionButtons[index]:IsShown(), "every contextual action should be shown")
 end
+
+window.actionToggle.scripts.OnClick()
+expect(settings.conversations.actionStripCollapsed == true and not window.actions:IsShown(),
+	"action-strip control did not collapse and persist the social buttons")
+expect(window.actionToggle.labelValue == "+", "collapsed action strip did not show an expand affordance")
+window.actionToggle.scripts.OnClick()
+expect(settings.conversations.actionStripCollapsed == false and window.actions:IsShown(),
+	"action-strip control did not restore the social buttons")
 
 settings.conversations.titleBarVisibility = "hidden"
 window:ApplyChromeLayout(true)
@@ -194,6 +207,24 @@ expect(window.content.points[1][2] == window.tabStrip,
 settings.conversations.actionVisibility = "hidden"
 window:ApplyChromeLayout(true)
 expect(not window.actions:IsShown(), "hidden actions should release their rail width")
+
+settings.conversations.titleBarVisibility = "click"
+settings.conversations.actionVisibility = "click"
+settings.conversations.composerVisibility = "click"
+window.clickChromeRevealed = false
+window:ApplyChromeLayout(true)
+expect(not window.header:IsShown() and not window.actions:IsShown() and not window.composer:IsShown(),
+	"on-click Messenger regions should begin reclaimed")
+window.display.scripts.OnMouseUp(window.display, "LeftButton")
+expect(window.header:IsShown() and window.actions:IsShown() and window.composer:IsShown(),
+	"message-surface click did not reveal on-click Messenger regions")
+window.display.scripts.OnHyperlinkEnter()
+window.display.scripts.OnMouseUp(window.display, "LeftButton")
+expect(window.header:IsShown(), "hyperlink click incorrectly toggled Messenger chrome")
+window.display.scripts.OnHyperlinkLeave()
+window.display.scripts.OnMouseUp(window.display, "LeftButton")
+expect(not window.header:IsShown() and not window.actions:IsShown() and not window.composer:IsShown(),
+	"second message-surface click did not reclaim on-click Messenger regions")
 
 settings.conversations.chromeAutoHide = true
 settings.conversations.titleBarVisibility = "inherit"
@@ -233,12 +264,83 @@ for index = 1, #window.actionButtons do
 		and window.actionButtons[index].text:GetText() == window.actionButtons[index].definition.glyph,
 		"missing icon media must fall back to an obvious action glyph")
 end
+window:ApplyChromeLayout(true)
+for index = 1, #window.actionButtons do
+	expect(window.actionButtons[index].usesIcon,
+		"forced narrow layout restored text actions after the compact decision was cached")
+end
 failTextures = false
-window.tabStrip:SetWidth(356)
+window.tabStrip:SetWidth(500)
+window.frame:SetWidth(504)
 window.actionsCompactForWidth = nil
 window:ApplyChromeLayout(true)
 for index = 1, #window.actionButtons do
 	expect(not window.actionButtons[index].usesIcon, "text action preference should return when space permits")
 end
+
+settings.conversations.titleBarVisibility = "hidden"
+settings.conversations.actionVisibility = "always"
+settings.conversations.actionStripOrientation = "horizontal"
+settings.conversations.actionStripCollapsed = false
+window.frame:SetSize(300, 160)
+window.tabStrip:SetWidth(296)
+Manager:OpenForPlayer("VeryLongPlayerOne", true)
+Manager:OpenForPlayer("VeryLongPlayerTwo", true)
+window.tabOffset = 1
+window:ApplyChromeLayout(true)
+expect(window.tabAvailableWidth and window.tabAvailableWidth < 118,
+	"minimum horizontal Messenger did not calculate a constrained tab lane")
+for _, key in ipairs(Manager.tabOrder) do
+	local tab = Manager.sessionsByKey[key] and Manager.sessionsByKey[key].tab
+	if tab and tab:IsShown() then
+		expect(tab:GetWidth() <= window.tabAvailableWidth,
+			"long Messenger tab overlapped the pager/action reserve at minimum width")
+	end
+end
+expect(window.confirm:GetWidth() == 284,
+	"server-ignore confirmation does not preserve an eight-pixel minimum-shell gutter")
+
+settings.conversations.actionStripOrientation = "vertical"
+settings.conversations.actionStripCollapsed = false
+settings.conversations.titleBarVisibility = "hidden"
+settings.conversations.actionVisibility = "always"
+settings.conversations.composerVisibility = "always"
+window.tabStrip:SetWidth(245)
+window:ApplyChromeLayout(true)
+expect(window.actions.parent == window.frame, "vertical Messenger actions did not attach to the window side")
+expect(window.actions.points[1][1] == "TOPRIGHT" and window.actions.points[2][1] == "BOTTOMRIGHT",
+	"vertical Messenger actions do not span the protected side lane")
+expect(window.content.points[2][4] < -2 and window.composer.points[2][4] < -2,
+	"vertical Messenger actions did not reserve non-overlapping content/composer width")
+for index = 2, #window.actionButtons do
+	expect(window.actionButtons[index].points[1][1] == "TOP",
+		"vertical Messenger actions were not stacked down the side")
+end
+expect(window.close.parent == window.tabStrip and window.close.label:GetText() == "x",
+	"hidden Messenger header lost its relocated text-only close control")
+
+settings.conversations.actionStripOrientation = "horizontal"
+settings.conversations.autoOpenWhispers = false
+settings.conversations.deferInCombat = true
+inCombat = true
+Manager:OpenForPlayer("Alice", true)
+local activeBefore = window.playerKey
+Manager:OnMessage({ id = 777, event = "CHAT_MSG_WHISPER", sender = "Bob", direction = "incoming", text = "hello" })
+local bob = Manager.sessionsByKey.bob
+expect(bob and bob.tab and bob.tab:IsShown(),
+	"new incoming sender did not create a visible tab in the existing Messenger")
+expect(window.playerKey == activeBefore and bob.unread == 1,
+	"new sender stole the active conversation or lost its unread count")
+expect(not Manager.pending.bob, "visible Messenger incorrectly deferred harmless tab intake in combat")
+
+window:Hide()
+Manager:OnMessage({ id = 778, event = "CHAT_MSG_WHISPER", sender = "Carol", direction = "incoming", text = "hello" })
+expect(Manager.sessionsByKey.carol and Manager.sessionsByKey.carol.unread == 1 and not window.frame:IsShown(),
+	"popup-disabled hidden Messenger did not retain the new sender tab quietly")
+
+settings.conversations.autoOpenWhispers = true
+Manager:OnMessage({ id = 779, event = "CHAT_MSG_WHISPER", sender = "Dan", direction = "incoming", text = "hello" })
+expect(Manager.sessionsByKey.dan and Manager.pending.dan and not window.frame:IsShown(),
+	"combat deferral should delay only the hidden-shell popup, not Dan's tab creation")
 
 print("ConversationWindowsLayout.mock.lua: PASS")

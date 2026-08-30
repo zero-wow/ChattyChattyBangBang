@@ -7,7 +7,7 @@ local navigation = {
 	{ id = "home", label = "Overview", group = "START HERE" },
 	{ id = "dock", label = "Chat Window", group = "CHAT WINDOW" },
 	{ id = "views", label = "Views & Tabs", group = "CHAT WINDOW" },
-	{ id = "messenger", label = "Whisper Windows", group = "CHAT WINDOW" },
+	{ id = "messenger", label = "Messenger", group = "CHAT WINDOW" },
 	{ id = "safety", label = "Player Actions", group = "CHAT WINDOW" },
 	{ id = "spam", label = "Spam Firewall", group = "RULES & SAFETY" },
 	{ id = "blocks", label = "Message Blocks", group = "RULES & SAFETY" },
@@ -299,7 +299,7 @@ end
 local function getAddonVersion()
 	local version = addon.GetVersion and addon:GetVersion() or addon.VERSION
 	if type(version) ~= "string" or version == "" then
-		return "2.21.1"
+		return "2.22.0"
 	end
 	return version
 end
@@ -8933,6 +8933,81 @@ local function setMessengerActionStyle(style)
 	return true, style
 end
 
+local function setMessengerActionStripOrientation(orientation)
+	if type(addon.SetMessengerActionStripOrientation) == "function" then
+		return addon:SetMessengerActionStripOrientation(orientation)
+	end
+	local settings = addon:GetSmartSettings()
+	settings.conversations = settings.conversations or {}
+	settings.conversations.actionStripOrientation = orientation == "vertical" and "vertical" or "horizontal"
+	applyMessengerRuntime()
+	return true, settings.conversations.actionStripOrientation
+end
+
+local function setMessengerActionStripCollapsed(collapsed)
+	if type(addon.SetMessengerActionStripCollapsed) == "function" then
+		return addon:SetMessengerActionStripCollapsed(collapsed)
+	end
+	local settings = addon:GetSmartSettings()
+	settings.conversations = settings.conversations or {}
+	settings.conversations.actionStripCollapsed = collapsed and true or false
+	applyMessengerRuntime()
+	return true, settings.conversations.actionStripCollapsed
+end
+
+local messengerSectionDefinitions = {
+	opening = {
+		label = "OPENING",
+		heading = "Opening",
+		hint = "Choose when a new private conversation opens the shared Messenger window.",
+	},
+	visibility = {
+		label = "VISIBILITY",
+		heading = "Window visibility",
+		hint = "Give the title, player actions, and reply field one clear reveal policy each.",
+	},
+	actions = {
+		label = "ACTIONS",
+		heading = "Player actions",
+		hint = "Choose how Reply, Invite, Friend, Chatty Mute, and WoW Ignore are presented.",
+	},
+}
+
+local messengerSectionOrder = { "opening", "visibility", "actions" }
+
+function Config:SetMessengerSection(section)
+	if not messengerSectionDefinitions[section] then
+		section = "opening"
+	end
+	self.messengerSection = section
+	self:RefreshMessengerPage()
+	return section
+end
+
+function Config:RefreshMessengerSections()
+	if not self.messengerPage then
+		return
+	end
+	local section = messengerSectionDefinitions[self.messengerSection] and self.messengerSection or "opening"
+	self.messengerSection = section
+	for id, controls in pairs(self.messengerSectionGroups or {}) do
+		local visible = id == section
+		for _, control in ipairs(controls) do
+			if visible then control:Show() else control:Hide() end
+		end
+	end
+	for id, button in pairs(self.messengerSectionButtons or {}) do
+		setTabStyle(button, id == section)
+	end
+	local definition = messengerSectionDefinitions[section]
+	if self.messengerSectionTitle then
+		self.messengerSectionTitle:SetText(definition.heading)
+	end
+	if self.messengerSectionHint then
+		self.messengerSectionHint:SetText(definition.hint)
+	end
+end
+
 function Config:RefreshMessengerPage()
 	if not self.messengerPage then
 		return
@@ -8968,140 +9043,251 @@ function Config:RefreshMessengerPage()
 		if not current then
 			current = selected == "inherit" and (settings.chromeAutoHide and "auto" or "always") or selected
 		end
-		row.resolved:SetText("CURRENT: " .. string.upper(current or "always"))
+		local currentLabel = current == "auto" and "MOUSEOVER"
+			or (current == "click" and "ON CLICK" or string.upper(current or "always"))
+		row.resolved:SetText("NOW: " .. currentLabel)
 	end
 
 	local iconsActive = settings.actionButtonStyle == "icons"
 	setChoiceStyle(self.messengerTextButtons, not iconsActive)
 	setChoiceStyle(self.messengerIconButtons, iconsActive)
+	local vertical = settings.actionStripOrientation == "vertical"
+	setChoiceStyle(self.messengerHorizontalButton, not vertical)
+	setChoiceStyle(self.messengerVerticalButton, vertical)
+	if self.messengerActionCollapsedToggle then
+		self.messengerActionCollapsedToggle:SetValue(settings.actionStripCollapsed == true, true)
+	end
+	self:RefreshMessengerSections()
 end
 
 function Config:BuildMessengerPage()
 	local page = self:CreatePage("messenger")
 	self.messengerPage = page
-	createHeading(page, "Whisper Windows", "Incoming whispers collect in one Messenger window, with one compact tab for each player.")
+	self.messengerHeading = createHeading(page, "Messenger", "Private conversations share one window, with a compact tab for each player.")
 
-	local behaviorTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
-	behaviorTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -46)
-	behaviorTitle:SetText("OPENING")
+	self.messengerSectionButtons = {}
+	local previousSectionButton
+	for _, id in ipairs(messengerSectionOrder) do
+		local sectionId = id
+		local definition = messengerSectionDefinitions[id]
+		local button = Theme:CreateTightButton(page, definition.label, 22, false)
+		if previousSectionButton then
+			button:SetPoint("LEFT", previousSectionButton, "RIGHT", 6, 0)
+		else
+			button:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -48)
+		end
+		setControlTooltip(button, definition.heading, definition.hint)
+		button:SetScript("OnClick", function()
+			Config:SetMessengerSection(sectionId)
+		end)
+		self.messengerSectionButtons[id] = button
+		previousSectionButton = button
+	end
 
-	self.messengerWhispersToggle = Theme:CreateCompactToggle(page, "POPUP WHISPERS", 190)
-	self.messengerWhispersToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -62)
+	self.messengerSectionTitle = Theme:CreateText(page, "GameFontNormal", "goldBright")
+	self.messengerSectionTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -82)
+	self.messengerSectionHint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	self.messengerSectionHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -101)
+	self.messengerSectionHint:SetWidth(PAGE_WIDTH)
+	self.messengerSectionHint:SetJustifyH("LEFT")
+
+	local openingControls = {}
+	local function addOpening(control)
+		table.insert(openingControls, control)
+		return control
+	end
+	local behaviorTitle = addOpening(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	behaviorTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	behaviorTitle:SetText("AUTOMATIC OPENING")
+
+	self.messengerWhispersToggle = addOpening(Theme:CreateCompactToggle(page, "AUTO-OPEN WHISPERS", PAGE_WIDTH))
+	self.messengerWhispersToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -151)
 	self.messengerWhispersToggle.OnValueChanged = function(_, value)
 		setMessengerBoolean("SetMessengerPopupWhispersEnabled", "autoOpenWhispers", value)
 	end
-	setControlTooltip(self.messengerWhispersToggle, "Open incoming whispers", "Adds a tab and opens Messenger when another player whispers you.")
+	setControlTooltip(self.messengerWhispersToggle, "Auto-open incoming whispers", "Opens Messenger when another player whispers you. A tab and unread count are retained either way.")
 
-	self.messengerCombatToggle = Theme:CreateCompactToggle(page, "DEFER IN COMBAT", 190)
-	self.messengerCombatToggle:SetPoint("LEFT", self.messengerWhispersToggle, "RIGHT", 6, 0)
+	self.messengerCombatToggle = addOpening(Theme:CreateCompactToggle(page, "WAIT UNTIL COMBAT ENDS", PAGE_WIDTH))
+	self.messengerCombatToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -181)
 	self.messengerCombatToggle.OnValueChanged = function(_, value)
 		setMessengerBoolean("SetMessengerCombatDeferralEnabled", "deferInCombat", value)
 	end
 	setControlTooltip(self.messengerCombatToggle, "Wait until combat ends", "Queues automatic popup requests during combat. An explicit reply still opens immediately.")
 
-	local behaviorDetail = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-	behaviorDetail:SetPoint("TOPLEFT", self.messengerWhispersToggle, "BOTTOMLEFT", 0, -2)
+	local behaviorDetail = addOpening(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	behaviorDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -214)
 	behaviorDetail:SetWidth(PAGE_WIDTH)
 	behaviorDetail:SetJustifyH("LEFT")
-	behaviorDetail:SetText("New whispers join the existing Messenger shell instead of opening another window.")
+	behaviorDetail:SetText("New whispers join the existing Messenger shell. /r, Reply, and player-name actions can still open it when automatic opening is off.")
 
-	local autoTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
-	autoTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -108)
-	autoTitle:SetText("SHARED AUTO-HIDE")
+	local visibilityControls = {}
+	local function addVisibility(control)
+		table.insert(visibilityControls, control)
+		return control
+	end
+	local autoTitle = addVisibility(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	autoTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	autoTitle:SetText("DEFAULT FOR INHERIT")
 
-	self.messengerChromeAutoHideToggle = Theme:CreateCompactToggle(page, "HIDE CHROME WHEN IDLE", 230)
-	self.messengerChromeAutoHideToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -124)
+	self.messengerChromeAutoHideToggle = addVisibility(Theme:CreateCompactToggle(page, "HIDE CHROME WHEN IDLE", PAGE_WIDTH))
+	self.messengerChromeAutoHideToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -151)
 	self.messengerChromeAutoHideToggle.OnValueChanged = function(_, value)
 		setMessengerBoolean("SetMessengerChromeAutoHideEnabled", "chromeAutoHide", value)
 		Config:RefreshMessengerPage()
 	end
-	setControlTooltip(self.messengerChromeAutoHideToggle, "Shared Messenger auto-hide", "Every region set to INHERIT follows this switch. Explicit SHOW, AUTO, and HIDE choices remain independent.")
+	setControlTooltip(self.messengerChromeAutoHideToggle, "Shared Messenger auto-hide", "Every region set to INHERIT follows this switch. Explicit ALWAYS, MOUSEOVER, ON CLICK, and HIDDEN choices remain independent.")
 
-	local autoDetail = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-	autoDetail:SetPoint("TOPLEFT", self.messengerChromeAutoHideToggle, "BOTTOMLEFT", 0, -2)
+	local autoDetail = addVisibility(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	autoDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -178)
 	autoDetail:SetWidth(PAGE_WIDTH)
 	autoDetail:SetJustifyH("LEFT")
-	autoDetail:SetText("INHERIT keeps the three regions coordinated; individual choices below override it.")
+	autoDetail:SetText("INHERIT keeps these regions coordinated. A choice on a row below overrides this shared idle behavior.")
 
-	local visibilityTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
-	visibilityTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -174)
+	local visibilityTitle = addVisibility(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	visibilityTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -212)
 	visibilityTitle:SetText("WINDOW REGIONS")
 
 	self.messengerVisibilityRows = {}
 	local modeDefinitions = {
-		{ id = "inherit", label = "INHERIT", width = 72 },
-		{ id = "always", label = "SHOW", width = 56 },
-		{ id = "auto", label = "AUTO", width = 56 },
-		{ id = "hidden", label = "HIDE", width = 56 },
+		{ id = "inherit", label = "INHERIT", detail = "Follow the shared idle setting above." },
+		{ id = "always", label = "ALWAYS", detail = "Keep this region visible." },
+		{ id = "auto", label = "MOUSEOVER", detail = "Show this region while the pointer is over Messenger." },
+		{ id = "click", label = "ON CLICK", detail = "Reveal or reclaim this region by clicking the message area." },
+		{ id = "hidden", label = "HIDDEN", detail = "Remove this region and reclaim its space." },
 	}
 	local function createVisibilityRow(element, label, y, help)
-		local row = { buttons = {} }
-		local rowLabel = Theme:CreateText(page, "GameFontNormalSmall", "text")
+		local row = { buttons = {}, controls = {} }
+		local rowLabel = addVisibility(Theme:CreateText(page, "GameFontNormalSmall", "text"))
 		rowLabel:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -y)
-		rowLabel:SetWidth(104)
 		rowLabel:SetJustifyH("LEFT")
 		rowLabel:SetText(label)
+		row.label = rowLabel
+		table.insert(row.controls, rowLabel)
+		row.resolved = addVisibility(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+		row.resolved:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAGE_GUTTER, -y)
+		row.resolved:SetJustifyH("RIGHT")
+		table.insert(row.controls, row.resolved)
 		local previous
 		for index = 1, #modeDefinitions do
 			local definition = modeDefinitions[index]
-			local button = Theme:CreateTightButton(page, definition.label, 20, false)
-			button:SetWidth(definition.width)
+			local button = addVisibility(Theme:CreateTightButton(page, definition.label, 20, false))
 			if previous then
-				button:SetPoint("LEFT", previous, "RIGHT", CONTROL_GAP, 0)
+				button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
 			else
-				button:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER + 112, -y + 3)
+				button:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -y - 20)
 			end
 			button:SetScript("OnClick", function()
 				setMessengerVisibility(element, definition.id)
 				Config:RefreshMessengerPage()
 			end)
-			setControlTooltip(button, definition.label .. " " .. label, help)
+			setControlTooltip(button, definition.label .. " - " .. label, definition.detail .. " " .. help)
 			row.buttons[definition.id] = button
+			table.insert(row.controls, button)
 			previous = button
 		end
-		row.resolved = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-		row.resolved:SetPoint("LEFT", previous, "RIGHT", 10, 0)
-		row.resolved:SetWidth(174)
-		row.resolved:SetJustifyH("LEFT")
 		self.messengerVisibilityRows[element] = row
 	end
-	createVisibilityRow("title", "TITLE BAR", 198, "INHERIT follows shared auto-hide. HIDE removes the title row and moves the bare x to the tab rail.")
-	createVisibilityRow("actions", "TAB ACTIONS", 232, "Reply, invite, friend, local mute, and WoW ignore share the same row as conversation tabs.")
-	createVisibilityRow("composer", "TO / REPLY", 266, "AUTO reveals while interacting. HIDE normally reclaims the row, but /r and Reply temporarily reveal and focus it.")
+	createVisibilityRow("title", "TITLE BAR", 236, "When hidden, the bare x moves to the tab rail so Messenger can still be closed.")
+	createVisibilityRow("actions", "PLAYER ACTIONS", 292, "Reply, Invite, Friend, Chatty Mute, and WoW Ignore are controlled together.")
+	createVisibilityRow("composer", "TO / REPLY", 348, "HIDDEN normally reclaims the row, but /r and Reply temporarily reveal and focus it.")
 
-	local actionsTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
-	actionsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -310)
-	actionsTitle:SetText("TAB ACTION APPEARANCE")
+	local visibilityDetail = addVisibility(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	visibilityDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -406)
+	visibilityDetail:SetWidth(PAGE_WIDTH)
+	visibilityDetail:SetJustifyH("LEFT")
+	visibilityDetail:SetText("The conversation tab rail and its close control always remain reachable.")
 
-	self.messengerTextButtons = Theme:CreateTightButton(page, "TEXT", 22, false)
-	self.messengerTextButtons:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -326)
+	local actionControls = {}
+	local function addAction(control)
+		table.insert(actionControls, control)
+		return control
+	end
+	local actionsTitle = addAction(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	actionsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	actionsTitle:SetText("BUTTON STYLE")
+
+	self.messengerTextButtons = addAction(Theme:CreateTightButton(page, "TEXT", 22, false))
+	self.messengerTextButtons:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -151)
 	self.messengerTextButtons:SetScript("OnClick", function()
 		setMessengerActionStyle("text")
 		Config:RefreshMessengerPage()
 	end)
+	setControlTooltip(self.messengerTextButtons, "Text action buttons", "Shows readable Reply, Invite, Friend, Mute, and Block labels whenever the window is wide enough.")
 
-	self.messengerIconButtons = Theme:CreateTightButton(page, "ICONS", 22, false)
-	self.messengerIconButtons:SetPoint("LEFT", self.messengerTextButtons, "RIGHT", CONTROL_GAP, 0)
+	self.messengerIconButtons = addAction(Theme:CreateTightButton(page, "ICONS", 22, false))
+	self.messengerIconButtons:SetPoint("LEFT", self.messengerTextButtons, "RIGHT", 6, 0)
 	self.messengerIconButtons:SetScript("OnClick", function()
 		setMessengerActionStyle("icons")
 		Config:RefreshMessengerPage()
 	end)
+	setControlTooltip(self.messengerIconButtons, "Icon action buttons", "Uses the compact faction-aware Messenger icons, with readable tooltips on hover.")
 
-	local actionsDetail = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-	actionsDetail:SetPoint("TOPLEFT", self.messengerTextButtons, "BOTTOMLEFT", 0, -2)
+	local actionsDetail = addAction(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	actionsDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -181)
 	actionsDetail:SetWidth(PAGE_WIDTH)
 	actionsDetail:SetJustifyH("LEFT")
-	actionsDetail:SetText("All five actions stay visible. At the minimum window width, text labels temporarily compact to icons.")
+	actionsDetail:SetText("Text labels automatically compact to icons when the Messenger window is too narrow.")
 
-	local safetyTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
-	safetyTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -386)
+	local placementTitle = addAction(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	placementTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -218)
+	placementTitle:SetText("PLACEMENT")
+	self.messengerHorizontalButton = addAction(Theme:CreateTightButton(page, "HORIZONTAL", 22, false))
+	self.messengerHorizontalButton:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -237)
+	self.messengerHorizontalButton:SetScript("OnClick", function()
+		setMessengerActionStripOrientation("horizontal")
+		Config:RefreshMessengerPage()
+	end)
+	setControlTooltip(self.messengerHorizontalButton, "Horizontal player actions", "Keeps the action strip on the same row as the conversation tabs.")
+	self.messengerVerticalButton = addAction(Theme:CreateTightButton(page, "VERTICAL", 22, false))
+	self.messengerVerticalButton:SetPoint("LEFT", self.messengerHorizontalButton, "RIGHT", 6, 0)
+	self.messengerVerticalButton:SetScript("OnClick", function()
+		setMessengerActionStripOrientation("vertical")
+		Config:RefreshMessengerPage()
+	end)
+	setControlTooltip(self.messengerVerticalButton, "Vertical player actions", "Places the action strip in a narrow column beside the conversation.")
+	local placementDetail = addAction(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	placementDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -267)
+	placementDetail:SetWidth(PAGE_WIDTH)
+	placementDetail:SetJustifyH("LEFT")
+	placementDetail:SetText("Horizontal shares the tab row. Vertical reserves a slim side rail without covering messages.")
+
+	local collapseTitle = addAction(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	collapseTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -304)
+	collapseTitle:SetText("COLLAPSE CONTROL")
+	self.messengerActionCollapsedToggle = addAction(Theme:CreateCompactToggle(page, "START COLLAPSED", PAGE_WIDTH))
+	self.messengerActionCollapsedToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -323)
+	self.messengerActionCollapsedToggle.OnValueChanged = function(_, value)
+		setMessengerActionStripCollapsed(value)
+		Config:RefreshMessengerPage()
+	end
+	setControlTooltip(self.messengerActionCollapsedToggle, "Start with compact actions", "Starts the player-action strip behind one compact reveal control. You can expand or collapse it from Messenger at any time.")
+	local collapseDetail = addAction(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	collapseDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -351)
+	collapseDetail:SetWidth(PAGE_WIDTH)
+	collapseDetail:SetJustifyH("LEFT")
+	collapseDetail:SetText("The compact control stays discoverable; collapsing never disables Reply, Invite, Friend, Mute, or Block.")
+
+	local safetyTitle = addAction(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	safetyTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -400)
 	safetyTitle:SetText("SOCIAL SAFETY")
-	local safetyDetail = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	local safetyDetail = addAction(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
 	safetyDetail:SetPoint("TOPLEFT", safetyTitle, "BOTTOMLEFT", 0, -2)
 	safetyDetail:SetWidth(PAGE_WIDTH)
 	safetyDetail:SetJustifyH("LEFT")
 	safetyDetail:SetText("Local Mute affects only Chatty. WoW Ignore asks for confirmation. /r selects the matching tab and focuses its TO row.")
 
+	self.messengerSectionGroups = {
+		opening = openingControls,
+		visibility = visibilityControls,
+		actions = actionControls,
+	}
+	self.messengerStatus = Theme:CreateText(page, "GameFontHighlightSmall", "success")
+	self.messengerStatus:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -474)
+	self.messengerStatus:SetWidth(PAGE_WIDTH)
+	self.messengerStatus:SetJustifyH("LEFT")
+	self.messengerStatus:SetText("Every Messenger setting applies immediately; no reload is required.")
+
+	self.messengerSection = messengerSectionDefinitions[self.messengerSection] and self.messengerSection or "opening"
 	self:RefreshMessengerPage()
 	return page
 end
@@ -11198,7 +11384,7 @@ function Config:RefreshModulesPage(keepStatus)
 			self.moduleSmartToggle:Hide()
 		end
 		local destination = selected.configPage == "views" and "VIEWS & TABS"
-			or ((selected.configPage == "conversations" or selected.configPage == "messenger") and "WHISPER WINDOWS" or "CHAT WINDOW")
+			or ((selected.configPage == "conversations" or selected.configPage == "messenger") and "MESSENGER" or "CHAT WINDOW")
 		setTightButtonLabel(self.moduleOpenConfig, "OPEN " .. destination)
 		self.moduleOpenConfig:ClearAllPoints()
 		self.moduleOpenConfig:SetPoint("TOPLEFT", self.moduleInspectorPanel, "TOPLEFT", 8, hasSmartToggle and -154 or -126)
@@ -11858,12 +12044,22 @@ function Config:ReloadProfile()
 	self.moduleListPage = nil
 	self.selectedModuleId = nil
 	self.messengerPage = nil
+	self.messengerHeading = nil
+	self.messengerSection = nil
+	self.messengerSectionButtons = nil
+	self.messengerSectionTitle = nil
+	self.messengerSectionHint = nil
+	self.messengerSectionGroups = nil
+	self.messengerStatus = nil
 	self.messengerWhispersToggle = nil
 	self.messengerCombatToggle = nil
 	self.messengerChromeAutoHideToggle = nil
 	self.messengerVisibilityRows = nil
 	self.messengerTextButtons = nil
 	self.messengerIconButtons = nil
+	self.messengerHorizontalButton = nil
+	self.messengerVerticalButton = nil
+	self.messengerActionCollapsedToggle = nil
 	self.semanticRoutesPage = nil
 	self.semanticRouteToggles = nil
 	self.semanticRoutesAvailability = nil

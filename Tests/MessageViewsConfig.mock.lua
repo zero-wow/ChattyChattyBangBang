@@ -231,6 +231,8 @@ local settings = {
 		actionVisibility = "inherit",
 		composerVisibility = "inherit",
 		actionButtonStyle = "text",
+		actionStripCollapsed = true,
+		actionStripOrientation = "horizontal",
 	},
 	views = {
 		general = true,
@@ -270,6 +272,8 @@ function addon:GetMessengerSettings()
 		actionVisibility = conversations.actionVisibility,
 		composerVisibility = conversations.composerVisibility,
 		actionButtonStyle = conversations.actionButtonStyle,
+		actionStripCollapsed = conversations.actionStripCollapsed,
+		actionStripOrientation = conversations.actionStripOrientation,
 		resolvedTitleBarVisibility = resolved(conversations.titleBarVisibility),
 		resolvedActionVisibility = resolved(conversations.actionVisibility),
 		resolvedComposerVisibility = resolved(conversations.composerVisibility),
@@ -285,6 +289,8 @@ function addon:SetMessengerElementVisibility(element, mode)
 	return true, mode
 end
 function addon:SetMessengerActionButtonStyle(style) settings.conversations.actionButtonStyle = style return true end
+function addon:SetMessengerActionStripCollapsed(value) settings.conversations.actionStripCollapsed = value and true or false return true end
+function addon:SetMessengerActionStripOrientation(value) settings.conversations.actionStripOrientation = value return true end
 
 function addon:GetSmartViews()
 	return views
@@ -454,33 +460,91 @@ config.content = frame()
 config:BuildViewsPage()
 
 config:BuildMessengerPage()
+assert(config.messengerHeading:GetText() == "Messenger",
+	"Messenger configuration is still hidden behind the old Whisper Windows heading")
+assert(config.messengerSection == "opening"
+	and config.messengerSectionButtons.opening._configTabSelected == true,
+	"Messenger did not open on its attached OPENING pane")
+assert(config.messengerSectionGroups.opening[1]:IsShown()
+	and not config.messengerSectionGroups.visibility[1]:IsShown()
+	and not config.messengerSectionGroups.actions[1]:IsShown(),
+	"Messenger panes were not mutually exclusive at startup")
+assert(config.messengerSectionButtons.opening.point[4] == 8
+	and config.messengerSectionButtons.opening.point[5] == -48,
+	"Messenger section tabs lost their eight-pixel outer gutter")
+local sectionTabsWidth = config.messengerSectionButtons.opening.width
+	+ config.messengerSectionButtons.visibility.width
+	+ config.messengerSectionButtons.actions.width + 12
+assert(sectionTabsWidth <= 636
+	and config.messengerSectionButtons.visibility.point[4] == 6
+	and config.messengerSectionButtons.actions.point[4] == 6,
+	"Messenger attached tabs overflow or lost their six-pixel control gutters")
+
+config:SetMessengerSection("visibility")
+assert(config.messengerSection == "visibility"
+	and config.messengerSectionButtons.visibility._configTabSelected == true
+	and config.messengerSectionButtons.opening._configTabSelected == false,
+	"Messenger attached-tab selection did not switch cleanly")
+assert(not config.messengerSectionGroups.opening[1]:IsShown()
+	and config.messengerSectionGroups.visibility[1]:IsShown()
+	and not config.messengerSectionGroups.actions[1]:IsShown(),
+	"Messenger switching left controls from another pane visible")
 assert(config.messengerVisibilityRows.title and config.messengerVisibilityRows.actions
 	and config.messengerVisibilityRows.composer,
 	"Messenger options did not expose all three independently controlled regions")
 for _, element in ipairs({ "title", "actions", "composer" }) do
 	local row = config.messengerVisibilityRows[element]
-	assert(row.buttons.inherit and row.buttons.always and row.buttons.auto and row.buttons.hidden,
-		"Messenger region lost INHERIT / SHOW / AUTO / HIDE choices")
+	assert(row.buttons.inherit and row.buttons.always and row.buttons.auto
+		and row.buttons.click and row.buttons.hidden,
+		"Messenger region lost INHERIT / ALWAYS / MOUSEOVER / ON CLICK / HIDDEN choices")
 	for _, button in pairs(row.buttons) do
 		assert(button.parent == config.messengerPage, "Messenger visibility choice escaped its page")
 	end
 end
-assert(config.messengerVisibilityRows.title.buttons.inherit.point[4] == 120
-	and config.messengerVisibilityRows.title.buttons.inherit.point[5] == -195,
-	"Messenger title visibility row moved outside its bounded control grid")
-assert(config.messengerVisibilityRows.actions.buttons.inherit.point[5] == -229
-	and config.messengerVisibilityRows.composer.buttons.inherit.point[5] == -263,
-	"Messenger region rows can overlap each other")
+local modeOrder = { "inherit", "always", "auto", "click", "hidden" }
+for _, element in ipairs({ "title", "actions", "composer" }) do
+	local row = config.messengerVisibilityRows[element]
+	local width = 0
+	for index, mode in ipairs(modeOrder) do
+		local button = row.buttons[mode]
+		assert(button.width >= button.text:GetStringWidth() + 10,
+			"Messenger mode button no longer reserves live-font side padding")
+		width = width + button.width + (index > 1 and 6 or 0)
+	end
+	assert(width <= 636, "Messenger visibility choices exceed the 636-pixel safe workspace")
+end
+assert(config.messengerVisibilityRows.title.label.point[4] == 8
+	and config.messengerVisibilityRows.title.label.point[5] == -236
+	and config.messengerVisibilityRows.title.buttons.inherit.point[4] == 8
+	and config.messengerVisibilityRows.title.buttons.inherit.point[5] == -256,
+	"Messenger title visibility row moved outside its bounded full-width lane")
+assert(config.messengerVisibilityRows.actions.label.point[5] == -292
+	and config.messengerVisibilityRows.composer.label.point[5] == -348,
+	"Messenger visibility rows lost their non-overlapping 56-pixel cadence")
 config.messengerChromeAutoHideToggle:SetValue(true)
 assert(settings.conversations.chromeAutoHide == true,
 	"Messenger shared auto-hide control did not use the public setter")
-config.messengerVisibilityRows.title.buttons.hidden.scripts.OnClick()
-assert(settings.conversations.titleBarVisibility == "hidden"
-	and config.messengerVisibilityRows.title.resolved:GetText() == "CURRENT: HIDDEN",
-	"Messenger title-bar HIDE choice did not persist and refresh")
+config.messengerVisibilityRows.title.buttons.click.scripts.OnClick()
+assert(settings.conversations.titleBarVisibility == "click"
+	and config.messengerVisibilityRows.title.resolved:GetText() == "NOW: ON CLICK",
+	"Messenger title-bar ON CLICK choice did not persist and refresh")
+
+config:SetMessengerSection("actions")
+assert(config.messengerSectionGroups.actions[1]:IsShown()
+	and not config.messengerSectionGroups.visibility[1]:IsShown(),
+	"Messenger ACTIONS pane did not exclusively replace VISIBILITY")
 config.messengerIconButtons.scripts.OnClick()
 assert(settings.conversations.actionButtonStyle == "icons",
 	"Messenger action appearance did not use the public setter")
+config.messengerVerticalButton.scripts.OnClick()
+assert(settings.conversations.actionStripOrientation == "vertical"
+	and config.messengerVerticalButton.theme[1] == "accentSoft",
+	"Messenger vertical action-strip choice did not persist and refresh")
+config.messengerActionCollapsedToggle:SetValue(false)
+assert(settings.conversations.actionStripCollapsed == false,
+	"Messenger start-collapsed control did not use the public setter")
+assert(config.messengerStatus.point[4] == 8 and config.messengerStatus.point[5] == -474,
+	"Messenger status escaped the reviewed 652x508 workspace")
 
 assert(config.viewsPage == config.railsPage, "views and rails built separate pages")
 assert(config.messageViewsPage == config.viewsPage, "unified workspace was not registered")
