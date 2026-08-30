@@ -29,6 +29,7 @@ local BUILT_IN_SOURCE_VIEWS_SCHEMA = 2
 -- path. Keep this separate from built-in rail migrations so PVP is not moved
 -- again in profiles that already chose a custom tab order.
 local VIEW_SOURCE_MEMBERSHIP_SCHEMA = 1
+local MESSENGER_APPEARANCE_SCHEMA = 1
 
 local messengerVisibilityAliases = {
 	inherit = "inherit",
@@ -41,6 +42,8 @@ local messengerVisibilityAliases = {
 	mouseover = "auto",
 	click = "click",
 	onclick = "click",
+	collapsed = "collapsed",
+	compact = "collapsed",
 	hidden = "hidden",
 	hide = "hidden",
 }
@@ -220,6 +223,23 @@ local defaults = {
 		actionButtonStyle = "text",
 		actionStripCollapsed = false,
 		actionStripOrientation = "horizontal",
+		appearance = {
+			schema = MESSENGER_APPEARANCE_SCHEMA,
+			transparency = {
+				backgroundAlpha = 1,
+				borderAlpha = 1,
+				textAlpha = 1,
+				overallAlpha = 1,
+			},
+			colors = {
+				window = { mode = "inherit" },
+				title = { mode = "inherit" },
+				tabs = { mode = "inherit" },
+				chat = { mode = "inherit" },
+				reply = { mode = "inherit" },
+				border = { mode = "inherit" },
+			},
+		},
 		windowWidth = 360,
 		windowHeight = 250,
 	},
@@ -3393,6 +3413,82 @@ local function normalizeOpacityUnit(value, fallback)
 	return math.max(0, math.min(1, value))
 end
 
+local messengerAppearanceTargets = {
+	window = true,
+	title = true,
+	tabs = true,
+	chat = true,
+	reply = true,
+	border = true,
+}
+
+local messengerAppearanceThemeColors = {
+	background = true,
+	surface = true,
+	surfaceRaised = true,
+	inset = true,
+	border = true,
+	borderMuted = true,
+	text = true,
+	textMuted = true,
+	gold = true,
+	goldBright = true,
+	accent = true,
+	accentSoft = true,
+	success = true,
+	warning = true,
+	danger = true,
+}
+
+local function normalizeMessengerAppearanceColor(value)
+	if type(value) == "string" then
+		if value == "inherit" then
+			return { mode = "inherit" }
+		end
+		if messengerAppearanceThemeColors[value] then
+			return { mode = "theme", theme = value }
+		end
+		return { mode = "inherit" }
+	end
+	value = type(value) == "table" and value or {}
+	local mode = type(value.mode) == "string" and string.lower(value.mode) or "inherit"
+	if mode == "theme" and messengerAppearanceThemeColors[value.theme] then
+		return { mode = "theme", theme = value.theme }
+	end
+	if mode == "custom" then
+		return {
+			mode = "custom",
+			r = normalizeOpacityUnit(value.r, 1),
+			g = normalizeOpacityUnit(value.g, 1),
+			b = normalizeOpacityUnit(value.b, 1),
+		}
+	end
+	return { mode = "inherit" }
+end
+
+local function normalizeMessengerAppearance(conversations)
+	local stored = type(conversations.appearance) == "table" and conversations.appearance or {}
+	local transparency = type(stored.transparency) == "table" and stored.transparency or {}
+	local fallback = defaults.conversations.appearance
+	local fallbackTransparency = fallback.transparency
+	local colors = type(stored.colors) == "table" and stored.colors or {}
+	local normalized = {
+		schema = MESSENGER_APPEARANCE_SCHEMA,
+		transparency = {
+			backgroundAlpha = normalizeOpacityUnit(transparency.backgroundAlpha, fallbackTransparency.backgroundAlpha),
+			borderAlpha = normalizeOpacityUnit(transparency.borderAlpha, fallbackTransparency.borderAlpha),
+			textAlpha = normalizeOpacityUnit(transparency.textAlpha, fallbackTransparency.textAlpha),
+			overallAlpha = normalizeOpacityUnit(transparency.overallAlpha, fallbackTransparency.overallAlpha),
+		},
+		colors = {},
+	}
+	for target in pairs(messengerAppearanceTargets) do
+		normalized.colors[target] = normalizeMessengerAppearanceColor(colors[target])
+	end
+	conversations.appearance = normalized
+	return normalized
+end
+
 local function normalizeDockTransparency(dock)
 	local stored = type(dock.transparency) == "table" and dock.transparency or {}
 	local fallback = defaults.dock.transparency
@@ -3625,6 +3721,12 @@ local function migrateSmartSettings(settings)
 	conversations.titleBarVisibility = normalizeMessengerVisibilityMode(conversations.titleBarVisibility)
 	conversations.actionVisibility = normalizeMessengerVisibilityMode(conversations.actionVisibility)
 	conversations.composerVisibility = normalizeMessengerVisibilityMode(conversations.composerVisibility)
+	-- COLLAPSED is meaningful only for the player-action strip. A malformed or
+	-- hand-edited use on another region safely returns to that region's shared
+	-- INHERIT policy instead of making it disappear unpredictably.
+	if conversations.titleBarVisibility == "collapsed" then conversations.titleBarVisibility = "inherit" end
+	if conversations.composerVisibility == "collapsed" then conversations.composerVisibility = "inherit" end
+	normalizeMessengerAppearance(conversations)
 
 	-- This setting was added after the first Spam Control profile schema.
 	-- applyDefaults normally seeds it, but normalize malformed hand-edited
@@ -3834,7 +3936,13 @@ function addon:GetMessengerSettings()
 		resolvedTitleBarVisibility = resolveMessengerMode(settings.titleBarVisibility, autoHide),
 		resolvedActionVisibility = resolveMessengerMode(settings.actionVisibility, autoHide),
 		resolvedComposerVisibility = resolveMessengerMode(settings.composerVisibility, autoHide),
+		appearance = copy(normalizeMessengerAppearance(settings)),
 	}
+end
+
+function addon:GetMessengerAppearanceSettings()
+	local settings = self:GetSmartSettings().conversations
+	return copy(normalizeMessengerAppearance(settings))
 end
 
 function addon:SetMessengerPopupWhispersEnabled(enabled)
@@ -3869,6 +3977,9 @@ function addon:SetMessengerElementVisibility(element, mode)
 	local normalized = normalizeMessengerVisibilityMode(mode)
 	local raw = type(mode) == "string" and string.gsub(string.lower(mode), "[%s_%-]", "") or nil
 	if type(mode) ~= "boolean" and not messengerVisibilityAliases[raw] then
+		return false, "invalid-visibility"
+	end
+	if normalized == "collapsed" and elementKey ~= "actionVisibility" then
 		return false, "invalid-visibility"
 	end
 	local settings = self:GetSmartSettings().conversations
@@ -3913,6 +4024,71 @@ function addon:SetMessengerActionStripOrientation(orientation)
 	settings.actionStripOrientation = orientation
 	refreshMessenger(self)
 	return true, orientation
+end
+
+local function setMessengerAppearanceAlpha(owner, key, value)
+	value = tonumber(value)
+	if value == nil then
+		return false, "invalid-opacity"
+	end
+	local conversations = owner:GetSmartSettings().conversations
+	local appearance = normalizeMessengerAppearance(conversations)
+	appearance.transparency[key] = normalizeOpacityUnit(value, 1)
+	refreshMessenger(owner)
+	return true, appearance.transparency[key]
+end
+
+function addon:SetMessengerBackgroundAlpha(value)
+	return setMessengerAppearanceAlpha(self, "backgroundAlpha", value)
+end
+
+function addon:SetMessengerBorderAlpha(value)
+	return setMessengerAppearanceAlpha(self, "borderAlpha", value)
+end
+
+function addon:SetMessengerTextAlpha(value)
+	return setMessengerAppearanceAlpha(self, "textAlpha", value)
+end
+
+function addon:SetMessengerOverallAlpha(value)
+	return setMessengerAppearanceAlpha(self, "overallAlpha", value)
+end
+
+function addon:SetMessengerAppearanceColor(target, value)
+	target = type(target) == "string" and string.lower(target) or ""
+	if not messengerAppearanceTargets[target] then
+		return false, "invalid-target"
+	end
+
+	local valid = false
+	if type(value) == "string" then
+		valid = value == "inherit" or messengerAppearanceThemeColors[value] == true
+	elseif type(value) == "table" then
+		local mode = type(value.mode) == "string" and string.lower(value.mode) or ""
+		if mode == "inherit" then
+			valid = true
+		elseif mode == "theme" then
+			valid = messengerAppearanceThemeColors[value.theme] == true
+		elseif mode == "custom" then
+			valid = tonumber(value.r) ~= nil and tonumber(value.g) ~= nil and tonumber(value.b) ~= nil
+		end
+	end
+	if not valid then
+		return false, "invalid-color"
+	end
+
+	local conversations = self:GetSmartSettings().conversations
+	local appearance = normalizeMessengerAppearance(conversations)
+	appearance.colors[target] = normalizeMessengerAppearanceColor(value)
+	refreshMessenger(self)
+	return true, copy(appearance.colors[target])
+end
+
+function addon:ResetMessengerAppearance()
+	local conversations = self:GetSmartSettings().conversations
+	conversations.appearance = copy(defaults.conversations.appearance)
+	refreshMessenger(self)
+	return true, copy(conversations.appearance)
 end
 
 -- Received-message history is source-owned rather than view-owned. A line

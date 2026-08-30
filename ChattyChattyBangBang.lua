@@ -1,5 +1,5 @@
 ChattyChattyBangBang = LibStub("AceAddon-3.0"):NewAddon("ChattyChattyBangBang", "AceConsole-3.0", "AceHook-3.0") 	--, "AceHook-3.0", "AceTimer-3.0", "AceConsole-3.0", "AceEvent-3.0", "LibSink-2.0")
-local FALLBACK_VERSION = "2.22.0"
+local FALLBACK_VERSION = "2.23.0"
 local metadataVersion = GetAddOnMetadata and GetAddOnMetadata("ChattyChattyBangBang", "Version")
 if type(metadataVersion) ~= "string" or metadataVersion == "" then
 	metadataVersion = FALLBACK_VERSION
@@ -176,6 +176,23 @@ local defaults = {
 				actionButtonStyle = "text",
 				actionStripCollapsed = false,
 				actionStripOrientation = "horizontal",
+				appearance = {
+					schema = 1,
+					transparency = {
+						backgroundAlpha = 1,
+						borderAlpha = 1,
+						textAlpha = 1,
+						overallAlpha = 1,
+					},
+					colors = {
+						window = { mode = "inherit" },
+						title = { mode = "inherit" },
+						tabs = { mode = "inherit" },
+						chat = { mode = "inherit" },
+						reply = { mode = "inherit" },
+						border = { mode = "inherit" },
+					},
+				},
 				windowWidth = 360,
 				windowHeight = 250,
 			},

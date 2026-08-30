@@ -6,6 +6,7 @@ dofile("Core/Settings.lua")
 local addon = ChattyChattyBangBang
 local settings = addon:GetSmartSettings().conversations
 local exported = addon:GetMessengerSettings()
+local appearanceTargets = { "window", "title", "tabs", "chat", "reply", "border" }
 
 assert(exported.chromeAutoHide == false, "Messenger chrome auto-hide should be opt-in")
 assert(exported.actionStripCollapsed == false and exported.actionStripOrientation == "horizontal",
@@ -18,6 +19,30 @@ assert(exported.resolvedTitleBarVisibility == "always"
 	and exported.resolvedActionVisibility == "always"
 	and exported.resolvedComposerVisibility == "always",
 	"inherit should preserve the existing always-visible Messenger by default")
+assert(type(addon.GetMessengerAppearanceSettings) == "function",
+	"Messenger appearance getter is unavailable")
+local appearance = addon:GetMessengerAppearanceSettings()
+assert(appearance.schema == 1, "Messenger appearance schema should start at 1")
+assert(appearance.transparency.backgroundAlpha == 1
+	and appearance.transparency.borderAlpha == 1
+	and appearance.transparency.textAlpha == 1
+	and appearance.transparency.overallAlpha == 1,
+	"Messenger transparency should preserve the existing fully opaque appearance by default")
+for _, target in ipairs(appearanceTargets) do
+	assert(type(appearance.colors[target]) == "table" and appearance.colors[target].mode == "inherit",
+		"Messenger " .. target .. " color should inherit from the active theme by default")
+end
+assert(type(exported.appearance) == "table" and exported.appearance.schema == 1,
+	"Messenger settings getter omitted the appearance contract")
+appearance.transparency.backgroundAlpha = 0.25
+appearance.colors.window.mode = "custom"
+exported.appearance.transparency.borderAlpha = 0.25
+exported.appearance.colors.border.mode = "custom"
+assert(settings.appearance.transparency.backgroundAlpha == 1
+	and settings.appearance.transparency.borderAlpha == 1
+	and settings.appearance.colors.window.mode == "inherit"
+	and settings.appearance.colors.border.mode == "inherit",
+	"Messenger appearance getters leaked nested SavedVariables tables")
 exported.titleBarVisibility = "hidden"
 assert(settings.titleBarVisibility == "inherit", "Messenger getter leaked SavedVariables")
 
@@ -46,6 +71,18 @@ assert(ok and value == "auto" and settings.composerVisibility == "auto",
 ok, value = addon:SetMessengerElementVisibility("title", "on click")
 assert(ok and value == "click" and settings.titleBarVisibility == "click",
 	"on-click Messenger visibility did not normalize")
+ok, value = addon:SetMessengerElementVisibility("actions", "collapsed")
+assert(ok and value == "collapsed" and settings.actionVisibility == "collapsed",
+	"collapsed Player Actions visibility did not persist")
+exported = addon:GetMessengerSettings()
+assert(exported.resolvedActionVisibility == "collapsed",
+	"collapsed Player Actions visibility did not resolve independently")
+assert(not addon:SetMessengerElementVisibility("title", "collapsed")
+	and settings.titleBarVisibility == "click",
+	"collapsed visibility was accepted for the Messenger title bar")
+assert(not addon:SetMessengerElementVisibility("composer", "collapsed")
+	and settings.composerVisibility == "auto",
+	"collapsed visibility was accepted for the Messenger reply field")
 assert(not addon:SetMessengerElementVisibility("unknown", "always"),
 	"unknown Messenger region was accepted")
 assert(not addon:SetMessengerElementVisibility("title", "sometimes"),
@@ -64,6 +101,71 @@ assert(not addon:SetMessengerActionStripOrientation("diagonal"),
 ok, value = addon:SetMessengerActionStripCollapsed(true)
 assert(ok and value == true and settings.actionStripCollapsed == true,
 	"Messenger collapsed action-strip preference did not persist")
+
+assert(type(addon.SetMessengerBackgroundAlpha) == "function"
+	and type(addon.SetMessengerBorderAlpha) == "function"
+	and type(addon.SetMessengerTextAlpha) == "function"
+	and type(addon.SetMessengerOverallAlpha) == "function",
+	"Messenger transparency setters are unavailable")
+ok, value = addon:SetMessengerBackgroundAlpha(4)
+assert(ok and value == 1 and settings.appearance.transparency.backgroundAlpha == 1,
+	"Messenger background alpha did not clamp to 1")
+ok, value = addon:SetMessengerBorderAlpha(-2)
+assert(ok and value == 0 and settings.appearance.transparency.borderAlpha == 0,
+	"Messenger border alpha did not clamp to 0")
+ok, value = addon:SetMessengerTextAlpha(0.35)
+assert(ok and value == 0.35 and settings.appearance.transparency.textAlpha == 0.35,
+	"Messenger text alpha did not persist")
+ok, value = addon:SetMessengerOverallAlpha(0.6)
+assert(ok and value == 0.6 and settings.appearance.transparency.overallAlpha == 0.6,
+	"Messenger overall alpha did not persist")
+assert(not addon:SetMessengerOverallAlpha("opaque")
+	and settings.appearance.transparency.overallAlpha == 0.6,
+	"invalid Messenger alpha was accepted or changed the saved value")
+
+assert(type(addon.SetMessengerAppearanceColor) == "function",
+	"Messenger appearance color setter is unavailable")
+assert(addon:SetMessengerAppearanceColor("window", "inherit")
+	and settings.appearance.colors.window.mode == "inherit",
+	"Messenger color setter rejected theme inheritance")
+assert(addon:SetMessengerAppearanceColor("title", "accent")
+	and settings.appearance.colors.title.mode == "theme"
+	and settings.appearance.colors.title.theme == "accent",
+	"Messenger color setter rejected a valid theme token")
+assert(addon:SetMessengerAppearanceColor("chat", {
+	mode = "custom",
+	r = 0.2,
+	g = 0.4,
+	b = 0.6,
+}) and settings.appearance.colors.chat.mode == "custom"
+	and settings.appearance.colors.chat.r == 0.2
+	and settings.appearance.colors.chat.g == 0.4
+	and settings.appearance.colors.chat.b == 0.6,
+	"Messenger color setter did not normalize custom RGB")
+assert(not addon:SetMessengerAppearanceColor("unknown", "accent"),
+	"unknown Messenger appearance color target was accepted")
+assert(not addon:SetMessengerAppearanceColor("tabs", "not-a-theme-token"),
+	"invalid Messenger theme token was accepted")
+
+appearance = addon:GetMessengerAppearanceSettings()
+appearance.colors.chat.r = 0.9
+assert(settings.appearance.colors.chat.r == 0.2,
+	"Messenger appearance getter leaked a custom color table")
+assert(type(addon.ResetMessengerAppearance) == "function",
+	"Messenger appearance reset is unavailable")
+assert(addon:ResetMessengerAppearance())
+appearance = addon:GetMessengerAppearanceSettings()
+assert(appearance.transparency.backgroundAlpha == 1
+	and appearance.transparency.borderAlpha == 1
+	and appearance.transparency.textAlpha == 1
+	and appearance.transparency.overallAlpha == 1,
+	"Messenger appearance reset did not restore transparency defaults")
+for _, target in ipairs(appearanceTargets) do
+	assert(appearance.colors[target].mode == "inherit",
+		"Messenger appearance reset did not restore the " .. target .. " color default")
+end
+assert(settings.actionStripCollapsed == true and settings.actionVisibility == "collapsed",
+	"Messenger appearance reset changed legacy Player Actions preferences")
 assert(addon:SetMessengerPopupWhispersEnabled(false))
 assert(settings.autoOpenWhispers == false, "popup-whisper setting did not persist")
 assert(addon:SetMessengerCombatDeferralEnabled(false))
@@ -88,5 +190,15 @@ assert(settings.titleBarVisibility == "hidden"
 	and settings.actionStripCollapsed == true
 	and settings.actionStripOrientation == "vertical",
 	"legacy/malformed Messenger visibility values were not normalized")
+assert(settings.appearance.schema == 1
+	and settings.appearance.transparency.backgroundAlpha == 1
+	and settings.appearance.transparency.borderAlpha == 1
+	and settings.appearance.transparency.textAlpha == 1
+	and settings.appearance.transparency.overallAlpha == 1,
+	"legacy Messenger profiles did not receive appearance defaults")
+for _, target in ipairs(appearanceTargets) do
+	assert(settings.appearance.colors[target].mode == "inherit",
+		"legacy Messenger profile did not inherit the " .. target .. " color")
+end
 
 print("MessengerSettings.mock.lua: PASS")

@@ -233,6 +233,23 @@ local settings = {
 		actionButtonStyle = "text",
 		actionStripCollapsed = true,
 		actionStripOrientation = "horizontal",
+		appearance = {
+			schema = 1,
+			transparency = {
+				backgroundAlpha = 0.63,
+				borderAlpha = 0.42,
+				textAlpha = 0.71,
+				overallAlpha = 0.84,
+			},
+			colors = {
+				window = { mode = "inherit" },
+				title = { mode = "inherit" },
+				tabs = { mode = "inherit" },
+				chat = { mode = "inherit" },
+				reply = { mode = "inherit" },
+				border = { mode = "inherit" },
+			},
+		},
 	},
 	views = {
 		general = true,
@@ -277,7 +294,12 @@ function addon:GetMessengerSettings()
 		resolvedTitleBarVisibility = resolved(conversations.titleBarVisibility),
 		resolvedActionVisibility = resolved(conversations.actionVisibility),
 		resolvedComposerVisibility = resolved(conversations.composerVisibility),
+		appearance = conversations.appearance,
 	}
+end
+
+function addon:GetMessengerAppearanceSettings()
+	return settings.conversations.appearance
 end
 
 function addon:SetMessengerPopupWhispersEnabled(value) settings.conversations.autoOpenWhispers = value return true end
@@ -291,6 +313,27 @@ end
 function addon:SetMessengerActionButtonStyle(style) settings.conversations.actionButtonStyle = style return true end
 function addon:SetMessengerActionStripCollapsed(value) settings.conversations.actionStripCollapsed = value and true or false return true end
 function addon:SetMessengerActionStripOrientation(value) settings.conversations.actionStripOrientation = value return true end
+function addon:SetMessengerBackgroundAlpha(value) settings.conversations.appearance.transparency.backgroundAlpha = value return true, value end
+function addon:SetMessengerBorderAlpha(value) settings.conversations.appearance.transparency.borderAlpha = value return true, value end
+function addon:SetMessengerTextAlpha(value) settings.conversations.appearance.transparency.textAlpha = value return true, value end
+function addon:SetMessengerOverallAlpha(value) settings.conversations.appearance.transparency.overallAlpha = value return true, value end
+function addon:SetMessengerAppearanceColor(target, spec)
+	settings.conversations.appearance.colors[target] = spec
+	return true, spec
+end
+function addon:ResetMessengerAppearance()
+	local appearance = settings.conversations.appearance
+	appearance.transparency = {
+		backgroundAlpha = 1,
+		borderAlpha = 1,
+		textAlpha = 1,
+		overallAlpha = 1,
+	}
+	for _, target in ipairs({ "window", "title", "tabs", "chat", "reply", "border" }) do
+		appearance.colors[target] = { mode = "inherit" }
+	end
+	return true
+end
 
 function addon:GetSmartViews()
 	return views
@@ -467,18 +510,21 @@ assert(config.messengerSection == "opening"
 	"Messenger did not open on its attached OPENING pane")
 assert(config.messengerSectionGroups.opening[1]:IsShown()
 	and not config.messengerSectionGroups.visibility[1]:IsShown()
-	and not config.messengerSectionGroups.actions[1]:IsShown(),
+	and not config.messengerSectionGroups.actions[1]:IsShown()
+	and not config.messengerSectionGroups.appearance[1]:IsShown(),
 	"Messenger panes were not mutually exclusive at startup")
 assert(config.messengerSectionButtons.opening.point[4] == 8
 	and config.messengerSectionButtons.opening.point[5] == -48,
 	"Messenger section tabs lost their eight-pixel outer gutter")
 local sectionTabsWidth = config.messengerSectionButtons.opening.width
 	+ config.messengerSectionButtons.visibility.width
-	+ config.messengerSectionButtons.actions.width + 12
+	+ config.messengerSectionButtons.actions.width
+	+ config.messengerSectionButtons.appearance.width + 18
 assert(sectionTabsWidth <= 636
 	and config.messengerSectionButtons.visibility.point[4] == 6
-	and config.messengerSectionButtons.actions.point[4] == 6,
-	"Messenger attached tabs overflow or lost their six-pixel control gutters")
+	and config.messengerSectionButtons.actions.point[4] == 6
+	and config.messengerSectionButtons.appearance.point[4] == 6,
+	"Messenger's four attached tabs overflow or lost their six-pixel control gutters")
 
 config:SetMessengerSection("visibility")
 assert(config.messengerSection == "visibility"
@@ -487,7 +533,8 @@ assert(config.messengerSection == "visibility"
 	"Messenger attached-tab selection did not switch cleanly")
 assert(not config.messengerSectionGroups.opening[1]:IsShown()
 	and config.messengerSectionGroups.visibility[1]:IsShown()
-	and not config.messengerSectionGroups.actions[1]:IsShown(),
+	and not config.messengerSectionGroups.actions[1]:IsShown()
+	and not config.messengerSectionGroups.appearance[1]:IsShown(),
 	"Messenger switching left controls from another pane visible")
 assert(config.messengerVisibilityRows.title and config.messengerVisibilityRows.actions
 	and config.messengerVisibilityRows.composer,
@@ -501,11 +548,19 @@ for _, element in ipairs({ "title", "actions", "composer" }) do
 		assert(button.parent == config.messengerPage, "Messenger visibility choice escaped its page")
 	end
 end
+assert(config.messengerVisibilityRows.actions.buttons.collapsed,
+	"Player Actions did not expose its dedicated COLLAPSED policy")
+assert(not config.messengerVisibilityRows.title.buttons.collapsed
+	and not config.messengerVisibilityRows.composer.buttons.collapsed,
+	"COLLAPSED leaked into a Messenger region other than Player Actions")
 local modeOrder = { "inherit", "always", "auto", "click", "hidden" }
 for _, element in ipairs({ "title", "actions", "composer" }) do
 	local row = config.messengerVisibilityRows[element]
 	local width = 0
-	for index, mode in ipairs(modeOrder) do
+	local rowModeOrder = element == "actions"
+		and { "inherit", "always", "auto", "click", "collapsed", "hidden" }
+		or modeOrder
+	for index, mode in ipairs(rowModeOrder) do
 		local button = row.buttons[mode]
 		assert(button.width >= button.text:GetStringWidth() + 10,
 			"Messenger mode button no longer reserves live-font side padding")
@@ -528,10 +583,15 @@ config.messengerVisibilityRows.title.buttons.click.scripts.OnClick()
 assert(settings.conversations.titleBarVisibility == "click"
 	and config.messengerVisibilityRows.title.resolved:GetText() == "NOW: ON CLICK",
 	"Messenger title-bar ON CLICK choice did not persist and refresh")
+config.messengerVisibilityRows.actions.buttons.collapsed.scripts.OnClick()
+assert(settings.conversations.actionVisibility == "collapsed"
+	and config.messengerVisibilityRows.actions.resolved:GetText() == "NOW: COLLAPSED",
+	"Player Actions COLLAPSED policy did not persist and refresh")
 
 config:SetMessengerSection("actions")
 assert(config.messengerSectionGroups.actions[1]:IsShown()
-	and not config.messengerSectionGroups.visibility[1]:IsShown(),
+	and not config.messengerSectionGroups.visibility[1]:IsShown()
+	and not config.messengerSectionGroups.appearance[1]:IsShown(),
 	"Messenger ACTIONS pane did not exclusively replace VISIBILITY")
 config.messengerIconButtons.scripts.OnClick()
 assert(settings.conversations.actionButtonStyle == "icons",
@@ -543,6 +603,159 @@ assert(settings.conversations.actionStripOrientation == "vertical"
 config.messengerActionCollapsedToggle:SetValue(false)
 assert(settings.conversations.actionStripCollapsed == false,
 	"Messenger start-collapsed control did not use the public setter")
+
+config:SetMessengerSection("appearance")
+assert(config.messengerSection == "appearance"
+	and config.messengerSectionButtons.appearance._configTabSelected == true,
+	"Messenger APPEARANCE did not become the selected attached pane")
+assert(not config.messengerSectionGroups.opening[1]:IsShown()
+	and not config.messengerSectionGroups.visibility[1]:IsShown()
+	and not config.messengerSectionGroups.actions[1]:IsShown()
+	and config.messengerSectionGroups.appearance[1]:IsShown(),
+	"Messenger APPEARANCE did not exclusively replace every sibling pane")
+
+local appearanceAlphaEdits = config.messengerAppearanceAlphaEdits
+assert(appearanceAlphaEdits.backgroundAlpha:GetText() == "63"
+	and appearanceAlphaEdits.borderAlpha:GetText() == "42"
+	and appearanceAlphaEdits.textAlpha:GetText() == "71"
+	and appearanceAlphaEdits.overallAlpha:GetText() == "84",
+	"Messenger opacity fields did not read their saved percentages")
+appearanceAlphaEdits.backgroundAlpha:SetText("37")
+appearanceAlphaEdits.backgroundAlpha.scripts.OnEditFocusLost()
+assert(settings.conversations.appearance.transparency.backgroundAlpha == 0.37
+	and appearanceAlphaEdits.backgroundAlpha:GetText() == "37",
+	"Messenger background opacity field did not use its live setter")
+
+local targetOrder = { "window", "title", "tabs", "chat", "reply", "border" }
+local presetOrder = { "inherit", "background", "surface", "surfaceRaised", "inset", "accent", "gold" }
+for _, target in ipairs(targetOrder) do
+	assert(config.messengerAppearanceTargetButtons[target],
+		"Messenger APPEARANCE omitted the " .. target .. " color part")
+end
+for _, preset in ipairs(presetOrder) do
+	assert(config.messengerAppearancePresetButtons[preset],
+		"Messenger APPEARANCE omitted the " .. preset .. " color preset")
+end
+assert(#config.messengerAppearanceColorEdits == 3
+	and config.messengerAppearanceApplyColorButton
+	and config.messengerAppearanceInheritButton
+	and config.messengerAppearanceResetButton,
+	"Messenger APPEARANCE omitted its custom RGB or reset controls")
+
+config.messengerAppearanceTargetButtons.chat.scripts.OnClick()
+config.messengerAppearancePresetButtons.accent.scripts.OnClick()
+assert(settings.conversations.appearance.colors.chat.mode == "theme"
+	and settings.conversations.appearance.colors.chat.theme == "accent",
+	"Messenger color preset did not apply to the selected part")
+for index, value in ipairs({ "32", "64", "128" }) do
+	config.messengerAppearanceColorEdits[index]:SetText(value)
+end
+config.messengerAppearanceApplyColorButton.scripts.OnClick()
+local customChat = settings.conversations.appearance.colors.chat
+assert(customChat.mode == "custom"
+	and math.abs(customChat.r - (32 / 255)) < 0.0001
+	and math.abs(customChat.g - (64 / 255)) < 0.0001
+	and math.abs(customChat.b - (128 / 255)) < 0.0001,
+	"Messenger custom RGB controls did not wire through the selected part")
+
+local function appearanceRegionWidth(region)
+	if tonumber(region.width) then return tonumber(region.width) end
+	return region.GetStringWidth and region:GetStringWidth() or 0
+end
+
+local function appearanceRegionHeight(region)
+	if tonumber(region.height) then return tonumber(region.height) end
+	-- Every unboxed APPEARANCE label uses a compact small FontObject. Ten
+	-- logical pixels is the reviewed line box in the fixed 652x508 workspace.
+	return 10
+end
+
+local function appearanceRegionLeft(region)
+	local point = assert(region.point, "Messenger APPEARANCE control lost its anchor")
+	local anchor, relative, relativePoint = point[1], point[2], point[3]
+	local x = tonumber(point[4]) or 0
+	if relative == config.messengerPage then
+		assert(anchor == "TOPLEFT", "Messenger APPEARANCE used an unreviewed page anchor")
+		return x
+	end
+	local relativeLeft = appearanceRegionLeft(relative)
+	if anchor == "LEFT" and relativePoint == "RIGHT" then
+		return relativeLeft + appearanceRegionWidth(relative) + x
+	elseif anchor == "RIGHT" and relativePoint == "LEFT" then
+		return relativeLeft + x - appearanceRegionWidth(region)
+	elseif anchor == "TOPLEFT" and relativePoint == "BOTTOMLEFT" then
+		return relativeLeft + x
+	end
+	error("Messenger APPEARANCE used an unsupported relative anchor")
+end
+
+local function appearanceRegionTop(region)
+	local point = assert(region.point, "Messenger APPEARANCE control lost its anchor")
+	local anchor, relative, relativePoint = point[1], point[2], point[3]
+	local y = tonumber(point[5]) or 0
+	if relative == config.messengerPage then
+		return -y
+	end
+	local relativeTop = appearanceRegionTop(relative)
+	if (anchor == "LEFT" and relativePoint == "RIGHT")
+		or (anchor == "RIGHT" and relativePoint == "LEFT") then
+		return relativeTop + ((appearanceRegionHeight(relative) - appearanceRegionHeight(region)) / 2) - y
+	elseif anchor == "TOPLEFT" and relativePoint == "BOTTOMLEFT" then
+		return relativeTop + appearanceRegionHeight(relative) - y
+	end
+	error("Messenger APPEARANCE used an unsupported vertical anchor")
+end
+
+local appearanceRects = {}
+local maximumAppearanceBottom = 0
+for index, control in ipairs(config.messengerSectionGroups.appearance) do
+	local left = appearanceRegionLeft(control)
+	local top = appearanceRegionTop(control)
+	local right = left + appearanceRegionWidth(control)
+	local bottom = top + appearanceRegionHeight(control)
+	assert(left >= 8 and right <= 644,
+		"Messenger APPEARANCE control " .. index .. " escaped the x=8..644 safe lane")
+	assert(top >= 132 and bottom <= 460,
+		"Messenger APPEARANCE control " .. index .. " escaped the y=132..460 safe lane")
+	appearanceRects[#appearanceRects + 1] = {
+		control = control, left = left, right = right, top = top, bottom = bottom,
+	}
+	maximumAppearanceBottom = math.max(maximumAppearanceBottom, bottom)
+end
+
+for leftIndex = 1, #appearanceRects - 1 do
+	local leftRect = appearanceRects[leftIndex]
+	for rightIndex = leftIndex + 1, #appearanceRects do
+		local rightRect = appearanceRects[rightIndex]
+		local overlaps = leftRect.left < rightRect.right and rightRect.left < leftRect.right
+			and leftRect.top < rightRect.bottom and rightRect.top < leftRect.bottom
+		assert(not overlaps,
+			"Messenger APPEARANCE controls " .. leftIndex .. " and " .. rightIndex .. " overlap")
+	end
+end
+
+for _, target in ipairs(targetOrder) do
+	assert(config.messengerAppearanceTargetButtons[target].point[4] == 6,
+		"Messenger color-part hit targets lost their six-pixel gutter")
+end
+for index, preset in ipairs(presetOrder) do
+	local point = config.messengerAppearancePresetButtons[preset].point
+	if index == 5 then
+		assert(point[1] == "TOPLEFT" and point[3] == "BOTTOMLEFT"
+			and point[4] == 0 and point[5] == -4,
+			"Messenger preset wrap lost its four-pixel vertical gutter")
+	else
+		assert(point[4] == 6,
+			"Messenger color-preset hit targets lost their six-pixel gutter")
+	end
+end
+assert(config.messengerAppearanceApplyColorButton.point[4] == 8
+	and config.messengerAppearanceResetButton.point[4] == 8,
+	"Messenger appearance action buttons lost their eight-pixel gutters")
+
+local messengerStatusTop = -config.messengerStatus.point[5]
+assert(messengerStatusTop == 474 and messengerStatusTop - maximumAppearanceBottom >= 14,
+	"Messenger APPEARANCE controls collide with the persistent status row")
 assert(config.messengerStatus.point[4] == 8 and config.messengerStatus.point[5] == -474,
 	"Messenger status escaped the reviewed 652x508 workspace")
 

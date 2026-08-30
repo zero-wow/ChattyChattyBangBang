@@ -16,6 +16,13 @@ Window.__index = Window
 local MAX_TABS = 12
 local MAX_HISTORY = 200
 local MAX_PENDING = 12
+local MESSAGE_SCROLLBAR_RIGHT_INSET = 3
+local MESSAGE_SCROLLBAR_VERTICAL_INSET = 4
+local MESSAGE_SCROLLBAR_THUMB_WIDTH = 6
+local MESSAGE_SCROLLBAR_MIN_THUMB_HEIGHT = 18
+local MESSAGE_SCROLL_TO_BOTTOM_WIDTH = 10
+local MESSAGE_SCROLL_TO_BOTTOM_HEIGHT = 14
+local MESSAGE_SCROLL_TO_BOTTOM_GAP = 4
 
 local whisperEvents = {
 	CHAT_MSG_WHISPER = true,
@@ -206,6 +213,42 @@ local function getActionButtonStyle()
 	return getConversationSettings().actionButtonStyle == "icons" and "icons" or "text"
 end
 
+local function getMessengerAppearance()
+	if type(addon.GetMessengerAppearanceSettings) == "function" then
+		local ok, appearance = pcall(addon.GetMessengerAppearanceSettings, addon)
+		if ok and type(appearance) == "table" then
+			return appearance
+		end
+	end
+	local stored = getConversationSettings().appearance
+	stored = type(stored) == "table" and stored or {}
+	local transparency = type(stored.transparency) == "table" and stored.transparency or {}
+	return {
+		transparency = {
+			backgroundAlpha = math.max(0, math.min(1, tonumber(transparency.backgroundAlpha) or 1)),
+			borderAlpha = math.max(0, math.min(1, tonumber(transparency.borderAlpha) or 1)),
+			textAlpha = math.max(0, math.min(1, tonumber(transparency.textAlpha) or 1)),
+			overallAlpha = math.max(0, math.min(1, tonumber(transparency.overallAlpha) or 1)),
+		},
+		colors = type(stored.colors) == "table" and stored.colors or {},
+	}
+end
+
+local function resolveAppearanceColor(spec)
+	if type(spec) ~= "table" or spec.mode == "inherit" or spec.mode == nil then
+		return nil
+	end
+	if spec.mode == "theme" and type(spec.theme) == "string" and Theme.GetColor then
+		return Theme:GetColor(spec.theme)
+	end
+	if spec.mode == "custom" then
+		return math.max(0, math.min(1, tonumber(spec.r) or 1)),
+			math.max(0, math.min(1, tonumber(spec.g) or 1)),
+			math.max(0, math.min(1, tonumber(spec.b) or 1)), 1
+	end
+	return nil
+end
+
 local function normalizeVisibilityMode(value)
 	value = type(value) == "string" and string.lower(value) or "inherit"
 	if value == "show" or value == "shown" then
@@ -214,11 +257,13 @@ local function normalizeVisibilityMode(value)
 		value = "auto"
 	elseif value == "onclick" then
 		value = "click"
+	elseif value == "compact" then
+		value = "collapsed"
 	elseif value == "hide" then
 		value = "hidden"
 	end
 	if value ~= "inherit" and value ~= "always" and value ~= "auto"
-		and value ~= "click" and value ~= "hidden" then
+		and value ~= "click" and value ~= "collapsed" and value ~= "hidden" then
 		value = "inherit"
 	end
 	return value
@@ -400,12 +445,115 @@ function Window:UpdateNewButton()
 	self.newButton:Show()
 end
 
+local function setMessengerDisplayScrollOffset(display, offset)
+	offset = math.max(0, math.floor((tonumber(offset) or 0) + 0.5))
+	if display.SetScrollOffset then
+		display:SetScrollOffset(offset)
+		return true
+	end
+	if not display.ScrollToBottom then return false end
+	display:ScrollToBottom()
+	for _ = 1, offset do
+		if not display.ScrollUp then break end
+		display:ScrollUp()
+	end
+	return true
+end
+
+function Window:GetMessageScrollMaximum()
+	local display = self.display
+	if not display then return 0 end
+	local current = display.GetCurrentScroll
+		and math.max(0, math.floor((tonumber(display:GetCurrentScroll()) or 0) + 0.5)) or 0
+	local maximum
+	-- ScrollingMessageFrame exposes its exact wrapped range only through its
+	-- current offset. Probe the top, then restore in the same frame; this keeps
+	-- the thumb accurate for wrapped whispers without adding fake messages.
+	if display.ScrollToTop and display.GetCurrentScroll then
+		display:ScrollToTop()
+		maximum = math.max(0, math.floor((tonumber(display:GetCurrentScroll()) or 0) + 0.5))
+		setMessengerDisplayScrollOffset(display, math.min(current, maximum))
+	else
+		local total = display.GetNumMessages and tonumber(display:GetNumMessages()) or 0
+		local visible = display.GetNumLinesDisplayed and tonumber(display:GetNumLinesDisplayed()) or 0
+		maximum = math.max(0, math.floor(total - visible))
+	end
+	self.messageScrollMaximum = maximum
+	return maximum
+end
+
+function Window:SetMessageScrollbarOffset(value)
+	local display = self.display
+	local scrollBar = self.messageScrollbar
+	if not display or not scrollBar or scrollBar._messageScrollUpdating then return false end
+	local maximum = math.max(0, math.floor(tonumber(scrollBar._messageScrollMaximum)
+		or tonumber(self.messageScrollMaximum) or 0))
+	local sliderValue = math.max(0, math.min(maximum, math.floor((tonumber(value) or 0) + 0.5)))
+	setMessengerDisplayScrollOffset(display, maximum - sliderValue)
+	if maximum - sliderValue == 0 or (display.AtBottom and display:AtBottom()) then
+		local session = self:GetActiveSession()
+		if session then session.pendingVisible = 0 end
+		self:UpdateNewButton()
+	end
+	self:RefreshMessageScrollbar(false)
+	return true
+end
+
+function Window:ScrollMessageDisplayToBottom()
+	if not self.display then return false end
+	if self.display.ScrollToBottom then self.display:ScrollToBottom() end
+	local session = self:GetActiveSession()
+	if session then session.pendingVisible = 0 end
+	self:UpdateNewButton()
+	self:RefreshMessageScrollbar(false)
+	return true
+end
+
+function Window:RefreshMessageScrollbar(recalculate)
+	local scrollBar = self.messageScrollbar
+	local display = self.display
+	if not scrollBar or not display then return false end
+	local maximum = tonumber(self.messageScrollMaximum)
+	if recalculate or maximum == nil then maximum = self:GetMessageScrollMaximum() end
+	maximum = math.max(0, math.floor(tonumber(maximum) or 0))
+	local scrollOffset = display.GetCurrentScroll
+		and math.max(0, math.floor((tonumber(display:GetCurrentScroll()) or 0) + 0.5)) or 0
+	scrollOffset = math.min(maximum, scrollOffset)
+
+	scrollBar._messageScrollUpdating = true
+	scrollBar._messageScrollMaximum = maximum
+	if scrollBar.SetMinMaxValues then scrollBar:SetMinMaxValues(0, maximum) end
+	if scrollBar.SetValue then scrollBar:SetValue(maximum - scrollOffset) end
+	scrollBar._messageScrollUpdating = nil
+
+	local overflow = maximum > 0
+	if scrollBar.Show then scrollBar:Show() end
+	if scrollBar.EnableMouse then scrollBar:EnableMouse(overflow) end
+	if Theme.SetScrollBarThumbVisible then Theme:SetScrollBarThumbVisible(scrollBar, overflow) end
+	if overflow and Theme.SetScrollBarThumbSize then
+		local height = scrollBar.GetHeight and tonumber(scrollBar:GetHeight()) or 0
+		local visible = display.GetNumLinesDisplayed and tonumber(display:GetNumLinesDisplayed()) or 1
+		visible = math.max(1, visible)
+		local thumbHeight = math.max(MESSAGE_SCROLLBAR_MIN_THUMB_HEIGHT,
+			math.floor(height * math.min(1, visible / (visible + maximum)) + 0.5))
+		Theme:SetScrollBarThumbSize(scrollBar, MESSAGE_SCROLLBAR_THUMB_WIDTH, thumbHeight)
+	end
+	local atBottom = scrollOffset == 0 or (display.AtBottom and display:AtBottom())
+	if self.scrollToBottomButton then
+		if overflow and not atBottom then self.scrollToBottomButton:Show()
+		else self.scrollToBottomButton:Hide() end
+	end
+	return overflow
+end
+
 function Window:RenderSession(session)
 	self.display:Clear()
+	self.messageScrollMaximum = nil
 	self.newButton:Hide()
 	if not session then
 		self.empty:SetText("Choose a Messenger tab to begin.")
 		self.empty:Show()
+		self:RefreshMessageScrollbar(true)
 		return
 	end
 
@@ -415,6 +563,7 @@ function Window:RenderSession(session)
 	if not Engine or not Engine.GetMessages or isLocallyIgnored(session.playerName) then
 		self.empty:SetText("No whisper history with this player yet.")
 		self.empty:Show()
+		self:RefreshMessageScrollbar(true)
 		return
 	end
 
@@ -446,6 +595,7 @@ function Window:RenderSession(session)
 		self.empty:SetText("No whisper history with this player yet.")
 		self.empty:Show()
 	end
+	self:RefreshMessageScrollbar(true)
 end
 
 function Window:RebuildHistory()
@@ -479,6 +629,90 @@ function Window:AddRecord(record, suppressScrollNotice)
 		session.pendingVisible = session.pendingVisible + 1
 		self:UpdateNewButton()
 	end
+	self:RefreshMessageScrollbar(true)
+end
+
+function Window:RefreshAppearance()
+	if not self.frame then return false end
+	local appearance = getMessengerAppearance()
+	local transparency = appearance.transparency or {}
+	local backgroundAlpha = math.max(0, math.min(1, tonumber(transparency.backgroundAlpha) or 1))
+	local borderAlpha = math.max(0, math.min(1, tonumber(transparency.borderAlpha) or 1))
+	local textAlpha = math.max(0, math.min(1, tonumber(transparency.textAlpha) or 1))
+	local overallAlpha = math.max(0, math.min(1, tonumber(transparency.overallAlpha) or 1))
+	local colors = type(appearance.colors) == "table" and appearance.colors or {}
+
+	self.frame:SetAlpha(overallAlpha)
+	local panels = {
+		{ frame = self.frame, part = "window" },
+		{ frame = self.header, part = "title" },
+		{ frame = self.tabStrip, part = "tabs" },
+		{ frame = self.content, part = "chat" },
+		{ frame = self.composer, part = "reply" },
+		-- Confirmation keeps its danger palette, but opacity still follows the
+		-- Messenger so it never appears as a disconnected opaque card.
+		{ frame = self.confirm },
+	}
+	local borderR, borderG, borderB, borderA = resolveAppearanceColor(colors.border)
+	for index = 1, #panels do
+		local panel = panels[index].frame
+		if panel then
+			if Theme.SetFrameOpacity then
+				Theme:SetFrameOpacity(panel, backgroundAlpha, borderAlpha)
+			elseif Theme.ApplyFrame and Theme.frames and Theme.frames[panel] then
+				local style = Theme.frames[panel]
+				Theme:ApplyFrame(panel, style.fill, style.border)
+			end
+			local part = panels[index].part
+			local fillR, fillG, fillB, fillA = resolveAppearanceColor(part and colors[part] or nil)
+			if fillR and panel.SetBackdropColor then
+				panel:SetBackdropColor(fillR, fillG, fillB, (fillA or 1) * backgroundAlpha)
+			end
+			if part and borderR and panel.SetBackdropBorderColor then
+				panel:SetBackdropBorderColor(borderR, borderG, borderB, (borderA or 1) * borderAlpha)
+			end
+		end
+	end
+
+	-- SetAlpha multiplies the existing semantic/class/hyperlink colors instead
+	-- of replacing them. Message meaning therefore survives a quieter text
+	-- setting, and WHOLE UI remains a separate outer-frame multiplier.
+	local texts = {}
+	local function addText(region)
+		if region then texts[#texts + 1] = region end
+	end
+	addText(self.title)
+	addText(self.subtitle)
+	addText(self.close and self.close.label)
+	addText(self.empty)
+	addText(self.route)
+	addText(self.placeholder)
+	addText(self.tabPrevious and self.tabPrevious.text)
+	addText(self.tabNext and self.tabNext.text)
+	addText(self.actionToggle and self.actionToggle.text)
+	addText(self.newButton and self.newButton.text)
+	addText(self.send and self.send.text)
+	addText(self.scrollToBottomGlyph)
+	addText(self.confirmTitle)
+	addText(self.confirmText)
+	addText(self.confirmCancel and self.confirmCancel.text)
+	addText(self.confirmAccept and self.confirmAccept.text)
+	for index = 1, #(self.actionButtons or {}) do
+		addText(self.actionButtons[index].text)
+	end
+	for index = 1, #(self.tabPool or {}) do
+		local tab = self.tabPool[index]
+		addText(tab.text)
+		addText(tab.badge)
+		addText(tab.close and tab.close.label)
+	end
+	for index = 1, #texts do
+		local region = texts[index]
+		if region and region.SetAlpha then region:SetAlpha(textAlpha) end
+	end
+	if self.display and self.display.SetAlpha then self.display:SetAlpha(textAlpha) end
+	if self.editBox and self.editBox.SetAlpha then self.editBox:SetAlpha(textAlpha) end
+	return true
 end
 
 function Window:GetVisibilityState()
@@ -500,14 +734,18 @@ function Window:GetVisibilityState()
 		end
 		return mode == "click" and self.clickChromeRevealed == true or false
 	end
+	local actionsCollapsed = isActionStripCollapsed()
+	if actionMode == "collapsed" then
+		actionsCollapsed = self.transientActionsExpanded ~= true
+	end
 	return {
 		titleMode = titleMode,
 		actionMode = actionMode,
 		composerMode = composerMode,
 		actionOrientation = getActionStripOrientation(),
-		actionsCollapsed = isActionStripCollapsed(),
+		actionsCollapsed = actionsCollapsed,
 		title = visible(titleMode),
-		actions = visible(actionMode),
+		actions = actionMode == "collapsed" or visible(actionMode),
 		composer = visible(composerMode, focused or self.transientComposer == true),
 	}
 end
@@ -540,6 +778,12 @@ function Window:SetActionStripCollapsed(collapsed)
 end
 
 function Window:ToggleActionStrip()
+	local settings = getConversationSettings()
+	if resolveVisibilityMode(settings.actionVisibility, settings) == "collapsed" then
+		self.transientActionsExpanded = not self.transientActionsExpanded
+		self:ApplyChromeLayout(true)
+		return self.transientActionsExpanded
+	end
 	return self:SetActionStripCollapsed(not isActionStripCollapsed())
 end
 
@@ -564,6 +808,7 @@ function Window:ApplyChromeLayout(force)
 	local modeSignature = table.concat({ state.titleMode, state.actionMode, state.composerMode }, ":")
 	if self.visibilityModeSignature and self.visibilityModeSignature ~= modeSignature then
 		self.clickChromeRevealed = false
+		self.transientActionsExpanded = false
 		state = self:GetVisibilityState()
 	end
 	self.visibilityModeSignature = modeSignature
@@ -616,6 +861,11 @@ function Window:ApplyChromeLayout(force)
 		if state.actions then
 			self.actionToggle:Show()
 			self.actionToggle:SetLabel(state.actionsCollapsed and "+" or "-")
+			if self.actionToggle.SetTooltip then
+				self.actionToggle:SetTooltip("Player actions", state.actionMode == "collapsed"
+					and "Temporarily show or hide Reply, Invite, Friend, Mute, and Block. This policy always starts collapsed."
+					or "Show or hide Reply, Invite, Friend, Mute, and Block. The choice is saved.")
+			end
 		else
 			self.actionToggle:Hide()
 		end
@@ -653,6 +903,7 @@ function Window:ApplyChromeLayout(force)
 	end
 
 	self:RefreshTabs()
+	self:RefreshAppearance()
 end
 
 function Window:RefreshHoverState()
@@ -702,6 +953,7 @@ function Window:SelectSession(session)
 
 	self.playerName = session.playerName
 	self.playerKey = session.playerKey
+	self.transientActionsExpanded = false
 	self.lastUsed = now()
 	session.lastUsed = self.lastUsed
 	session.unread = 0
@@ -718,7 +970,7 @@ function Window:SelectSession(session)
 			break
 		end
 	end
-	self:RefreshTabs()
+	self:ApplyChromeLayout(true)
 end
 
 function Window:Show(record)
@@ -736,6 +988,7 @@ end
 function Window:Hide()
 	self.transientComposer = false
 	self.clickChromeRevealed = false
+	self.transientActionsExpanded = false
 	self.editBox:ClearFocus()
 	self.confirm:Hide()
 	self.frame:Hide()
@@ -851,6 +1104,7 @@ function Window:CreateTab(session)
 
 	session.tab = tab
 	self.tabPool[#self.tabPool + 1] = tab
+	self:RefreshAppearance()
 	return tab
 end
 
@@ -1100,12 +1354,15 @@ function Window:OnThemeRefresh()
 	if self.frame:IsShown() then
 		self:RebuildHistory()
 	end
+	self:RefreshMessageScrollbar(true)
+	self:RefreshAppearance()
 end
 
 function Window:Reset()
 	self:Hide()
 	self.hovered = false
 	self.clickChromeRevealed = false
+	self.transientActionsExpanded = false
 	self.visibilityModeSignature = nil
 	self.transientComposer = false
 	self.playerName = nil
@@ -1338,7 +1595,14 @@ function Manager:BuildWindow()
 		button:HookScript("OnMouseUp", function(self)
 			setActionIconState(self, "hover")
 		end)
-		button:SetScript("OnClick", definition.callback)
+		button:SetScript("OnClick", function()
+			definition.callback()
+			local settings = getConversationSettings()
+			if resolveVisibilityMode(settings.actionVisibility, settings) == "collapsed" then
+				window.transientActionsExpanded = false
+				window:ApplyChromeLayout(true)
+			end
+		end)
 		addTooltip(button, definition.tooltip)
 		window.actionButtons[#window.actionButtons + 1] = button
 	end
@@ -1373,6 +1637,7 @@ function Manager:BuildWindow()
 			end
 			window:UpdateNewButton()
 		end
+		window:RefreshMessageScrollbar(false)
 	end)
 	display:SetScript("OnHyperlinkClick", function(_, link, text, button)
 		if ChatFrame_OnHyperlinkShow then
@@ -1401,37 +1666,58 @@ function Manager:BuildWindow()
 	empty:SetText("Choose a Messenger tab to begin.")
 	window.empty = empty
 
-	local up = Theme:CreateTightButton(content, "+", 16, false)
-	up:SetPoint("TOPRIGHT", content, "TOPRIGHT", -2, -2)
-	up:SetScript("OnClick", function()
-		display:ScrollUp()
+	local messageScrollbar = Theme:CreateSlimScrollbar(content)
+	messageScrollbar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+		-MESSAGE_SCROLLBAR_VERTICAL_INSET)
+	messageScrollbar:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+		MESSAGE_SCROLLBAR_VERTICAL_INSET + MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP)
+	messageScrollbar:EnableMouseWheel(true)
+	messageScrollbar:SetScript("OnValueChanged", function(_, value)
+		window:SetMessageScrollbarOffset(value)
 	end)
-
-	local down = Theme:CreateTightButton(content, "-", 16, false)
-	down:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -2, 2)
-	down:SetScript("OnClick", function()
-		display:ScrollDown()
+	messageScrollbar:SetScript("OnMouseWheel", function(_, delta)
+		if delta > 0 then display:ScrollUp() else display:ScrollDown() end
 		if display:AtBottom() then
 			local session = window:GetActiveSession()
-			if session then
-				session.pendingVisible = 0
-			end
+			if session then session.pendingVisible = 0 end
 			window:UpdateNewButton()
 		end
+		window:RefreshMessageScrollbar(false)
 	end)
+	window.messageScrollbar = messageScrollbar
+
+	local scrollToBottom = CreateFrame("Button", nil, content)
+	scrollToBottom:SetSize(MESSAGE_SCROLL_TO_BOTTOM_WIDTH, MESSAGE_SCROLL_TO_BOTTOM_HEIGHT)
+	scrollToBottom:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+		MESSAGE_SCROLLBAR_VERTICAL_INSET)
+	local scrollToBottomGlyph = Theme:CreateText(scrollToBottom, "GameFontNormalSmall", "accent")
+	scrollToBottomGlyph:SetAllPoints(scrollToBottom)
+	scrollToBottomGlyph:SetJustifyH("CENTER")
+	scrollToBottomGlyph:SetText("V")
+	scrollToBottom:HookScript("OnEnter", function()
+		Theme:RegisterText(scrollToBottomGlyph, "goldBright")
+	end)
+	scrollToBottom:HookScript("OnLeave", function()
+		Theme:RegisterText(scrollToBottomGlyph, "accent")
+	end)
+	scrollToBottom:SetScript("OnClick", function()
+		window:ScrollMessageDisplayToBottom()
+	end)
+	addTooltip(scrollToBottom, "Go to the latest whisper")
+	scrollToBottom:Hide()
+	window.scrollToBottomButton = scrollToBottom
+	window.scrollToBottomGlyph = scrollToBottomGlyph
 
 	local newButton = Theme:CreateTightButton(content, "NEW", 16, true)
 	newButton:SetPoint("TOPRIGHT", content, "TOPRIGHT", -20, -2)
 	newButton:SetScript("OnClick", function()
-		display:ScrollToBottom()
-		local session = window:GetActiveSession()
-		if session then
-			session.pendingVisible = 0
-		end
-		window:UpdateNewButton()
+		window:ScrollMessageDisplayToBottom()
 	end)
 	newButton:Hide()
 	window.newButton = newButton
+	content:SetScript("OnSizeChanged", function()
+		window:RefreshMessageScrollbar(true)
+	end)
 
 	local composer = Theme:CreatePanel(frame, "surfaceRaised", "borderMuted")
 	composer:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 2, 2)
@@ -1529,6 +1815,7 @@ function Manager:BuildWindow()
 	local confirmTitle = Theme:CreateText(confirm, "GameFontNormal", "danger")
 	confirmTitle:SetPoint("TOPLEFT", confirm, "TOPLEFT", 8, -8)
 	confirmTitle:SetText("Server Ignore")
+	window.confirmTitle = confirmTitle
 
 	local confirmText = Theme:CreateText(confirm, "GameFontHighlightSmall", "text")
 	confirmText:SetPoint("TOPLEFT", confirmTitle, "BOTTOMLEFT", 0, -4)
@@ -1541,16 +1828,20 @@ function Manager:BuildWindow()
 	cancel:SetScript("OnClick", function()
 		confirm:Hide()
 	end)
+	window.confirmCancel = cancel
 
 	local accept = Theme:CreateTightButton(confirm, "ADD TO WOW IGNORE", 20, true)
 	accept:SetPoint("BOTTOMRIGHT", confirm, "BOTTOMRIGHT", -8, 8)
 	accept:SetScript("OnClick", function()
 		window:ApplyServerIgnore()
 	end)
+	window.confirmAccept = accept
 
 	window:RestorePosition()
 	window:UpdateRouteLabel(nil)
 	window:ApplyChromeLayout(true)
+	window:RefreshMessageScrollbar(true)
+	window:RefreshAppearance()
 	return window
 end
 
@@ -1805,6 +2096,7 @@ function Manager:ApplySettings()
 	if self.shell then
 		self.shell.actionsCompactForWidth = nil
 		self.shell:ApplyChromeLayout(true)
+		self.shell:RefreshAppearance()
 	end
 end
 

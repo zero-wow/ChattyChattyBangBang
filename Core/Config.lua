@@ -299,7 +299,7 @@ end
 local function getAddonVersion()
 	local version = addon.GetVersion and addon:GetVersion() or addon.VERSION
 	if type(version) ~= "string" or version == "" then
-		return "2.22.0"
+		return "2.23.0"
 	end
 	return version
 end
@@ -8955,6 +8955,52 @@ local function setMessengerActionStripCollapsed(collapsed)
 	return true, settings.conversations.actionStripCollapsed
 end
 
+local messengerAppearanceDefaultTokens = {
+	window = "background",
+	title = "surfaceRaised",
+	tabs = "surface",
+	chat = "inset",
+	reply = "surfaceRaised",
+	border = "border",
+}
+
+local function getMessengerAppearanceSettings()
+	if type(addon.GetMessengerAppearanceSettings) == "function" then
+		local ok, appearance = pcall(addon.GetMessengerAppearanceSettings, addon)
+		if ok and type(appearance) == "table" then return appearance end
+	end
+	local settings = addon:GetSmartSettings()
+	settings.conversations = settings.conversations or {}
+	settings.conversations.appearance = settings.conversations.appearance or {
+		schema = 1,
+		transparency = { backgroundAlpha = 1, borderAlpha = 1, textAlpha = 1, overallAlpha = 1 },
+		colors = {},
+	}
+	settings.conversations.appearance.transparency = settings.conversations.appearance.transparency or {}
+	settings.conversations.appearance.colors = settings.conversations.appearance.colors or {}
+	return settings.conversations.appearance
+end
+
+local function setMessengerAppearanceAlpha(apiName, key, value)
+	if type(addon[apiName]) == "function" then
+		return addon[apiName](addon, value)
+	end
+	local appearance = getMessengerAppearanceSettings()
+	appearance.transparency[key] = math.max(0, math.min(1, tonumber(value) or 1))
+	applyMessengerRuntime()
+	return true, appearance.transparency[key]
+end
+
+local function setMessengerAppearanceColor(target, spec)
+	if type(addon.SetMessengerAppearanceColor) == "function" then
+		return addon:SetMessengerAppearanceColor(target, spec)
+	end
+	local appearance = getMessengerAppearanceSettings()
+	appearance.colors[target] = spec
+	applyMessengerRuntime()
+	return true, spec
+end
+
 local messengerSectionDefinitions = {
 	opening = {
 		label = "OPENING",
@@ -8971,9 +9017,14 @@ local messengerSectionDefinitions = {
 		heading = "Player actions",
 		hint = "Choose how Reply, Invite, Friend, Chatty Mute, and WoW Ignore are presented.",
 	},
+	appearance = {
+		label = "APPEARANCE",
+		heading = "Appearance",
+		hint = "Tune Messenger surfaces independently while keeping meaningful message colors intact.",
+	},
 }
 
-local messengerSectionOrder = { "opening", "visibility", "actions" }
+local messengerSectionOrder = { "opening", "visibility", "actions", "appearance" }
 
 function Config:SetMessengerSection(section)
 	if not messengerSectionDefinitions[section] then
@@ -9056,6 +9107,41 @@ function Config:RefreshMessengerPage()
 	setChoiceStyle(self.messengerVerticalButton, vertical)
 	if self.messengerActionCollapsedToggle then
 		self.messengerActionCollapsedToggle:SetValue(settings.actionStripCollapsed == true, true)
+		local policyCollapsed = visibility.actions == "collapsed"
+		if policyCollapsed and self.messengerActionCollapsedToggle.Disable then
+			self.messengerActionCollapsedToggle:Disable()
+		elseif not policyCollapsed and self.messengerActionCollapsedToggle.Enable then
+			self.messengerActionCollapsedToggle:Enable()
+		end
+	end
+
+	local appearance = settings.appearance or getMessengerAppearanceSettings()
+	local transparency = appearance.transparency or {}
+	for key, editBox in pairs(self.messengerAppearanceAlphaEdits or {}) do
+		editBox:SetText(tostring(math.floor(((tonumber(transparency[key]) or 1) * 100) + 0.5)))
+	end
+	local target = self.messengerAppearanceColorTarget or "window"
+	if not messengerAppearanceDefaultTokens[target] then target = "window" end
+	self.messengerAppearanceColorTarget = target
+	for id, button in pairs(self.messengerAppearanceTargetButtons or {}) do
+		setChoiceStyle(button, id == target)
+	end
+	local spec = appearance.colors and appearance.colors[target] or { mode = "inherit" }
+	local selectedPreset = spec.mode == "inherit" and "inherit"
+		or (spec.mode == "theme" and spec.theme or nil)
+	for id, button in pairs(self.messengerAppearancePresetButtons or {}) do
+		setChoiceStyle(button, id == selectedPreset)
+	end
+	local r, g, b
+	if spec.mode == "custom" then
+		r, g, b = spec.r, spec.g, spec.b
+	else
+		local token = spec.mode == "theme" and spec.theme or messengerAppearanceDefaultTokens[target]
+		r, g, b = Theme:GetColor(token)
+	end
+	local channels = { r, g, b }
+	for index, editBox in ipairs(self.messengerAppearanceColorEdits or {}) do
+		editBox:SetText(tostring(math.floor(((tonumber(channels[index]) or 1) * 255) + 0.5)))
 	end
 	self:RefreshMessengerSections()
 end
@@ -9135,7 +9221,7 @@ function Config:BuildMessengerPage()
 		setMessengerBoolean("SetMessengerChromeAutoHideEnabled", "chromeAutoHide", value)
 		Config:RefreshMessengerPage()
 	end
-	setControlTooltip(self.messengerChromeAutoHideToggle, "Shared Messenger auto-hide", "Every region set to INHERIT follows this switch. Explicit ALWAYS, MOUSEOVER, ON CLICK, and HIDDEN choices remain independent.")
+	setControlTooltip(self.messengerChromeAutoHideToggle, "Shared Messenger auto-hide", "Every region set to INHERIT follows this switch. Explicit ALWAYS, MOUSEOVER, ON CLICK, COLLAPSED, and HIDDEN choices remain independent.")
 
 	local autoDetail = addVisibility(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
 	autoDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -178)
@@ -9168,8 +9254,20 @@ function Config:BuildMessengerPage()
 		row.resolved:SetJustifyH("RIGHT")
 		table.insert(row.controls, row.resolved)
 		local previous
+		local rowDefinitions = {}
 		for index = 1, #modeDefinitions do
 			local definition = modeDefinitions[index]
+			if element == "actions" and definition.id == "hidden" then
+				rowDefinitions[#rowDefinitions + 1] = {
+					id = "collapsed",
+					label = "COLLAPSED",
+					detail = "Keep the reveal control visible and start closed every time; clicking it opens actions temporarily.",
+				}
+			end
+			rowDefinitions[#rowDefinitions + 1] = definition
+		end
+		for index = 1, #rowDefinitions do
+			local definition = rowDefinitions[index]
 			local button = addVisibility(Theme:CreateTightButton(page, definition.label, 20, false))
 			if previous then
 				button:SetPoint("LEFT", previous, "RIGHT", 6, 0)
@@ -9254,13 +9352,13 @@ function Config:BuildMessengerPage()
 	local collapseTitle = addAction(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
 	collapseTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -304)
 	collapseTitle:SetText("COLLAPSE CONTROL")
-	self.messengerActionCollapsedToggle = addAction(Theme:CreateCompactToggle(page, "START COLLAPSED", PAGE_WIDTH))
+	self.messengerActionCollapsedToggle = addAction(Theme:CreateCompactToggle(page, "REMEMBER COLLAPSED", PAGE_WIDTH))
 	self.messengerActionCollapsedToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -323)
 	self.messengerActionCollapsedToggle.OnValueChanged = function(_, value)
 		setMessengerActionStripCollapsed(value)
 		Config:RefreshMessengerPage()
 	end
-	setControlTooltip(self.messengerActionCollapsedToggle, "Start with compact actions", "Starts the player-action strip behind one compact reveal control. You can expand or collapse it from Messenger at any time.")
+	setControlTooltip(self.messengerActionCollapsedToggle, "Remember manual collapse", "Keeps your last collapsed layout for normal visibility modes. The COLLAPSED visibility policy above always starts closed and ignores this preference.")
 	local collapseDetail = addAction(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
 	collapseDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -351)
 	collapseDetail:SetWidth(PAGE_WIDTH)
@@ -9276,10 +9374,208 @@ function Config:BuildMessengerPage()
 	safetyDetail:SetJustifyH("LEFT")
 	safetyDetail:SetText("Local Mute affects only Chatty. WoW Ignore asks for confirmation. /r selects the matching tab and focuses its TO row.")
 
+	local appearanceControls = {}
+	local function addAppearance(control)
+		table.insert(appearanceControls, control)
+		return control
+	end
+	local opacityTitle = addAppearance(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	opacityTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	opacityTitle:SetText("OPACITY")
+	local opacityHint = addAppearance(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	opacityHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -151)
+	opacityHint:SetWidth(PAGE_WIDTH)
+	opacityHint:SetJustifyH("LEFT")
+	opacityHint:SetText("Background and border stay independent from text. Whole UI multiplies every Messenger element.")
+
+	self.messengerAppearanceAlphaEdits = {}
+	local alphaDefinitions = {
+		{ key = "backgroundAlpha", label = "BACKGROUND %", api = "SetMessengerBackgroundAlpha", x = 116, y = 174 },
+		{ key = "borderAlpha", label = "BORDER %", api = "SetMessengerBorderAlpha", x = 326, y = 174 },
+		{ key = "textAlpha", label = "TEXT %", api = "SetMessengerTextAlpha", x = 116, y = 208 },
+		{ key = "overallAlpha", label = "WHOLE UI %", api = "SetMessengerOverallAlpha", x = 326, y = 208 },
+	}
+	for _, definition in ipairs(alphaDefinitions) do
+		local editBox = addAppearance(Theme:CreateEditBox(page, 64, 22, false))
+		editBox:SetPoint("TOPLEFT", page, "TOPLEFT", definition.x, -definition.y)
+		editBox:SetMaxLetters(3)
+		local label = addAppearance(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+		label:SetPoint("RIGHT", editBox, "LEFT", -8, 0)
+		label:SetWidth(100)
+		label:SetJustifyH("RIGHT")
+		label:SetText(definition.label)
+		setControlTooltip(editBox, definition.label, definition.key == "backgroundAlpha"
+			and "Changes Messenger panel fills without fading text or borders. Use a whole percent from 0 to 100."
+			or (definition.key == "borderAlpha"
+				and "Changes Messenger panel borders without fading text or backgrounds. Use a whole percent from 0 to 100."
+				or (definition.key == "textAlpha"
+					and "Fades Messenger labels and whisper text while preserving their semantic colors. Use a whole percent from 0 to 100."
+					or "Fades the entire Messenger, including text and controls. Use a whole percent from 0 to 100.")))
+		local function commitAlpha()
+			local value = tonumber(editBox:GetText())
+			if not value or value < 0 or value > 100 or value ~= math.floor(value) then
+				Config:RefreshMessengerPage()
+				Config.messengerStatus:SetText("Use a whole opacity percentage from 0 to 100.")
+				return
+			end
+			setMessengerAppearanceAlpha(definition.api, definition.key, value / 100)
+			Config:RefreshMessengerPage()
+			Config.messengerStatus:SetText(definition.label .. " set to " .. tostring(value) .. "%.")
+		end
+		editBox:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
+		editBox:HookScript("OnEditFocusLost", commitAlpha)
+		self.messengerAppearanceAlphaEdits[definition.key] = editBox
+	end
+	self.messengerOpacityResetButton = addAppearance(Theme:CreateTightButton(page, "RESET OPACITY", 22, false))
+	self.messengerOpacityResetButton:SetPoint("TOPLEFT", page, "TOPLEFT", 410, -208)
+	self.messengerOpacityResetButton:SetScript("OnClick", function()
+		setMessengerAppearanceAlpha("SetMessengerBackgroundAlpha", "backgroundAlpha", 1)
+		setMessengerAppearanceAlpha("SetMessengerBorderAlpha", "borderAlpha", 1)
+		setMessengerAppearanceAlpha("SetMessengerTextAlpha", "textAlpha", 1)
+		setMessengerAppearanceAlpha("SetMessengerOverallAlpha", "overallAlpha", 1)
+		Config:RefreshMessengerPage()
+		Config.messengerStatus:SetText("Messenger opacity restored without changing its colors.")
+	end)
+	setControlTooltip(self.messengerOpacityResetButton, "Reset Messenger opacity", "Restores panel, border, text, and whole-window opacity to 100% without changing color choices.")
+
+	local colorsTitle = addAppearance(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	colorsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -246)
+	colorsTitle:SetText("COLORS")
+	local colorsHint = addAppearance(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	colorsHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -265)
+	colorsHint:SetWidth(PAGE_WIDTH)
+	colorsHint:SetJustifyH("LEFT")
+	colorsHint:SetText("INHERIT follows the active Colorway. Presets follow its palette; custom RGB remains fixed.")
+
+	local colorTargetLabel = addAppearance(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	colorTargetLabel:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -292)
+	colorTargetLabel:SetText("PART")
+	self.messengerAppearanceTargetButtons = {}
+	local previousTarget = colorTargetLabel
+	for _, definition in ipairs({
+		{ id = "window", label = "WINDOW" }, { id = "title", label = "TITLE" },
+		{ id = "tabs", label = "TABS" }, { id = "chat", label = "CHAT" },
+		{ id = "reply", label = "REPLY" }, { id = "border", label = "BORDER" },
+	}) do
+		local button = addAppearance(Theme:CreateTightButton(page, definition.label, 20, false))
+		button:SetPoint("LEFT", previousTarget, "RIGHT", 6, 0)
+		button:SetScript("OnClick", function()
+			Config.messengerAppearanceColorTarget = definition.id
+			Config:RefreshMessengerPage()
+		end)
+		setControlTooltip(button, definition.label .. " color", "Choose which Messenger surface the preset and custom RGB controls edit.")
+		self.messengerAppearanceTargetButtons[definition.id] = button
+		previousTarget = button
+	end
+
+	local presetLabel = addAppearance(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	presetLabel:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -326)
+	presetLabel:SetText("PRESET")
+	self.messengerAppearancePresetButtons = {}
+	local previousPreset = presetLabel
+	local firstPresetButton
+	for index, definition in ipairs({
+		{ id = "inherit", label = "INHERIT" },
+		{ id = "background", label = "BACKGROUND" },
+		{ id = "surface", label = "SURFACE" },
+		{ id = "surfaceRaised", label = "RAISED" },
+		{ id = "inset", label = "INSET" },
+		{ id = "accent", label = "ACCENT" },
+		{ id = "gold", label = "GOLD" },
+	}) do
+		local button = addAppearance(Theme:CreateTightButton(page, definition.label, 20, false))
+		if index == 5 then
+			button:SetPoint("TOPLEFT", firstPresetButton, "BOTTOMLEFT", 0, -4)
+		else
+			button:SetPoint("LEFT", previousPreset, "RIGHT", 6, 0)
+		end
+		button:SetScript("OnClick", function()
+			setMessengerAppearanceColor(Config.messengerAppearanceColorTarget or "window",
+				definition.id == "inherit" and { mode = "inherit" }
+					or { mode = "theme", theme = definition.id })
+			Config:RefreshMessengerPage()
+			Config.messengerStatus:SetText(definition.label .. " color applied to " .. string.upper(Config.messengerAppearanceColorTarget or "window") .. ".")
+		end)
+		setControlTooltip(button, definition.label .. " preset", definition.id == "inherit"
+			and "Restores this part's original role in the active Colorway."
+			or "Uses this live Colorway token; changing Themes will update it too.")
+		self.messengerAppearancePresetButtons[definition.id] = button
+		if index == 1 then firstPresetButton = button end
+		previousPreset = button
+	end
+
+	local customLabel = addAppearance(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	customLabel:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -382)
+	customLabel:SetText("CUSTOM RGB")
+	self.messengerAppearanceColorEdits = {}
+	local previousChannel = customLabel
+	for _, channel in ipairs({ "R", "G", "B" }) do
+		local label = addAppearance(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+		label:SetPoint("LEFT", previousChannel, "RIGHT", 6, 0)
+		label:SetText(channel)
+		local editBox = addAppearance(Theme:CreateEditBox(page, 38, 20, false))
+		editBox:SetPoint("LEFT", label, "RIGHT", 3, 0)
+		editBox:SetMaxLetters(3)
+		self.messengerAppearanceColorEdits[#self.messengerAppearanceColorEdits + 1] = editBox
+		previousChannel = editBox
+	end
+	self.messengerAppearanceApplyColorButton = addAppearance(Theme:CreateTightButton(page, "APPLY RGB", 20, true))
+	self.messengerAppearanceApplyColorButton:SetPoint("LEFT", previousChannel, "RIGHT", 8, 0)
+	local function applyCustomMessengerColor()
+		local values = {}
+		for index, editBox in ipairs(Config.messengerAppearanceColorEdits or {}) do
+			local value = tonumber(editBox:GetText())
+			if not value or value < 0 or value > 255 or value ~= math.floor(value) then
+				Config:RefreshMessengerPage()
+				Config.messengerStatus:SetText("Use whole RGB values from 0 to 255.")
+				return
+			end
+			values[index] = value / 255
+		end
+		setMessengerAppearanceColor(Config.messengerAppearanceColorTarget or "window", {
+			mode = "custom", r = values[1], g = values[2], b = values[3],
+		})
+		Config:RefreshMessengerPage()
+		Config.messengerStatus:SetText("Custom RGB applied to " .. string.upper(Config.messengerAppearanceColorTarget or "window") .. ".")
+	end
+	self.messengerAppearanceApplyColorButton:SetScript("OnClick", applyCustomMessengerColor)
+	setControlTooltip(self.messengerAppearanceApplyColorButton, "Apply custom Messenger color", "Applies the RGB values to the selected part and keeps them fixed when the global Colorway changes.")
+	for _, editBox in ipairs(self.messengerAppearanceColorEdits) do
+		editBox:HookScript("OnEnterPressed", function(self) self:ClearFocus(); applyCustomMessengerColor() end)
+	end
+
+	self.messengerAppearanceInheritButton = addAppearance(Theme:CreateTightButton(page, "USE INHERITED COLOR", 22, false))
+	self.messengerAppearanceInheritButton:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -416)
+	self.messengerAppearanceInheritButton:SetScript("OnClick", function()
+		setMessengerAppearanceColor(Config.messengerAppearanceColorTarget or "window", { mode = "inherit" })
+		Config:RefreshMessengerPage()
+		Config.messengerStatus:SetText("Selected Messenger part restored to its Colorway role.")
+	end)
+	self.messengerAppearanceResetButton = addAppearance(Theme:CreateTightButton(page, "RESET APPEARANCE", 22, false))
+	self.messengerAppearanceResetButton:SetPoint("LEFT", self.messengerAppearanceInheritButton, "RIGHT", 8, 0)
+	self.messengerAppearanceResetButton:SetScript("OnClick", function()
+		if type(addon.ResetMessengerAppearance) == "function" then
+			addon:ResetMessengerAppearance()
+		else
+			local settings = addon:GetSmartSettings()
+			settings.conversations.appearance = nil
+			applyMessengerRuntime()
+		end
+		Config:RefreshMessengerPage()
+		Config.messengerStatus:SetText("Messenger opacity and colors restored to defaults.")
+	end)
+	setControlTooltip(self.messengerAppearanceResetButton, "Reset Messenger appearance", "Restores all Messenger opacity and color settings without changing tabs, visibility, or saved conversations.")
+	local appearanceDetail = addAppearance(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	appearanceDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -450)
+	appearanceDetail:SetWidth(PAGE_WIDTH)
+	appearanceDetail:SetJustifyH("LEFT")
+	appearanceDetail:SetText("Semantic text colors and the slim thumb keep their Colorway meaning.")
+
 	self.messengerSectionGroups = {
 		opening = openingControls,
 		visibility = visibilityControls,
 		actions = actionControls,
+		appearance = appearanceControls,
 	}
 	self.messengerStatus = Theme:CreateText(page, "GameFontHighlightSmall", "success")
 	self.messengerStatus:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -474)
@@ -12060,6 +12356,15 @@ function Config:ReloadProfile()
 	self.messengerHorizontalButton = nil
 	self.messengerVerticalButton = nil
 	self.messengerActionCollapsedToggle = nil
+	self.messengerAppearanceAlphaEdits = nil
+	self.messengerOpacityResetButton = nil
+	self.messengerAppearanceColorTarget = nil
+	self.messengerAppearanceTargetButtons = nil
+	self.messengerAppearancePresetButtons = nil
+	self.messengerAppearanceColorEdits = nil
+	self.messengerAppearanceApplyColorButton = nil
+	self.messengerAppearanceInheritButton = nil
+	self.messengerAppearanceResetButton = nil
 	self.semanticRoutesPage = nil
 	self.semanticRouteToggles = nil
 	self.semanticRoutesAvailability = nil
