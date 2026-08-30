@@ -1,5 +1,5 @@
 ChattyChattyBangBang = LibStub("AceAddon-3.0"):NewAddon("ChattyChattyBangBang", "AceConsole-3.0", "AceHook-3.0") 	--, "AceHook-3.0", "AceTimer-3.0", "AceConsole-3.0", "AceEvent-3.0", "LibSink-2.0")
-local FALLBACK_VERSION = "2.23.0"
+local FALLBACK_VERSION = "2.23.1"
 local metadataVersion = GetAddOnMetadata and GetAddOnMetadata("ChattyChattyBangBang", "Version")
 if type(metadataVersion) ~= "string" or metadataVersion == "" then
 	metadataVersion = FALLBACK_VERSION

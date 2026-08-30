@@ -404,6 +404,99 @@ expect(window.composer:IsShown() and window.editBox:HasFocus(), "/r should revea
 expect(window.route:GetText() == "TO ReplyTarget", "reply row should name its destination")
 expect(escaped == ChatFrame1EditBox, "native reply edit box should close after handoff")
 
+-- Enter is the keyboard continuation path: a successful whisper should clear
+-- only the sent draft while keeping the same player's temporarily revealed TO
+-- row focused. The mouse send control retains its old non-stealing behavior,
+-- and aborted sends must leave the user's text and focus exactly as they were.
+local sentWhispers = {}
+local function setReplyText(text)
+	window.editBox:SetText(text)
+	window.editBox.scripts.OnTextChanged(window.editBox)
+end
+SendChatMessage = function(message, chatType, language, target)
+	sentWhispers[#sentWhispers + 1] = {
+		message = message,
+		chatType = chatType,
+		language = language,
+		target = target,
+	}
+end
+local replySession = window:GetActiveSession()
+setReplyText("first reply")
+window.editBox.scripts.OnEnterPressed(window.editBox)
+expect(#sentWhispers == 1 and sentWhispers[1].message == "first reply"
+	and sentWhispers[1].chatType == "WHISPER" and sentWhispers[1].target == "ReplyTarget",
+	"Enter did not send the active Messenger reply to its selected player")
+expect(window.editBox:GetText() == "" and replySession.draft == "",
+	"successful Enter send did not clear only the sent Messenger draft")
+expect(window.playerName == "ReplyTarget" and window.editBox:HasFocus()
+	and window.composer:IsShown() and window.transientComposer == true,
+	"successful Enter send did not retain the focused transient TO row")
+
+setReplyText("   ")
+window.editBox.scripts.OnEnterPressed(window.editBox)
+expect(#sentWhispers == 1 and window.editBox:GetText() == "   "
+	and replySession.draft == "   " and window.editBox:HasFocus(),
+	"empty Enter send changed the Messenger draft or its existing focus")
+
+setReplyText("client unavailable")
+SendChatMessage = nil
+window.editBox.scripts.OnEnterPressed(window.editBox)
+expect(window.editBox:GetText() == "client unavailable"
+	and replySession.draft == "client unavailable" and window.editBox:HasFocus(),
+	"unavailable whisper sending discarded the Messenger draft or focus")
+
+SendChatMessage = function()
+	error("mock whisper failure")
+end
+setReplyText("retry me")
+window.editBox.scripts.OnEnterPressed(window.editBox)
+expect(window.editBox:GetText() == "retry me" and replySession.draft == "retry me"
+	and window.editBox:HasFocus(),
+	"failed whisper sending discarded the Messenger draft or focus")
+
+SendChatMessage = function(message, chatType, language, target)
+	sentWhispers[#sentWhispers + 1] = {
+		message = message,
+		chatType = chatType,
+		language = language,
+		target = target,
+	}
+end
+window.editBox:ClearFocus()
+window:RevealComposer(false)
+setReplyText("mouse send")
+window.send.scripts.OnClick()
+expect(#sentWhispers == 2 and sentWhispers[2].message == "mouse send"
+	and not window.editBox:HasFocus(),
+	"mouse Messenger send stole keyboard focus from another control")
+
+-- A send callback can synchronously change the active conversation (through
+-- another addon hook or client event). Complete the captured send, but never
+-- clear or focus the newly selected player's composer.
+window:SelectSession(replySession)
+window:FocusComposer()
+setReplyText("switching send")
+SendChatMessage = function(message, chatType, language, target)
+	sentWhispers[#sentWhispers + 1] = {
+		message = message,
+		chatType = chatType,
+		language = language,
+		target = target,
+	}
+	Manager:OpenForPlayer("SwitchTarget", true)
+	setReplyText("new target draft")
+	window.editBox:ClearFocus()
+end
+window.editBox.scripts.OnEnterPressed(window.editBox)
+expect(#sentWhispers == 3 and sentWhispers[3].message == "switching send"
+	and sentWhispers[3].target == "ReplyTarget" and replySession.draft == "",
+	"session-changing Messenger send did not complete against its captured target")
+expect(window.playerName == "SwitchTarget" and window.editBox:GetText() == "new target draft"
+	and window:GetActiveSession().draft == "new target draft" and not window.editBox:HasFocus(),
+	"completed Messenger send cleared or focused a newly selected conversation")
+SendChatMessage = nil
+
 settings.conversations.actionButtonStyle = "text"
 failTextures = true
 window.tabStrip:SetWidth(296)

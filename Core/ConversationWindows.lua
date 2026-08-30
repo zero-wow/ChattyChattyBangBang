@@ -1006,6 +1006,9 @@ function Window:Send()
 	if not session or not self.playerName or isLocallyIgnored(self.playerName) then
 		return
 	end
+	local retainFocus = self.editBox and self.editBox.HasFocus and self.editBox:HasFocus() or false
+	local sentPlayerKey = self.playerKey
+	local sentPlayerName = self.playerName
 
 	local message = trim(self.editBox:GetText())
 	if message == "" then
@@ -1018,18 +1021,32 @@ function Window:Send()
 		return
 	end
 
-	local ok, err = pcall(SendChatMessage, message, "WHISPER", nil, self.playerName)
+	local ok, err = pcall(SendChatMessage, message, "WHISPER", nil, sentPlayerName)
 	if not ok then
-		printStatus("Could not whisper " .. self.playerName .. ": " .. tostring(err))
+		printStatus("Could not whisper " .. sentPlayerName .. ": " .. tostring(err))
 		return
 	end
 
 	session.draft = ""
+	-- A synchronous chat hook may select another Messenger tab. The whisper was
+	-- still sent to the captured target, but the shared edit box now belongs to
+	-- the new session and must not be cleared or focused by the old send.
+	if self:GetActiveSession() ~= session or self.playerKey ~= sentPlayerKey then
+		return
+	end
 	self.editBox:SetText("")
-	self.transientComposer = false
-	self.editBox:ClearFocus()
-	self.placeholder:Show()
+	-- Enter means the player is continuing this conversation. Keep the reply
+	-- field active after a successful send, including when REPLY or /r had
+	-- temporarily revealed an otherwise-hidden composer. A mouse-only send from
+	-- an unfocused field must not steal keyboard focus.
+	self.transientComposer = retainFocus
+	if retainFocus then
+		self.placeholder:Hide()
+	else
+		self.placeholder:Show()
+	end
 	self:ApplyChromeLayout(true)
+	if retainFocus then self.editBox:SetFocus() end
 end
 
 function Window:ApplyLocalIgnore()
