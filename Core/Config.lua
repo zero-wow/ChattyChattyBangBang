@@ -299,7 +299,7 @@ end
 local function getAddonVersion()
 	local version = addon.GetVersion and addon:GetVersion() or addon.VERSION
 	if type(version) ~= "string" or version == "" then
-		return "2.23.2"
+		return "2.24.0"
 	end
 	return version
 end
@@ -8955,6 +8955,17 @@ local function setMessengerActionStripCollapsed(collapsed)
 	return true, settings.conversations.actionStripCollapsed
 end
 
+local function setMessengerTabNameMaxLength(value)
+	if type(addon.SetMessengerTabNameMaxLength) == "function" then
+		return addon:SetMessengerTabNameMaxLength(value)
+	end
+	local settings = addon:GetSmartSettings()
+	settings.conversations = settings.conversations or {}
+	settings.conversations.tabNameMaxLength = value
+	applyMessengerRuntime()
+	return true, value
+end
+
 local messengerAppearanceDefaultTokens = {
 	window = "background",
 	title = "surfaceRaised",
@@ -9007,6 +9018,11 @@ local messengerSectionDefinitions = {
 		heading = "Opening",
 		hint = "Choose when a new private conversation opens the shared Messenger window.",
 	},
+	tabs = {
+		label = "TABS",
+		heading = "Conversation tabs",
+		hint = "Choose how much of each player name the Messenger tab rail may show.",
+	},
 	visibility = {
 		label = "VISIBILITY",
 		heading = "Window visibility",
@@ -9024,7 +9040,7 @@ local messengerSectionDefinitions = {
 	},
 }
 
-local messengerSectionOrder = { "opening", "visibility", "actions", "appearance" }
+local messengerSectionOrder = { "opening", "tabs", "visibility", "actions", "appearance" }
 
 function Config:SetMessengerSection(section)
 	if not messengerSectionDefinitions[section] then
@@ -9070,6 +9086,14 @@ function Config:RefreshMessengerPage()
 	end
 	if self.messengerCombatToggle then
 		self.messengerCombatToggle:SetValue(settings.deferInCombat ~= false, true)
+	end
+	if self.messengerTabNameMaxLengthEdit then
+		local tabNameMaxLength = tonumber(settings.tabNameMaxLength)
+		if not tabNameMaxLength or tabNameMaxLength ~= math.floor(tabNameMaxLength)
+			or tabNameMaxLength < 4 or tabNameMaxLength > 32 then
+			tabNameMaxLength = 14
+		end
+		self.messengerTabNameMaxLengthEdit:SetText(tostring(tabNameMaxLength))
 	end
 	if self.messengerChromeAutoHideToggle then
 		self.messengerChromeAutoHideToggle:SetValue(settings.chromeAutoHide == true, true)
@@ -9205,6 +9229,55 @@ function Config:BuildMessengerPage()
 	behaviorDetail:SetWidth(PAGE_WIDTH)
 	behaviorDetail:SetJustifyH("LEFT")
 	behaviorDetail:SetText("New whispers join the existing Messenger shell. /r, Reply, and player-name actions can still open it when automatic opening is off.")
+
+	local tabControls = {}
+	local function addTab(control)
+		table.insert(tabControls, control)
+		return control
+	end
+	self.messengerTabNameLengthTitle = addTab(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	self.messengerTabNameLengthTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	self.messengerTabNameLengthTitle:SetText("PLAYER NAME LENGTH")
+
+	self.messengerTabNameMaxLengthEdit = addTab(Theme:CreateEditBox(page, 54, 22, false))
+	self.messengerTabNameMaxLengthEdit:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -151)
+	self.messengerTabNameMaxLengthEdit:SetMaxLetters(2)
+	setControlTooltip(self.messengerTabNameMaxLengthEdit, "Player name length",
+		"Sets the maximum player-name characters shown on a Messenger tab. Use a whole number from 4 to 32.")
+
+	self.messengerTabNameLengthHint = addTab(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	self.messengerTabNameLengthHint:SetPoint("LEFT", self.messengerTabNameMaxLengthEdit, "RIGHT", 8, 0)
+	self.messengerTabNameLengthHint:SetText("4-32 CHARACTERS")
+
+	self.messengerTabNameLengthDetail = addTab(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	self.messengerTabNameLengthDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -190)
+	self.messengerTabNameLengthDetail:SetWidth(PAGE_WIDTH)
+	self.messengerTabNameLengthDetail:SetHeight(32)
+	self.messengerTabNameLengthDetail:SetJustifyH("LEFT")
+	if self.messengerTabNameLengthDetail.SetJustifyV then
+		self.messengerTabNameLengthDetail:SetJustifyV("TOP")
+	end
+	self.messengerTabNameLengthDetail:SetText("The limit includes '~'. Narrow Messenger windows may shorten names further to keep every tab control usable.")
+
+	local function commitMessengerTabNameMaxLength()
+		local rawValue = tostring(Config.messengerTabNameMaxLengthEdit:GetText() or "")
+		local value = string.match(rawValue, "^%d+$") and tonumber(rawValue) or nil
+		if not value or value ~= math.floor(value) or value < 4 or value > 32 then
+			Config:RefreshMessengerPage()
+			Config.messengerStatus:SetText("Use a whole player-name length from 4 to 32.")
+			return
+		end
+		local ok, saved = setMessengerTabNameMaxLength(value)
+		Config:RefreshMessengerPage()
+		if ok == false then
+			Config.messengerStatus:SetText("Player-name length could not be changed.")
+			return
+		end
+		saved = tonumber(saved) or value
+		Config.messengerStatus:SetText("Messenger player-name length set to " .. tostring(saved) .. " characters.")
+	end
+	self.messengerTabNameMaxLengthEdit:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
+	self.messengerTabNameMaxLengthEdit:HookScript("OnEditFocusLost", commitMessengerTabNameMaxLength)
 
 	local visibilityControls = {}
 	local function addVisibility(control)
@@ -9573,6 +9646,7 @@ function Config:BuildMessengerPage()
 
 	self.messengerSectionGroups = {
 		opening = openingControls,
+		tabs = tabControls,
 		visibility = visibilityControls,
 		actions = actionControls,
 		appearance = appearanceControls,
@@ -12349,6 +12423,10 @@ function Config:ReloadProfile()
 	self.messengerStatus = nil
 	self.messengerWhispersToggle = nil
 	self.messengerCombatToggle = nil
+	self.messengerTabNameLengthTitle = nil
+	self.messengerTabNameMaxLengthEdit = nil
+	self.messengerTabNameLengthHint = nil
+	self.messengerTabNameLengthDetail = nil
 	self.messengerChromeAutoHideToggle = nil
 	self.messengerVisibilityRows = nil
 	self.messengerTextButtons = nil

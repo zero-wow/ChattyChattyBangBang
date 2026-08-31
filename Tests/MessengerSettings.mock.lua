@@ -11,6 +11,11 @@ local appearanceTargets = { "window", "title", "tabs", "chat", "reply", "border"
 assert(exported.chromeAutoHide == false, "Messenger chrome auto-hide should be opt-in")
 assert(exported.actionStripCollapsed == false and exported.actionStripOrientation == "horizontal",
 	"Messenger actions should start expanded on the tab row")
+assert(settings.tabNameMaxLength == 14 and exported.tabNameMaxLength == 14,
+	"Messenger tab-name length should default to 14 total visible characters")
+assert(exported.minimumTabNameLength == 4 and exported.maximumTabNameLength == 32
+	and exported.tabNameTruncationMarker == "~",
+	"Messenger tab-name settings getter omitted its bounds or compact truncation marker")
 assert(exported.titleBarVisibility == "inherit"
 	and exported.actionVisibility == "inherit"
 	and exported.composerVisibility == "inherit",
@@ -51,7 +56,27 @@ addon.ConversationWindows = {
 	ApplySettings = function() refreshes = refreshes + 1 end,
 }
 
-local ok, value = addon:SetMessengerChromeAutoHideEnabled(true)
+assert(type(addon.SetMessengerTabNameMaxLength) == "function",
+	"Messenger tab-name maximum setter is unavailable")
+local ok, value = addon:SetMessengerTabNameMaxLength("20")
+assert(ok and value == 20 and settings.tabNameMaxLength == 20 and refreshes == 1,
+	"Messenger tab-name maximum did not accept an integer edit-box value or refresh live")
+local invalidTabNameLengths = { 3, 33, 20.5, "20.5", "twenty", math.huge, -math.huge }
+for _, invalid in ipairs(invalidTabNameLengths) do
+	local previousRefreshes = refreshes
+	local accepted, reason = addon:SetMessengerTabNameMaxLength(invalid)
+	assert(not accepted and reason == "invalid-length"
+		and settings.tabNameMaxLength == 20 and refreshes == previousRefreshes,
+		"invalid Messenger tab-name maximum changed settings or refreshed the window")
+end
+local previousRefreshes = refreshes
+local accepted, reason = addon:SetMessengerTabNameMaxLength(nil)
+assert(not accepted and reason == "invalid-length"
+	and settings.tabNameMaxLength == 20 and refreshes == previousRefreshes,
+	"nil Messenger tab-name maximum changed settings or refreshed the window")
+refreshes = 0
+
+ok, value = addon:SetMessengerChromeAutoHideEnabled(true)
 assert(ok and value == true and refreshes == 1, "shared Messenger auto-hide did not refresh live")
 exported = addon:GetMessengerSettings()
 assert(exported.resolvedTitleBarVisibility == "auto"
@@ -180,6 +205,7 @@ addon.db.profile.smartChat = {
 		actionButtonStyle = "icon",
 		actionStripCollapsed = true,
 		actionStripOrientation = "right",
+		tabNameMaxLength = "far too long",
 	},
 }
 settings = addon:GetSmartSettings().conversations
@@ -188,8 +214,13 @@ assert(settings.titleBarVisibility == "hidden"
 	and settings.composerVisibility == "always"
 	and settings.actionButtonStyle == "icons"
 	and settings.actionStripCollapsed == true
-	and settings.actionStripOrientation == "vertical",
+	and settings.actionStripOrientation == "vertical"
+	and settings.tabNameMaxLength == 14,
 	"legacy/malformed Messenger visibility values were not normalized")
+settings.tabNameMaxLength = 100
+settings = addon:GetSmartSettings().conversations
+assert(settings.tabNameMaxLength == 14,
+	"out-of-range legacy Messenger tab-name maximum was not repaired to the default")
 assert(settings.appearance.schema == 1
 	and settings.appearance.transparency.backgroundAlpha == 1
 	and settings.appearance.transparency.borderAlpha == 1

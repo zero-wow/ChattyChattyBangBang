@@ -233,6 +233,7 @@ local settings = {
 		actionButtonStyle = "text",
 		actionStripCollapsed = true,
 		actionStripOrientation = "horizontal",
+		tabNameMaxLength = 14,
 		appearance = {
 			schema = 1,
 			transparency = {
@@ -291,6 +292,7 @@ function addon:GetMessengerSettings()
 		actionButtonStyle = conversations.actionButtonStyle,
 		actionStripCollapsed = conversations.actionStripCollapsed,
 		actionStripOrientation = conversations.actionStripOrientation,
+		tabNameMaxLength = conversations.tabNameMaxLength,
 		resolvedTitleBarVisibility = resolved(conversations.titleBarVisibility),
 		resolvedActionVisibility = resolved(conversations.actionVisibility),
 		resolvedComposerVisibility = resolved(conversations.composerVisibility),
@@ -313,6 +315,14 @@ end
 function addon:SetMessengerActionButtonStyle(style) settings.conversations.actionButtonStyle = style return true end
 function addon:SetMessengerActionStripCollapsed(value) settings.conversations.actionStripCollapsed = value and true or false return true end
 function addon:SetMessengerActionStripOrientation(value) settings.conversations.actionStripOrientation = value return true end
+local messengerTabNameMaxLengthSetterCalls = 0
+function addon:SetMessengerTabNameMaxLength(value)
+	messengerTabNameMaxLengthSetterCalls = messengerTabNameMaxLengthSetterCalls + 1
+	assert(type(value) == "number" and value == math.floor(value) and value >= 4 and value <= 32,
+		"Messenger config passed an invalid player-name length to its public setter")
+	settings.conversations.tabNameMaxLength = value
+	return true, value
+end
 function addon:SetMessengerBackgroundAlpha(value) settings.conversations.appearance.transparency.backgroundAlpha = value return true, value end
 function addon:SetMessengerBorderAlpha(value) settings.conversations.appearance.transparency.borderAlpha = value return true, value end
 function addon:SetMessengerTextAlpha(value) settings.conversations.appearance.transparency.textAlpha = value return true, value end
@@ -509,6 +519,7 @@ assert(config.messengerSection == "opening"
 	and config.messengerSectionButtons.opening._configTabSelected == true,
 	"Messenger did not open on its attached OPENING pane")
 assert(config.messengerSectionGroups.opening[1]:IsShown()
+	and not config.messengerSectionGroups.tabs[1]:IsShown()
 	and not config.messengerSectionGroups.visibility[1]:IsShown()
 	and not config.messengerSectionGroups.actions[1]:IsShown()
 	and not config.messengerSectionGroups.appearance[1]:IsShown(),
@@ -517,14 +528,72 @@ assert(config.messengerSectionButtons.opening.point[4] == 8
 	and config.messengerSectionButtons.opening.point[5] == -48,
 	"Messenger section tabs lost their eight-pixel outer gutter")
 local sectionTabsWidth = config.messengerSectionButtons.opening.width
+	+ config.messengerSectionButtons.tabs.width
 	+ config.messengerSectionButtons.visibility.width
 	+ config.messengerSectionButtons.actions.width
-	+ config.messengerSectionButtons.appearance.width + 18
+	+ config.messengerSectionButtons.appearance.width + 24
 assert(sectionTabsWidth <= 636
+	and config.messengerSectionButtons.tabs.point[4] == 6
 	and config.messengerSectionButtons.visibility.point[4] == 6
 	and config.messengerSectionButtons.actions.point[4] == 6
 	and config.messengerSectionButtons.appearance.point[4] == 6,
-	"Messenger's four attached tabs overflow or lost their six-pixel control gutters")
+	"Messenger's five attached tabs overflow or lost their six-pixel control gutters")
+
+config:SetMessengerSection("tabs")
+assert(config.messengerSection == "tabs"
+	and config.messengerSectionButtons.tabs._configTabSelected == true
+	and config.messengerSectionButtons.opening._configTabSelected == false,
+	"Messenger TABS did not become the selected attached pane")
+assert(not config.messengerSectionGroups.opening[1]:IsShown()
+	and config.messengerSectionGroups.tabs[1]:IsShown()
+	and not config.messengerSectionGroups.visibility[1]:IsShown()
+	and not config.messengerSectionGroups.actions[1]:IsShown()
+	and not config.messengerSectionGroups.appearance[1]:IsShown(),
+	"Messenger TABS did not exclusively replace every sibling pane")
+assert(config.messengerTabNameMaxLengthEdit:GetText() == "14",
+	"Messenger player-name length did not read its saved/default value")
+assert(config.messengerTabNameLengthTitle:GetText() == "PLAYER NAME LENGTH"
+	and config.messengerTabNameLengthHint:GetText() == "4-32 CHARACTERS"
+	and string.find(config.messengerTabNameLengthDetail:GetText(), "includes '~'", 1, true)
+	and string.find(config.messengerTabNameLengthDetail:GetText(), "Narrow Messenger windows", 1, true),
+	"Messenger TABS did not explain its range, marker, and narrow-window behavior")
+assert(config.messengerTabNameLengthTitle.point[4] == 8
+	and config.messengerTabNameLengthTitle.point[5] == -132
+	and config.messengerTabNameMaxLengthEdit.point[4] == 8
+	and config.messengerTabNameMaxLengthEdit.point[5] == -151,
+	"Messenger TABS controls escaped their reviewed top-left lane")
+assert(config.messengerTabNameMaxLengthEdit.width == 54
+	and config.messengerTabNameMaxLengthEdit.height == 22
+	and config.messengerTabNameLengthHint.point[1] == "LEFT"
+	and config.messengerTabNameLengthHint.point[2] == config.messengerTabNameMaxLengthEdit
+	and config.messengerTabNameLengthHint.point[3] == "RIGHT"
+	and config.messengerTabNameLengthHint.point[4] == 8,
+	"Messenger TABS numeric row lost its explicit eight-pixel gutter")
+assert(config.messengerTabNameLengthDetail.point[4] == 8
+	and config.messengerTabNameLengthDetail.point[5] == -190
+	and config.messengerTabNameLengthDetail.width == 636
+	and config.messengerTabNameLengthDetail.height == 32,
+	"Messenger TABS explanation escaped the x=8..644 / y=132..460 safe area")
+local tabsMaximumBottom = math.max(142, 151 + 22, 190 + 32)
+assert(-config.messengerStatus.point[5] - tabsMaximumBottom >= 14,
+	"Messenger TABS controls collide with the persistent status row")
+
+config.messengerTabNameMaxLengthEdit:SetText("24")
+config.messengerTabNameMaxLengthEdit.scripts.OnEditFocusLost()
+assert(settings.conversations.tabNameMaxLength == 24
+	and messengerTabNameMaxLengthSetterCalls == 1
+	and config.messengerTabNameMaxLengthEdit:GetText() == "24"
+	and config.messengerStatus:GetText() == "Messenger player-name length set to 24 characters.",
+	"Messenger player-name length did not commit through its public setter")
+for _, invalid in ipairs({ "3", "33", "8.", "12.5", "name" }) do
+	config.messengerTabNameMaxLengthEdit:SetText(invalid)
+	config.messengerTabNameMaxLengthEdit.scripts.OnEditFocusLost()
+	assert(settings.conversations.tabNameMaxLength == 24
+		and messengerTabNameMaxLengthSetterCalls == 1
+		and config.messengerTabNameMaxLengthEdit:GetText() == "24"
+		and config.messengerStatus:GetText() == "Use a whole player-name length from 4 to 32.",
+		"Messenger player-name length accepted invalid input: " .. invalid)
+end
 
 config:SetMessengerSection("visibility")
 assert(config.messengerSection == "visibility"
@@ -532,6 +601,7 @@ assert(config.messengerSection == "visibility"
 	and config.messengerSectionButtons.opening._configTabSelected == false,
 	"Messenger attached-tab selection did not switch cleanly")
 assert(not config.messengerSectionGroups.opening[1]:IsShown()
+	and not config.messengerSectionGroups.tabs[1]:IsShown()
 	and config.messengerSectionGroups.visibility[1]:IsShown()
 	and not config.messengerSectionGroups.actions[1]:IsShown()
 	and not config.messengerSectionGroups.appearance[1]:IsShown(),
@@ -590,6 +660,7 @@ assert(settings.conversations.actionVisibility == "collapsed"
 
 config:SetMessengerSection("actions")
 assert(config.messengerSectionGroups.actions[1]:IsShown()
+	and not config.messengerSectionGroups.tabs[1]:IsShown()
 	and not config.messengerSectionGroups.visibility[1]:IsShown()
 	and not config.messengerSectionGroups.appearance[1]:IsShown(),
 	"Messenger ACTIONS pane did not exclusively replace VISIBILITY")
@@ -609,6 +680,7 @@ assert(config.messengerSection == "appearance"
 	and config.messengerSectionButtons.appearance._configTabSelected == true,
 	"Messenger APPEARANCE did not become the selected attached pane")
 assert(not config.messengerSectionGroups.opening[1]:IsShown()
+	and not config.messengerSectionGroups.tabs[1]:IsShown()
 	and not config.messengerSectionGroups.visibility[1]:IsShown()
 	and not config.messengerSectionGroups.actions[1]:IsShown()
 	and config.messengerSectionGroups.appearance[1]:IsShown(),

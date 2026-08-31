@@ -7,6 +7,24 @@ local fontStrings = {}
 local themedButtons = {}
 local slimScrollbars = {}
 local failTextures = false
+local function utf8MockLength(text)
+	text = tostring(text or "")
+	local count, cursor = 0, 1
+	while cursor <= string.len(text) do
+		local first = string.byte(text, cursor) or 0
+		if first >= 240 then
+			cursor = cursor + 4
+		elseif first >= 224 then
+			cursor = cursor + 3
+		elseif first >= 192 then
+			cursor = cursor + 2
+		else
+			cursor = cursor + 1
+		end
+		count = count + 1
+	end
+	return count
+end
 local function newFrame(kind, parent)
 	local object = {
 		kind = kind,
@@ -67,12 +85,26 @@ local function newFrame(kind, parent)
 	end
 	function object:SetText(value) self.textValue = tostring(value or "") end
 	function object:GetText() return self.textValue end
-	function object:GetStringWidth() return string.len(self.textValue or "") * 6 end
+	function object:GetStringWidth()
+		return utf8MockLength(self.textValue or "") * (tonumber(self.glyphWidth) or 6)
+	end
 	function object:SetTextColor(...) self.textColor = { ... } end
 	function object:SetLabel(value)
 		self.labelValue = tostring(value or "")
 		if self.text then self.text:SetText(self.labelValue) end
+		if rawget(self, "textAutoFit") == true and self.text then
+			self.width = math.max(tonumber(self.height) or 1,
+				math.ceil(self.text:GetStringWidth()) + 10)
+		end
 	end
+	function object:SetTextAutoFit(enabled)
+		self.textAutoFit = enabled and true or false
+		if self.textAutoFit and self.text then
+			self.width = math.max(tonumber(self.height) or 1,
+				math.ceil(self.text:GetStringWidth()) + 10)
+		end
+	end
+	function object:SetTooltip(title, body) self.tooltipTitle, self.tooltipBody = title, body end
 	function object:SetTheme(...) self.theme = { ... } end
 	function object:CreateTexture()
 		local texture = newFrame("Texture", self)
@@ -228,6 +260,7 @@ local settings = {
 		actionButtonStyle = "text",
 		actionStripCollapsed = false,
 		actionStripOrientation = "horizontal",
+		tabNameMaxLength = 14,
 		appearance = {
 			transparency = {
 				backgroundAlpha = 1,
@@ -258,6 +291,16 @@ ChattyChattyBangBang = {
 function ChattyChattyBangBang:GetSmartSettings() return settings end
 function ChattyChattyBangBang:GetMessengerAppearanceSettings()
 	return settings.conversations.appearance
+end
+local messengerSettingsReads = 0
+function ChattyChattyBangBang:GetMessengerSettings()
+	messengerSettingsReads = messengerSettingsReads + 1
+	return {
+		tabNameMaxLength = settings.conversations.tabNameMaxLength,
+		minimumTabNameLength = 4,
+		maximumTabNameLength = 32,
+		tabNameTruncationMarker = "~",
+	}
 end
 
 assert(loadfile("Core/ConversationWindows.lua"))()
@@ -543,6 +586,97 @@ for _, key in ipairs(Manager.tabOrder) do
 end
 expect(window.confirm:GetWidth() == 284,
 	"server-ignore confirmation does not preserve an eight-pixel minimum-shell gutter")
+
+-- Player-tab names have a saved character budget, and the single-character
+-- marker is part of that budget. Changing the setting must refresh existing
+-- tabs without changing the independent TO/route label behavior.
+settings.conversations.tabNameMaxLength = 14
+local longNameWindow = Manager:OpenForPlayer("abcdefghijklmnop", true)
+local longNameSession = longNameWindow:GetActiveSession()
+local longNameTab = longNameSession.tab
+expect(longNameTab.text:GetText() == "abcdefghijklm~"
+	and not string.find(longNameTab.text:GetText(), "%.%.%."),
+	"Messenger tab did not count its compact ~ marker inside the fourteen-character limit")
+expect(longNameTab.tooltipTitle == "abcdefghijklmnop"
+	and longNameTab.tooltipBody == "~ marks a shortened name.",
+	"shortened Messenger tab did not expose its full player name and marker explanation")
+
+settings.conversations.tabNameMaxLength = 8
+Manager:ApplySettings()
+expect(longNameTab.text:GetText() == "abcdefg~",
+	"live Messenger setting refresh did not apply the eight-character tab-name limit")
+expect(window.route:GetText() == "TO abcdefghijk...",
+	"Messenger tab-name setting leaked into the independent TO/route label")
+
+local unicodeWindow = Manager:OpenForPlayer("ÅngströmLong", true)
+local unicodeSession = unicodeWindow:GetActiveSession()
+expect(unicodeSession.tab.text:GetText() == "Ångströ~",
+	"Messenger tab truncation split or byte-counted a UTF-8 player name")
+expect(utf8MockLength(unicodeSession.tab.text:GetText()) == 8,
+	"UTF-8 Messenger tab marker was not included in the visible character limit")
+
+-- Natural sizing follows the live font instead of the old 118px ceiling.
+-- The larger reserve must compact the action strip before it steals the name
+-- lane, and the final 300px fit must still leave the unread badge and close x
+-- with explicit gutters.
+Manager:SelectSession(longNameSession.playerKey)
+settings.conversations.tabNameMaxLength = 14
+longNameSession.unread = 123
+longNameTab.text.glyphWidth = 12
+window.frame:SetSize(434, 160)
+window.tabStrip:SetWidth(430)
+window.actionsCompactForWidth = nil
+window:ApplyChromeLayout(true)
+window:EnsureTabVisible(longNameSession.playerKey)
+expect(longNameTab.naturalWidth > 118,
+	"wide live Messenger font was still capped by the obsolete 118px tab assumption")
+expect(window.actionsCompactForWidth == true,
+	"Messenger action strip ignored the live natural width of its player tabs")
+
+window.frame:SetSize(300, 160)
+window.tabStrip:SetWidth(296)
+window:ApplyChromeLayout(true)
+window:EnsureTabVisible(longNameSession.playerKey)
+expect(longNameTab:IsShown(), "wide-font Messenger tab was not visible at the 300x160 minimum")
+expect(string.sub(longNameTab.text:GetText(), -1) == "~"
+	and not string.find(longNameTab.text:GetText(), "%.%.%."),
+	"minimum-width Messenger did not use the compact tab-name truncation marker")
+expect(longNameTab.labelMeasuredWidth <= longNameTab.labelAvailableWidth,
+	("wide-font Messenger label hard-clipped at minimum width (%s > %s)")
+		:format(tostring(longNameTab.labelMeasuredWidth), tostring(longNameTab.labelAvailableWidth)))
+expect(longNameTab.text.points[2][2] == longNameTab.badge
+	and longNameTab.text.points[2][4] == -2
+	and longNameTab.badge.points[1][4] == -16
+	and longNameTab.close.points[1][4] == -2,
+	"Messenger tab label did not preserve its unread/close gutters")
+expect(longNameTab.badgeWidth > 0
+	and longNameTab:GetWidth() - longNameTab.labelAvailableWidth
+		>= 4 + 2 + longNameTab.badgeWidth + 16,
+	"Messenger tab fit failed to reserve the unread badge, close x, and intervening gutters")
+expect(longNameTab.minimumWidth >= 4 + 2 + longNameTab.badgeWidth + 16 + 12,
+	"Messenger tab minimum did not preserve room for the wide-font truncation marker")
+
+local completeTabOrder = Manager.tabOrder
+local completeTabOffset = window.tabOffset
+Manager.tabOrder = { longNameSession.playerKey }
+window.tabOffset = 1
+local readsBeforeSingleTabRefresh = messengerSettingsReads
+window:RefreshTabs()
+expect(messengerSettingsReads == readsBeforeSingleTabRefresh + 1,
+	"one Messenger tab layout pass repeatedly normalized settings for each label fit")
+expect(not window.tabPrevious:IsShown() and not window.tabNext:IsShown(),
+	"one oversized Messenger tab displayed useless previous/next pager controls")
+expect(longNameTab.text:GetText() ~= "" and string.sub(longNameTab.text:GetText(), -1) == "~"
+	and longNameTab.labelMeasuredWidth <= longNameTab.labelAvailableWidth,
+	"single constrained Messenger tab lost its visible truncation marker or hard-clipped")
+Manager.tabOrder = completeTabOrder
+window.tabOffset = completeTabOffset
+window:RefreshTabs()
+
+longNameSession.unread = 0
+longNameTab.text.glyphWidth = 6
+settings.conversations.tabNameMaxLength = 14
+window:ApplyChromeLayout(true)
 
 settings.conversations.actionStripOrientation = "vertical"
 settings.conversations.actionStripCollapsed = false

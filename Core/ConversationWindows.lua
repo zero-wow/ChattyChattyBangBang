@@ -23,6 +23,16 @@ local MESSAGE_SCROLLBAR_MIN_THUMB_HEIGHT = 18
 local MESSAGE_SCROLL_TO_BOTTOM_WIDTH = 10
 local MESSAGE_SCROLL_TO_BOTTOM_HEIGHT = 14
 local MESSAGE_SCROLL_TO_BOTTOM_GAP = 4
+local TAB_NAME_DEFAULT_LENGTH = 14
+local TAB_NAME_MIN_LENGTH = 4
+local TAB_NAME_MAX_LENGTH = 32
+local TAB_NAME_TRUNCATION_MARKER = "~"
+local TAB_MINIMUM_WIDTH = 40
+local TAB_TEXT_LEFT_INSET = 4
+local TAB_TEXT_CONTROL_GAP = 2
+local TAB_CLOSE_WIDTH = 11
+local TAB_CLOSE_RIGHT_INSET = 2
+local TAB_BADGE_RIGHT_INSET = 16
 
 local whisperEvents = {
 	CHAT_MSG_WHISPER = true,
@@ -329,6 +339,84 @@ local function compactName(name)
 		return string.sub(name, 1, 11) .. "..."
 	end
 	return name
+end
+
+local function utf8CharacterLength(text, position)
+	local first = string.byte(text, position) or 0
+	if first >= 240 then return 4 end
+	if first >= 224 then return 3 end
+	if first >= 192 then return 2 end
+	return 1
+end
+
+local function utf8CharacterCount(text)
+	text = tostring(text or "")
+	local count, cursor = 0, 1
+	while cursor <= string.len(text) do
+		cursor = cursor + utf8CharacterLength(text, cursor)
+		count = count + 1
+	end
+	return count
+end
+
+local function utf8Prefix(text, characters)
+	text = tostring(text or "")
+	characters = math.max(0, math.floor(tonumber(characters) or 0))
+	local cursor, count = 1, 0
+	while cursor <= string.len(text) and count < characters do
+		cursor = cursor + utf8CharacterLength(text, cursor)
+		count = count + 1
+	end
+	return string.sub(text, 1, cursor - 1)
+end
+
+local function getTabNamePolicy()
+	local policy
+	if type(addon.GetMessengerSettings) == "function" then
+		local ok, values = pcall(addon.GetMessengerSettings, addon)
+		if ok and type(values) == "table" then
+			policy = values
+		end
+	end
+	policy = policy or getConversationSettings()
+	local minimumLength = math.floor(tonumber(policy.minimumTabNameLength)
+		or TAB_NAME_MIN_LENGTH)
+	local maximumLength = math.floor(tonumber(policy.maximumTabNameLength)
+		or TAB_NAME_MAX_LENGTH)
+	minimumLength = math.max(1, minimumLength)
+	maximumLength = math.max(minimumLength, maximumLength)
+	local value = math.floor(tonumber(policy.tabNameMaxLength) or TAB_NAME_DEFAULT_LENGTH)
+	local marker = tostring(policy.tabNameTruncationMarker or TAB_NAME_TRUNCATION_MARKER)
+	if marker == "" then
+		marker = TAB_NAME_TRUNCATION_MARKER
+	end
+	return math.max(minimumLength, math.min(maximumLength, value)), marker
+end
+
+local function truncateTabNameByCharacters(name, maximumLength, marker)
+	name = tostring(name or "")
+	marker = tostring(marker or TAB_NAME_TRUNCATION_MARKER)
+	local characterCount = utf8CharacterCount(name)
+	if characterCount <= maximumLength then
+		return name, false, characterCount
+	end
+	return utf8Prefix(name, maximumLength - utf8CharacterCount(marker)) .. marker,
+		true, maximumLength
+end
+
+local function measureTabLabel(tab, label)
+	label = tostring(label or "")
+	if tab.SetLabel then
+		tab:SetLabel(label)
+	elseif tab.text then
+		tab.text:SetText(label)
+	end
+	local measured = tonumber(tab._themeIntrinsicTextWidth)
+	if not measured and tab.text and tab.text.GetStringWidth then
+		local ok, width = pcall(tab.text.GetStringWidth, tab.text)
+		measured = ok and tonumber(width) or nil
+	end
+	return measured or (utf8CharacterCount(label) * 6)
 end
 
 local function addTooltip(button, text)
@@ -1125,29 +1213,104 @@ function Window:CreateTab(session)
 	return tab
 end
 
-function Window:UpdateTab(session)
+function Window:GetTabLabelAvailableWidth(tab, tabWidth)
+	tabWidth = math.max(0, tonumber(tabWidth) or (tab and tab:GetWidth()) or 0)
+	local badgeWidth = tab and tonumber(tab.badgeWidth) or 0
+	local fixedWidth
+	if badgeWidth > 0 then
+		-- The badge's right inset also reserves the close x and the visible
+		-- gutter between those two independent hit/read targets.
+		fixedWidth = TAB_TEXT_LEFT_INSET + TAB_TEXT_CONTROL_GAP
+			+ badgeWidth + TAB_BADGE_RIGHT_INSET
+	else
+		fixedWidth = TAB_TEXT_LEFT_INSET + TAB_TEXT_CONTROL_GAP
+			+ TAB_CLOSE_WIDTH + TAB_CLOSE_RIGHT_INSET
+	end
+	return math.max(0, tabWidth - fixedWidth), fixedWidth
+end
+
+function Window:FitTabLabel(session, tab, tabWidth, maximumLength, marker)
+	if not session or not tab then
+		return "", false
+	end
+
+	local fullName = tostring(session.playerName or "")
+	if maximumLength == nil or marker == nil then
+		maximumLength, marker = getTabNamePolicy()
+	end
+	local markerLength = utf8CharacterCount(marker)
+	local preferredLabel, shortened = truncateTabNameByCharacters(fullName, maximumLength, marker)
+	local availableWidth = self:GetTabLabelAvailableWidth(tab, tabWidth)
+	local label = preferredLabel
+	local measuredWidth = measureTabLabel(tab, label)
+
+	if measuredWidth > availableWidth then
+		local fullLength = utf8CharacterCount(fullName)
+		local prefixLength = math.min(fullLength - markerLength, maximumLength - markerLength)
+		shortened = true
+		while prefixLength >= 0 do
+			label = utf8Prefix(fullName, prefixLength) .. marker
+			measuredWidth = measureTabLabel(tab, label)
+			if measuredWidth <= availableWidth then
+				break
+			end
+			prefixLength = prefixLength - 1
+		end
+		if prefixLength < 0 then
+			label = ""
+			measuredWidth = measureTabLabel(tab, label)
+		end
+	end
+
+	tab.preferredLabel = preferredLabel
+	tab.visibleLabel = label
+	tab.fullPlayerName = fullName
+	tab.nameShortened = shortened
+	tab.labelAvailableWidth = availableWidth
+	tab.labelMeasuredWidth = measuredWidth
+	if tab.SetTooltip then
+		if shortened then
+			tab:SetTooltip(fullName, marker .. " marks a shortened name.")
+		else
+			tab:SetTooltip(nil, nil)
+		end
+	end
+	return label, shortened
+end
+
+function Window:UpdateTab(session, maximumLength, marker)
 	local tab = session.tab or self:CreateTab(session)
-	local label = compactName(session.playerName)
-	tab.text:SetText(label)
 	local unread = tonumber(session.unread) or 0
 	if unread > 0 then
-		tab.badge:SetText(unread > 99 and "99+" or tostring(unread))
+		local badgeLabel = unread > 99 and "99+" or tostring(unread)
+		tab.badge:SetText(badgeLabel)
 		tab.badge:Show()
 		tab.text:ClearAllPoints()
-		tab.text:SetPoint("LEFT", tab, "LEFT", 4, 0)
-		tab.text:SetPoint("RIGHT", tab.badge, "LEFT", -2, 0)
+		tab.text:SetPoint("LEFT", tab, "LEFT", TAB_TEXT_LEFT_INSET, 0)
+		tab.text:SetPoint("RIGHT", tab.badge, "LEFT", -TAB_TEXT_CONTROL_GAP, 0)
+		local measuredBadge = tab.badge.GetStringWidth and tab.badge:GetStringWidth() or nil
+		tab.badgeWidth = math.max(1, math.ceil(tonumber(measuredBadge)
+			or (utf8CharacterCount(badgeLabel) * 6)))
 	else
 		tab.badge:SetText("")
 		tab.badge:Hide()
 		tab.text:ClearAllPoints()
-		tab.text:SetPoint("LEFT", tab, "LEFT", 4, 0)
-		tab.text:SetPoint("RIGHT", tab.close, "LEFT", -2, 0)
+		tab.text:SetPoint("LEFT", tab, "LEFT", TAB_TEXT_LEFT_INSET, 0)
+		tab.text:SetPoint("RIGHT", tab.close, "LEFT", -TAB_TEXT_CONTROL_GAP, 0)
+		tab.badgeWidth = 0
 	end
 
-	local textWidth = tab.text.GetStringWidth and tab.text:GetStringWidth() or (string.len(label) * 6)
-	local badgeWidth = unread > 0 and ((unread > 99 and 18) or (string.len(tostring(unread)) * 6 + 2)) or 0
-	tab.naturalWidth = math.max(46, math.min(118, math.ceil(textWidth) + 20 + badgeWidth))
+	if maximumLength == nil or marker == nil then
+		maximumLength, marker = getTabNamePolicy()
+	end
+	local preferredLabel = truncateTabNameByCharacters(session.playerName, maximumLength, marker)
+	local textWidth = measureTabLabel(tab, preferredLabel)
+	local _, fixedWidth = self:GetTabLabelAvailableWidth(tab, 0)
+	local markerWidth = measureTabLabel(tab, marker)
+	tab.minimumWidth = math.max(TAB_MINIMUM_WIDTH, math.ceil(markerWidth) + fixedWidth)
+	tab.naturalWidth = math.max(tab.minimumWidth, math.ceil(textWidth) + fixedWidth)
 	tab:SetWidth(tab.naturalWidth)
+	self:FitTabLabel(session, tab, tab.naturalWidth, maximumLength, marker)
 	if session.playerKey == self.playerKey then
 		tab:SetTheme("accentSoft", "gold", "goldBright")
 	else
@@ -1164,10 +1327,18 @@ function Window:RefreshActionButtonSizing(state, stripWidth)
 	local compact = false
 	if state.actions and not state.actionsCollapsed and orientation == "horizontal"
 		and getActionButtonStyle() == "text" then
-		-- Reserve one maximum-width player tab and both pager controls. Unlike a
-		-- fixed pixel breakpoint, this responds to the live font metrics, the
-		-- hidden-header close button, and the actual action-label widths.
-		local required = 2 + 118 + 38 + 4
+		-- Reserve one maximum-width player tab and, when siblings exist, both
+		-- pager controls. Unlike a fixed pixel breakpoint, this responds to the
+		-- live font metrics, hidden-header close button, and action-label widths.
+		local tabReserve = TAB_MINIMUM_WIDTH
+		for index = 1, #(Manager.tabOrder or {}) do
+			local session = Manager.sessionsByKey[Manager.tabOrder[index]]
+			local tab = session and session.tab
+			tabReserve = math.max(tabReserve,
+				tonumber(tab and tab.naturalWidth) or tonumber(tab and tab:GetWidth()) or 0)
+		end
+		local pagerReserve = #(Manager.tabOrder or {}) > 1 and (38 + 4) or 4
+		local required = 2 + tabReserve + pagerReserve
 		if not state.title then
 			required = required + 18
 		end
@@ -1186,10 +1357,14 @@ end
 
 function Window:RefreshTabs()
 	local order = Manager.tabOrder or {}
+	-- One normalized policy snapshot is enough for every tab in this layout pass.
+	-- GetSmartSettings performs profile normalization, so repeating it for every
+	-- label/pixel-fit would make each incoming whisper needlessly expensive.
+	local maximumLength, marker = getTabNamePolicy()
 	for index = 1, #order do
 		local session = Manager.sessionsByKey[order[index]]
 		if session then
-			self:UpdateTab(session)
+			self:UpdateTab(session, maximumLength, marker)
 		end
 	end
 
@@ -1240,7 +1415,9 @@ function Window:RefreshTabs()
 		end
 	end
 
-	local controlsVisible = total > (stripWidth - rightReserve)
+	-- A single tab can be shortened in place; showing inactive < / > controls
+	-- would only steal more of its label lane. Pagers exist to reach siblings.
+	local controlsVisible = #order > 1 and total > (stripWidth - rightReserve)
 	local available = stripWidth - rightReserve - (controlsVisible and 38 or 4)
 	available = math.max(40, available)
 	self.tabAvailableWidth = available
@@ -1262,12 +1439,16 @@ function Window:RefreshTabs()
 			tab:Hide()
 			if index >= self.tabOffset then
 				local naturalWidth = tonumber(tab.naturalWidth) or tab:GetWidth()
+				local minimumWidth = math.min(available,
+					tonumber(tab.minimumWidth) or TAB_MINIMUM_WIDTH)
 				local leadingGap = previous and 2 or 0
 				local remaining = math.max(0, available - used - leadingGap)
 				local fittedWidth = math.min(naturalWidth, remaining)
 				local nextWidth = fittedWidth + leadingGap
-				if (not previous) or (fittedWidth >= 40 and used + nextWidth <= available) then
-					tab:SetWidth(math.max(40, fittedWidth))
+				if (not previous) or (fittedWidth >= minimumWidth and used + nextWidth <= available) then
+					local appliedWidth = math.max(minimumWidth, fittedWidth)
+					tab:SetWidth(appliedWidth)
+					self:FitTabLabel(session, tab, appliedWidth, maximumLength, marker)
 					tab:ClearAllPoints()
 					if previous then
 						tab:SetPoint("LEFT", previous, "RIGHT", 2, 0)
@@ -1276,7 +1457,7 @@ function Window:RefreshTabs()
 					end
 					tab:Show()
 					previous = tab
-					used = used + math.max(40, fittedWidth) + leadingGap
+					used = used + appliedWidth + leadingGap
 				end
 			end
 		end

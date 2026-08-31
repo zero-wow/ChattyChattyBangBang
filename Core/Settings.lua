@@ -30,6 +30,10 @@ local BUILT_IN_SOURCE_VIEWS_SCHEMA = 2
 -- again in profiles that already chose a custom tab order.
 local VIEW_SOURCE_MEMBERSHIP_SCHEMA = 1
 local MESSENGER_APPEARANCE_SCHEMA = 1
+local MESSENGER_TAB_NAME_DEFAULT_LENGTH = 14
+local MESSENGER_TAB_NAME_MIN_LENGTH = 4
+local MESSENGER_TAB_NAME_MAX_LENGTH = 32
+local MESSENGER_TAB_NAME_TRUNCATION_MARKER = "~"
 
 local messengerVisibilityAliases = {
 	inherit = "inherit",
@@ -223,6 +227,7 @@ local defaults = {
 		actionButtonStyle = "text",
 		actionStripCollapsed = false,
 		actionStripOrientation = "horizontal",
+		tabNameMaxLength = MESSENGER_TAB_NAME_DEFAULT_LENGTH,
 		appearance = {
 			schema = MESSENGER_APPEARANCE_SCHEMA,
 			transparency = {
@@ -3489,6 +3494,23 @@ local function normalizeMessengerAppearance(conversations)
 	return normalized
 end
 
+local function parseMessengerTabNameMaxLength(value)
+	local length = tonumber(value)
+	if length == nil or length ~= length or length == math.huge or length == -math.huge then
+		return nil
+	end
+	if length % 1 ~= 0
+		or length < MESSENGER_TAB_NAME_MIN_LENGTH
+		or length > MESSENGER_TAB_NAME_MAX_LENGTH then
+		return nil
+	end
+	return length
+end
+
+local function normalizeMessengerTabNameMaxLength(value)
+	return parseMessengerTabNameMaxLength(value) or MESSENGER_TAB_NAME_DEFAULT_LENGTH
+end
+
 local function normalizeDockTransparency(dock)
 	local stored = type(dock.transparency) == "table" and dock.transparency or {}
 	local fallback = defaults.dock.transparency
@@ -3715,6 +3737,7 @@ local function migrateSmartSettings(settings)
 	end
 	conversations.actionStripOrientation = actionStripOrientation
 	conversations.actionStripCollapsed = conversations.actionStripCollapsed == true
+	conversations.tabNameMaxLength = normalizeMessengerTabNameMaxLength(conversations.tabNameMaxLength)
 	conversations.autoOpenWhispers = conversations.autoOpenWhispers ~= false
 	conversations.deferInCombat = conversations.deferInCombat ~= false
 	conversations.chromeAutoHide = conversations.chromeAutoHide == true
@@ -3930,6 +3953,10 @@ function addon:GetMessengerSettings()
 		actionButtonStyle = settings.actionButtonStyle == "icons" and "icons" or "text",
 		actionStripCollapsed = settings.actionStripCollapsed == true,
 		actionStripOrientation = settings.actionStripOrientation == "vertical" and "vertical" or "horizontal",
+		tabNameMaxLength = normalizeMessengerTabNameMaxLength(settings.tabNameMaxLength),
+		minimumTabNameLength = MESSENGER_TAB_NAME_MIN_LENGTH,
+		maximumTabNameLength = MESSENGER_TAB_NAME_MAX_LENGTH,
+		tabNameTruncationMarker = MESSENGER_TAB_NAME_TRUNCATION_MARKER,
 		titleBarVisibility = settings.titleBarVisibility,
 		actionVisibility = settings.actionVisibility,
 		composerVisibility = settings.composerVisibility,
@@ -4024,6 +4051,17 @@ function addon:SetMessengerActionStripOrientation(orientation)
 	settings.actionStripOrientation = orientation
 	refreshMessenger(self)
 	return true, orientation
+end
+
+function addon:SetMessengerTabNameMaxLength(value)
+	local length = parseMessengerTabNameMaxLength(value)
+	if length == nil then
+		return false, "invalid-length"
+	end
+	local settings = self:GetSmartSettings().conversations
+	settings.tabNameMaxLength = length
+	refreshMessenger(self)
+	return true, length
 end
 
 local function setMessengerAppearanceAlpha(owner, key, value)

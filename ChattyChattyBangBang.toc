@@ -6,9 +6,9 @@
 ## Author: Antiarc
 ## OptionalDeps: Ace3, LibSharedMedia-3.0, SharedMedia, LibSink-2.0, LibDataBroker-1.1, LibDBIcon-1.0
 ## X-Category: Chat/Communication
-## Version: 2.23.2
+## Version: 2.24.0
 ## SavedVariables: ChattyChattyBangBangDB
-## X-Curse-Packaged-Version: 2.23.2
+## X-Curse-Packaged-Version: 2.24.0
 ## X-Curse-Project-Name: ChattyChattyBangBang
 ## X-Curse-Project-ID: ChattyChattyBangBang
 ## X-Curse-Repository-ID: wow/ChattyChattyBangBang/mainline
