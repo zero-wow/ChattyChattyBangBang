@@ -45,6 +45,13 @@ local PLAYER_ACTION_BUTTON_GAP = 2
 local PLAYER_ACTION_PANEL_PADDING = 4
 local PLAYER_ACTION_PANEL_WIDE_HEIGHT = 46
 local PLAYER_ACTION_PANEL_COMPACT_HEIGHT = 66
+-- Timed alerts and the player-name action menu are real transient rows, not
+-- paint laid over readable chat. Each panel begins two pixels inside content;
+-- adding its height plus that two-pixel edge run ahead of the display's normal
+-- four-pixel inset leaves a visible four-pixel panel-to-message gutter.
+local TRANSIENT_PANEL_RESERVATION = 2
+local ALERT_PANEL_HEIGHT = 34
+local TRANSIENT_MESSAGE_LINE_HEIGHT_FALLBACK = 12
 -- Resize targets deliberately live inside the existing outer border.  Four
 -- pixels is enough to be easy to acquire without taking a meaningful slice of
 -- the message surface, while four-pixel corners make diagonal resizing
@@ -942,6 +949,14 @@ function Dock:RefreshMessageScrollbar()
 	local scrollBar = self.messageScrollbar
 	local display = self.display
 	if not scrollBar or not display then return false end
+	if self.transientMessageScrollbarSuppressed then
+		scrollBar:Hide()
+		if Theme.SetScrollBarThumbVisible then
+			Theme:SetScrollBarThumbVisible(scrollBar, false)
+		end
+		if self.scrollToBottomButton then self.scrollToBottomButton:Hide() end
+		return false
+	end
 	local settings = addon.GetSmartSettings and addon:GetSmartSettings() or nil
 	local dockSettings = settings and settings.dock or {}
 	local enabled = dockSettings.showScrollButtons ~= false
@@ -1064,10 +1079,18 @@ function Dock:RefreshTransparency()
 			self.content,
 			self.composer,
 			self.composerEditBoxBorder,
-			self.alertBar,
 		}) do
 			if panel then
 				Theme:SetFrameOpacity(panel, appearance.backgroundAlpha, appearance.borderAlpha)
+			end
+		end
+		-- Transient surfaces must stay readable over a deliberately translucent
+		-- chat window. They retain the user's WHOLE UI multiplier through the root
+		-- frame, but never inherit the background/border transparency intended for
+		-- the persistent dock chrome.
+		for _, panel in pairs({ self.alertBar, self.playerActions }) do
+			if panel then
+				Theme:SetFrameOpacity(panel, 1, 1)
 			end
 		end
 	end
@@ -1405,6 +1428,154 @@ end
 
 local function frameIsShown(frame)
 	return frame and frame.IsShown and frame:IsShown()
+end
+
+-- Keep every message-surface child inside the same transient viewport. Alerts
+-- reserve the top lane; player-name actions reserve the bottom lane. Releasing
+-- either lane restores the ordinary four-pixel message inset without rebuilding
+-- history or changing the reader's scroll position.
+function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
+	local content = self.content
+	local display = self.display
+	if not content or not display then return false end
+
+	local settings = addon.GetSmartSettings and addon:GetSmartSettings() or nil
+	local dockSettings = settings and settings.dock or {}
+	local showMessageScrollbar = dockSettings.showScrollButtons ~= false
+	local topInset = 4
+	local bottomInset = 4
+	if self.alertActive and frameIsShown(self.alertBar) then
+		topInset = topInset + math.max(0, tonumber(self.alertBar:GetHeight()) or ALERT_PANEL_HEIGHT)
+			+ TRANSIENT_PANEL_RESERVATION
+	end
+	if frameIsShown(self.playerActions) then
+		bottomInset = bottomInset
+			+ math.max(0, tonumber(self.playerActions:GetHeight()) or PLAYER_ACTION_PANEL_WIDE_HEIGHT)
+			+ TRANSIENT_PANEL_RESERVATION
+	end
+	local rightInset = showMessageScrollbar and MESSAGE_SCROLLBAR_DISPLAY_INSET or 4
+	local contentHeight = content.GetHeight and tonumber(content:GetHeight()) or 0
+	local availableHeight = contentHeight > 0 and math.max(0, contentHeight - topInset - bottomInset) or nil
+	local minimumLineHeight = TRANSIENT_MESSAGE_LINE_HEIGHT_FALLBACK
+	if display.GetFont then
+		local ok, measured = pcall(self.GetDisplayLineHeight, self)
+		if ok and tonumber(measured) then
+			minimumLineHeight = math.max(1, tonumber(measured))
+		end
+	end
+	local suppressDisplay = availableHeight ~= nil and availableHeight < minimumLineHeight
+	local minimumScrollbarHeight = MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP
+		+ MESSAGE_SCROLLBAR_MIN_THUMB_HEIGHT
+	local suppressScrollbar = suppressDisplay
+		or (availableHeight ~= nil and availableHeight < minimumScrollbarHeight)
+	local wasDisplaySuppressed = self.transientMessageViewportSuppressed == true
+	local layoutChanged = self.transientMessageTopInset ~= topInset
+		or self.transientMessageBottomInset ~= bottomInset
+		or self.transientMessageRightInset ~= rightInset
+		or self.transientMessageContentHeight ~= contentHeight
+		or wasDisplaySuppressed ~= suppressDisplay
+		or self.transientMessageScrollbarSuppressed ~= suppressScrollbar
+	local wasAtBottom = not display.AtBottom or display:AtBottom()
+	local previousScroll = display.GetCurrentScroll
+		and math.max(0, math.floor(tonumber(display:GetCurrentScroll()) or 0)) or 0
+	if suppressDisplay and not wasDisplaySuppressed then
+		self.transientMessageDisplayWasShown = frameIsShown(display)
+		self.transientMessageEmptyWasShown = frameIsShown(self.emptyState)
+		self.transientMessageWasAtBottom = wasAtBottom
+	elseif not suppressDisplay and wasDisplaySuppressed then
+		wasAtBottom = self.transientMessageWasAtBottom ~= false
+		-- ScrollingMessageFrame advances a scrolled-up reader's live offset as new
+		-- messages arrive. Keep that current post-arrival value; restoring the stale
+		-- pre-menu snapshot would jump the reader toward newer text on close.
+	end
+
+	self.transientMessageTopInset = topInset
+	self.transientMessageBottomInset = bottomInset
+	self.transientMessageRightInset = rightInset
+	self.transientMessageContentHeight = contentHeight
+	self.transientMessageViewportSuppressed = suppressDisplay
+	self.transientMessageScrollbarSuppressed = suppressScrollbar
+
+	display:ClearAllPoints()
+	display:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -topInset)
+	display:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -rightInset, bottomInset)
+
+	if self.emptyState then
+		self.emptyState:ClearAllPoints()
+		self.emptyState:SetPoint("CENTER", display, "CENTER", 0, 0)
+	end
+	if self.messageScrollbar then
+		self.messageScrollbar:ClearAllPoints()
+		self.messageScrollbar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+			-topInset)
+		self.messageScrollbar:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+			bottomInset + MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP)
+	end
+	if self.scrollToBottomButton then
+		self.scrollToBottomButton:ClearAllPoints()
+		self.scrollToBottomButton:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT",
+			-MESSAGE_SCROLLBAR_RIGHT_INSET, bottomInset)
+	end
+
+	if suppressDisplay then
+		if display.Hide then display:Hide() end
+		if self.emptyState and self.emptyState.Hide then self.emptyState:Hide() end
+		self:HideMessageBands()
+	else
+		if wasDisplaySuppressed then
+			if self.transientMessageDisplayWasShown ~= false and display.Show then display:Show()
+			elseif display.Hide then display:Hide() end
+			if self.emptyState then
+				if self.built and self.activeView and type(self.displayRecords) == "table" then
+					-- Messages can arrive while a tiny transient menu temporarily hides
+					-- the lane. Recompute from the live cache instead of resurrecting a
+					-- stale pre-menu "No messages yet" label over new text.
+					self:UpdateEmptyState(#self.displayRecords)
+				elseif self.transientMessageEmptyWasShown and self.emptyState.Show then
+					self.emptyState:Show()
+				elseif self.emptyState.Hide then
+					self.emptyState:Hide()
+				end
+			end
+			self.transientMessageDisplayWasShown = nil
+			self.transientMessageEmptyWasShown = nil
+			self.transientMessageWasAtBottom = nil
+		end
+	end
+	if suppressScrollbar then
+		if self.messageScrollbar then
+			self.messageScrollbar:Hide()
+			if Theme.SetScrollBarThumbVisible then
+				Theme:SetScrollBarThumbVisible(self.messageScrollbar, false)
+			end
+		end
+		if self.scrollToBottomButton then self.scrollToBottomButton:Hide() end
+	end
+	if suppressDisplay then
+		return true, topInset, bottomInset, true
+	end
+
+	if layoutChanged then
+		if wasAtBottom then
+			if display.ScrollToBottom then display:ScrollToBottom() end
+		elseif display.SetScrollOffset then
+			display:SetScrollOffset(previousScroll)
+		elseif display.ScrollToBottom and display.ScrollUp then
+			display:ScrollToBottom()
+			for _ = 1, previousScroll do display:ScrollUp() end
+		end
+		if skipViewportRefresh then
+			-- Resize drags can fire every frame. Keep transient anchors and safety
+			-- suppression current, then let EndResize perform the one real wrap/
+			-- visible-scope rebuild for the committed geometry.
+			self:RefreshMessageScrollbar()
+		else
+			self:HandleDisplayViewportChanged()
+		end
+	else
+		self:RefreshMessageScrollbar()
+	end
+	return true, topInset, bottomInset
 end
 
 -- GameTooltip is shared with the rest of the UI.  Only dismiss a tooltip when
@@ -2528,6 +2699,10 @@ function Dock:RefreshViews()
 end
 
 function Dock:UpdateEmptyState(count)
+	if self.transientMessageViewportSuppressed then
+		self.emptyState:Hide()
+		return
+	end
 	if count and count > 0 then
 		self.emptyState:Hide()
 	else
@@ -3392,7 +3567,7 @@ function Dock:RefreshMessageBands()
 	local appearance = self:GetMessageBandAppearance()
 	local display = self.display
 	local records = self.displayRecords
-	if not appearance.enabled or appearance.alpha <= 0 or not display
+	if self.transientMessageViewportSuppressed or not appearance.enabled or appearance.alpha <= 0 or not display
 		or type(records) ~= "table" or #records == 0 then
 		self:HideMessageBands()
 		return false
@@ -4029,6 +4204,25 @@ local function setAnalysisRowText(row, value)
 	end
 end
 
+function Dock:RefreshMessageAnalysisLayout()
+	local panel = self.analysisPanel
+	local host = self.frame or self.content
+	if not panel or not host then return false end
+	local hostWidth = host.GetWidth and tonumber(host:GetWidth()) or 0
+	local hostHeight = host.GetHeight and tonumber(host:GetHeight()) or 0
+	local width = 356
+	local height = 154
+	if hostWidth > 0 then
+		width = math.max(1, math.min(width, hostWidth - 8))
+	end
+	if hostHeight > 0 then height = math.max(1, math.min(height, hostHeight - 8)) end
+	panel:ClearAllPoints()
+	panel:SetPoint("TOPRIGHT", host, "TOPRIGHT", -4, -4)
+	panel:SetWidth(width)
+	panel:SetHeight(height)
+	return true, width, height
+end
+
 function Dock:ShowMessageAnalysis(record)
 	if not record or not self.analysisPanel then
 		return false, "unavailable"
@@ -4090,8 +4284,7 @@ function Dock:ShowMessageAnalysis(record)
 			self.analysisFootnote:SetText("Read-only: this message type cannot be rerouted.")
 		end
 	end
-	self.analysisPanel:ClearAllPoints()
-	self.analysisPanel:SetPoint("TOPRIGHT", self.content, "TOPRIGHT", -4, -4)
+	self:RefreshMessageAnalysisLayout()
 	self.analysisPanel:Show()
 	self:ScheduleMessageBlockActionRefresh()
 	return true, analysis
@@ -5672,12 +5865,15 @@ end
 
 function Dock:MarkManualLayoutChange(persist)
 	self.stateRevision = (self.stateRevision or 0) + 1
-	if self.alertPending or self.editReveal then
+	if self.alertPending or self.editReveal or self.playerActionAlertRestore then
 		if self.alertPending then
 			self.alertPending.restoreCancelled = true
 		end
 		if self.editReveal then
 			self.editReveal.restoreCancelled = true
+		end
+		if self.playerActionAlertRestore then
+			self.playerActionAlertRestore.restoreCancelled = true
 		end
 		-- A manual choice adopts the temporarily revealed runtime surface. This
 		-- prevents saved and visible collapse state from drifting apart after an
@@ -6047,7 +6243,6 @@ function Dock:ApplyLayout()
 	-- parent remains shown at alpha zero (see RefreshComposerVisibility), so
 	-- Blizzard can still reveal ChatFrame1EditBox through every native route.
 	local reserveComposerSpace = self:ShouldReserveComposerSpace()
-	local showMessageScrollbar = dockSettings.showScrollButtons ~= false
 	local bottomOffset = reserveComposerSpace and COMPOSER_RESERVED_HEIGHT or COMPOSER_INSET
 	self.composerSpaceReserved = not collapsed and reserveComposerSpace or false
 
@@ -6165,17 +6360,16 @@ function Dock:ApplyLayout()
 		if self.railScroll.SetHorizontalScroll then self.railScroll:SetHorizontalScroll(0) end
 	end
 
-	self.display:ClearAllPoints()
-	self.display:SetPoint("TOPLEFT", self.content, "TOPLEFT", 4, -4)
-	self.display:SetPoint("BOTTOMRIGHT", self.content, "BOTTOMRIGHT",
-		showMessageScrollbar and -MESSAGE_SCROLLBAR_DISPLAY_INSET or -4, 4)
-	if showMessageScrollbar and self.messageScrollbar then
-		self.messageScrollbar:Show()
-	elseif self.messageScrollbar then
-		self.messageScrollbar:Hide()
-		if self.scrollToBottomButton then self.scrollToBottomButton:Hide() end
+	if self.alertActive then
+		self.alertBar:Show()
+	else
+		self.alertBar:Hide()
 	end
-	self:RefreshMessageScrollbar()
+	-- Resolve the player menu's one- or two-row height before reserving the
+	-- readable chat lane. The shared pass moves display, scrollbar, latest-message
+	-- action, and empty-state text together.
+	self:RefreshPlayerActionsLayout(true)
+	self:RefreshTransientMessageLayout()
 
 	self.composer:ClearAllPoints()
 	self.composer:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", 2, 2)
@@ -6197,14 +6391,10 @@ function Dock:ApplyLayout()
 		self.collapseButton.text:SetText("-")
 	end
 	self:UpdateHeaderTextLayout()
-	if self.alertActive then
-		self.alertBar:Show()
-	else
-		self.alertBar:Hide()
-	end
-
 	self:RefreshViews()
-	self:RefreshPlayerActionsLayout()
+	if self.analysisPanel and frameIsShown(self.analysisPanel) then
+		self:RefreshMessageAnalysisLayout()
+	end
 	self:UpdateSourceColumnAlignmentControl()
 	self:RefreshMessageBands()
 	self:RefreshDisplayWidthPresentation()
@@ -6261,6 +6451,10 @@ function Dock:DismissAlert(restoreState)
 			end
 		end
 	end
+	-- DismissAlert(false) deliberately skips the saved visibility restore, but it
+	-- must still release the notice lane immediately (accept, replacement alert,
+	-- profile reset, and explicit close all use that path).
+	self:RefreshTransientMessageLayout()
 end
 
 function Dock:AcceptAlert()
@@ -6280,6 +6474,10 @@ function Dock:OnAlert(record, rule)
 	if self.alertPending and self.alertPending.restoreCancelled then
 		self:DismissAlert(false)
 	end
+	-- Automatic alerts and deliberate player actions share the transient message
+	-- area. Let the newest alert own that lane instead of stacking two surfaces
+	-- over a minimum-height chat window.
+	self:HidePlayerActions()
 	local editReveal = self.editReveal
 	self.editReveal = nil
 	if not self.alertPending then
@@ -6445,6 +6643,15 @@ function Dock:DiscardPartialBuild()
 	self.messageScrollbar = nil
 	self.scrollToBottomButton = nil
 	self.scrollToBottomGlyph = nil
+	self.transientMessageTopInset = nil
+	self.transientMessageBottomInset = nil
+	self.transientMessageRightInset = nil
+	self.transientMessageContentHeight = nil
+	self.transientMessageViewportSuppressed = nil
+	self.transientMessageScrollbarSuppressed = nil
+	self.transientMessageDisplayWasShown = nil
+	self.transientMessageEmptyWasShown = nil
+	self.transientMessageWasAtBottom = nil
 	self.emptyState = nil
 	self.newButton = nil
 	self.newMessageIndicatorDefaultFontObject = nil
@@ -6482,6 +6689,7 @@ function Dock:DiscardPartialBuild()
 	self.playerActionCompactLayout = nil
 	self.playerActionAutoHideRemaining = nil
 	self.playerActionMouseWasDown = nil
+	self.playerActionAlertRestore = nil
 	self.ignoreConfirm = nil
 	self.ignoreConfirmText = nil
 	self.blockAction = nil
@@ -7029,6 +7237,9 @@ function Dock:GetPlayerActionMenuSettings()
 end
 
 function Dock:HidePlayerActions()
+	local wasShown = frameIsShown(self.playerActions)
+	local alertRestore = self.playerActionAlertRestore
+	self.playerActionAlertRestore = nil
 	for _, button in ipairs(self.playerActionButtons or {}) do
 		hideTooltipForOwner(button)
 	end
@@ -7039,6 +7250,15 @@ function Dock:HidePlayerActions()
 	self.actionRecord = nil
 	self.playerActionAutoHideRemaining = nil
 	self.playerActionMouseWasDown = nil
+	if alertRestore then
+		-- The menu may have replaced an alert that temporarily revealed a hidden or
+		-- collapsed dock. Reuse the alert's proven restoration path when the menu
+		-- closes; a manual layout choice marks this snapshot cancelled first.
+		self.alertPending = alertRestore
+		self:DismissAlert(true)
+	elseif wasShown then
+		self:RefreshTransientMessageLayout()
+	end
 end
 
 function Dock:RefreshPlayerActionDismissal()
@@ -7085,7 +7305,7 @@ function Dock:UpdatePlayerActionDismissal(elapsed)
 	return true
 end
 
-function Dock:RefreshPlayerActionsLayout()
+function Dock:RefreshPlayerActionsLayout(skipViewportRefresh)
 	local panel = self.playerActions
 	local buttons = self.playerActionButtons
 	if not panel or not buttons or #buttons == 0 then
@@ -7130,6 +7350,9 @@ function Dock:RefreshPlayerActionsLayout()
 		anchorRow(1, #buttons, PLAYER_ACTION_PANEL_PADDING)
 	end
 	self.playerActionCompactLayout = compact
+	if frameIsShown(panel) and not skipViewportRefresh then
+		self:RefreshTransientMessageLayout()
+	end
 	return true, compact, requiredWidth, availableWidth
 end
 
@@ -7158,10 +7381,19 @@ function Dock:ShowPlayerActions(record)
 	if not record or not record.sender then
 		return
 	end
+	-- A deliberate player-name click supersedes an automatic notice. Keeping one
+	-- transient lane at a time guarantees useful message height at the supported
+	-- minimum dock size and avoids stacked context surfaces.
+	if self.alertActive then
+		local alertRestore = self.alertPending
+		self:DismissAlert(false)
+		self.playerActionAlertRestore = alertRestore
+	end
 	self.actionRecord = record
 	self.playerActionName:SetText("PLAYER: " .. record.sender)
 	self.playerActions:Show()
-	self:RefreshPlayerActionsLayout()
+	self:RefreshPlayerActionsLayout(true)
+	self:RefreshTransientMessageLayout()
 	self:RefreshPlayerActionDismissal()
 end
 
@@ -7744,7 +7976,13 @@ function Dock:Build()
 	frame:SetScript("OnSizeChanged", function()
 		if Dock.built then
 			Dock:RefreshComposerLayout()
-			Dock:RefreshPlayerActionsLayout()
+			-- Player-menu geometry and the shared message lane are separate jobs:
+			-- alerts also reserve that lane, even while the player menu is hidden.
+			Dock:RefreshPlayerActionsLayout(true)
+			Dock:RefreshTransientMessageLayout(Dock.resizeDragRegion ~= nil)
+			if Dock.analysisPanel and frameIsShown(Dock.analysisPanel) then
+				Dock:RefreshMessageAnalysisLayout()
+			end
 			Dock:UpdateHeaderTextLayout()
 			-- Explicit wrapped text is rebuilt once when a resize commits. Hide the
 			-- old geometry during the drag; ordinary layout changes can repaint now.
@@ -8189,7 +8427,7 @@ function Dock:Build()
 	local alertBar = Theme:CreatePanel(content, "surfaceRaised", "gold")
 	alertBar:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -2)
 	alertBar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -2, -2)
-	alertBar:SetHeight(34)
+	alertBar:SetHeight(ALERT_PANEL_HEIGHT)
 	alertBar:SetFrameLevel(content:GetFrameLevel() + 12)
 	alertBar:EnableMouse(true)
 	alertBar:SetScript("OnMouseUp", function(_, button)
