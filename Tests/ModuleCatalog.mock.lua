@@ -72,6 +72,16 @@ local channelColors = assert(addon:GetModuleCatalogStatus("channel-colors"))
 assert(channelColors.compatibility == kinds.smartNative and channelColors.configPage == "dock",
 	"editable channel colors did not route to Chat Window > Chat Colors")
 
+local tellTarget = assert(addon:GetModuleCatalogStatus("tell-target"))
+assert(tellTarget.compatibility == kinds.smartNative and tellTarget.status == "smart"
+	and tellTarget.runtime == "smart-active" and tellTarget.configPage == "conversations"
+	and tellTarget.configSection == "opening" and tellTarget.smartSetting == "tellTargetEnabled",
+	"Tell Target was not adopted as a configurable Smart Chat feature")
+assert(addon:GetModuleCatalogStatus("Tell Target (/tt)").id == "tell-target",
+	"legacy Tell Target lookup did not resolve to Chatty's replacement")
+assert(not addon:SetModuleCatalogPreference("tell-target", false),
+	"Tell Target accepted a legacy fallback toggle after Smart Chat adopted it")
+
 local native = assert(addon:GetModuleCatalogStatus("timestamps"))
 assert(native.compatibility == kinds.nativeFallbackOnly and native.runtime == "native-ready" and not native.active,
 	"native module was incorrectly reported as running in Smart Chat")

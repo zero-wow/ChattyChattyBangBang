@@ -17,7 +17,10 @@ function mod:OnEnable()
 		self:HookScript(_G["ChatFrame" .. i .. "EditBox"], "OnTextChanged")
 	end
 	if not self.slashCommandRegistered then
-		self:RegisterChatCommand("tt", "SendChatMessage")
+		-- Native fallback owns /tt only while this module is enabled.  A weak
+		-- AceConsole registration is removed automatically when Smart Chat takes
+		-- ownership, preventing a stale legacy handler from shadowing Messenger.
+		self:RegisterChatCommand("tt", "SendChatMessage", false)
 		self.slashCommandRegistered = true
 	end
 end

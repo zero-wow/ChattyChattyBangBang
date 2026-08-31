@@ -365,8 +365,17 @@ assert(settings.persistHistory == false, "restore-after-login toggle did not upd
 
 config.dockLayoutCategoryButtons.readability.scripts.OnClick(config.dockLayoutCategoryButtons.readability)
 assert(config.dockResponsiveMetadataToggle:IsShown() and config.dockMessageBandsToggle:IsShown()
+	and config.dockMessageBandsScrollbarToggle:IsShown()
 	and config.dockMessageBandAlphaEdit:IsShown() and config.dockLineSpacingEdit:IsShown(),
 	"Readability did not isolate responsive metadata and alternating-message controls")
+assert(config.dockMessageBandsToggle.text:GetText() == "ALTERNATING ROWS"
+	and config.dockMessageBandsScrollbarToggle.text:GetText() == "UNDER SCROLLBAR",
+	"message band toggles lost their compact wide-font-safe labels")
+assert(config.dockMessageBandsScrollbarToggle.width == 230
+	and config.dockMessageBandsScrollbarToggle.point[2] == config.dockMessageBandsToggle
+	and config.dockMessageBandsScrollbarToggle.point[3] == "RIGHT"
+	and config.dockMessageBandsScrollbarToggle.point[4] == 3,
+	"full-bleed row control did not retain its same-row gutter and reviewed width")
 config.dockLineSpacingEdit:SetText("4")
 config.dockLineSpacingEdit.scripts.OnEditFocusLost(config.dockLineSpacingEdit)
 assert(settings.textAppearance.spacing == 4,
@@ -378,10 +387,12 @@ assert(settings.textAppearance.spacing == 4 and config.dockLineSpacingEdit:GetTe
 config.dockResponsiveMetadataToggle:SetValue(false)
 assert(settings.dock.responsiveMetadata == false, "responsive metadata lock did not persist")
 config.dockMessageBandsToggle:SetValue(true)
+config.dockMessageBandsScrollbarToggle:SetValue(true)
 config.dockMessageBandExtentButtons.afterPlayer.scripts.OnClick(config.dockMessageBandExtentButtons.afterPlayer)
 config.dockMessageBandAlphaEdit:SetText("22")
 config.dockMessageBandAlphaEdit.scripts.OnEditFocusLost(config.dockMessageBandAlphaEdit)
 assert(settings.dock.messageBands.enabled and settings.dock.messageBands.extent == "afterPlayer"
+	and settings.dock.messageBands.extendUnderScrollbar == true
 	and settings.dock.messageBands.alpha == 0.22,
 	"alternating logical-message settings did not persist through the fallback path")
 assert(config.dockLayoutCategoryButtons.window._configTab

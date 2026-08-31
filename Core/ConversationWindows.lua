@@ -9,6 +9,10 @@ local Engine = addon.MessageEngine
 -- engine history.
 local Manager = {}
 addon.ConversationWindows = Manager
+-- Tell Target is a Messenger command adapter rather than a second window
+-- system.  Exposing the same controller gives Settings one narrow runtime
+-- refresh target without duplicating session, focus, or slash-command state.
+addon.TellTarget = Manager
 
 local Window = {}
 Window.__index = Window
@@ -165,6 +169,15 @@ local function cleanPlayerName(name)
 		return nil
 	end
 	return name
+end
+
+local function compactUnitNamePart(value)
+	value = cleanPlayerName(value)
+	if not value then
+		return nil
+	end
+	value = string.gsub(value, "%s+", "")
+	return value ~= "" and value or nil
 end
 
 local function playerKey(name)
@@ -1074,6 +1087,9 @@ function Window:Show(record)
 end
 
 function Window:Hide()
+	if Manager.pendingComposerFocusKey == self.playerKey then
+		Manager:CancelQueuedComposerFocus()
+	end
 	self.transientComposer = false
 	self.clickChromeRevealed = false
 	self.transientActionsExpanded = false
@@ -2291,6 +2307,7 @@ function Manager:OnMessage(record)
 end
 
 function Manager:ApplySettings()
+	self:RefreshTellTargetCommand()
 	if self.shell then
 		self.shell.actionsCompactForWidth = nil
 		self.shell:ApplyChromeLayout(true)
@@ -2311,6 +2328,8 @@ function Manager:SetEnabled(enabled)
 		self:ApplySettings()
 		return true
 	end
+	self:RefreshTellTargetCommand()
+	self:CancelQueuedComposerFocus()
 
 	if self.lifecycle then
 		self.lifecycle:UnregisterEvent("PLAYER_REGEN_ENABLED")
@@ -2333,21 +2352,140 @@ function Manager:ResetForProfile()
 	end
 end
 
-local function getEditBoxTellTarget(editBox)
-	if not editBox then
-		return nil
-	end
-	local target = cleanPlayerName(editBox.tellTarget)
-	if target then
-		return target
-	end
-	if editBox.GetAttribute then
-		local ok, attribute = pcall(editBox.GetAttribute, editBox, "tellTarget")
-		if ok then
-			return cleanPlayerName(attribute)
+local function getChatFrameEditBox(chatFrame)
+	if chatFrame then
+		local editBox = chatFrame.editBox
+		if editBox then return editBox end
+		if chatFrame.GetName then
+			local ok, name = pcall(chatFrame.GetName, chatFrame)
+			editBox = ok and name and _G[name .. "EditBox"] or nil
+			if editBox then return editBox end
 		end
+		-- Keep a narrow compatibility fallback for private-client variants that
+		-- pass the EditBox itself instead of stock Wrath's ChatFrame argument.
+		if chatFrame.SetText and chatFrame.GetAttribute then return chatFrame end
 	end
-	return nil
+	return _G.ChatFrame1EditBox
+end
+
+function Manager:ShouldFocusReplyFieldOnCommands()
+	return getConversationSettings().focusReplyFieldOnCommands ~= false
+end
+
+function Manager:CancelQueuedComposerFocus()
+	self.pendingComposerFocusKey = nil
+	if self.focusDriver and self.focusDriver.Hide then
+		self.focusDriver:Hide()
+	end
+end
+
+function Manager:QueueComposerFocus(key)
+	key = playerKey(key)
+	if not key or not self.enabled or not self:ShouldFocusReplyFieldOnCommands() then
+		self:CancelQueuedComposerFocus()
+		return false
+	end
+	self.pendingComposerFocusKey = key
+	if self.focusDriver and self.focusDriver.Show then
+		self.focusDriver:Show()
+	end
+	return true
+end
+
+function Manager:ApplyQueuedComposerFocus()
+	local key = self.pendingComposerFocusKey
+	self.pendingComposerFocusKey = nil
+	if not key or not self.enabled or not self:ShouldFocusReplyFieldOnCommands() then
+		return false
+	end
+
+	local shell = self.shell
+	if not shell or shell.playerKey ~= key or not shell.frame
+		or not shell.frame.IsShown or not shell.frame:IsShown()
+		or isLocallyIgnored(shell.playerName) then
+		return false
+	end
+	shell:RevealComposer(true)
+	return true
+end
+
+function Manager:ResolveTellTarget()
+	if UnitExists and not UnitExists("target") then
+		return nil, "no-target"
+	end
+	if not UnitIsPlayer or not UnitIsPlayer("target") then
+		return nil, "not-player"
+	end
+
+	local isSelf = UnitIsUnit and UnitIsUnit("player", "target") or false
+	if not isSelf and UnitGUID then
+		local playerGUID = UnitGUID("player")
+		local targetGUID = UnitGUID("target")
+		isSelf = playerGUID and targetGUID and playerGUID == targetGUID or false
+	end
+	if isSelf then
+		return nil, "self"
+	end
+
+	if not UnitName then
+		return nil, "no-name"
+	end
+	local name, realm = UnitName("target")
+	name = compactUnitNamePart(name)
+	realm = compactUnitNamePart(realm)
+	if not name then
+		return nil, "no-name"
+	end
+	-- Wrath returns a separate realm only when it is useful.  Ascension builds
+	-- vary, so accept either that tuple or an already-qualified Name-Realm and
+	-- never use friendly/assist checks that would reject valid cross-faction
+	-- private-server whispers before the server can apply its own policy.
+	if realm and not string.find(name, "-", 1, true) then
+		name = name .. "-" .. realm
+	end
+	return name
+end
+
+function Manager:PrintTellTargetFailure(reason)
+	local messages = {
+		["no-target"] = "/tt needs a player target.",
+		["not-player"] = "/tt can only tell a player target.",
+		["self"] = "/tt cannot open a conversation with yourself.",
+		["no-name"] = "Chatty could not read that target's player name.",
+		["locally-ignored"] = "That player is hidden by Chatty local ignore.",
+	}
+	printStatus(messages[reason] or "Chatty could not open that target in Messenger.")
+end
+
+function Manager:ActivateConversationTarget(name, nativeEditBox)
+	if not self.enabled then
+		return nil, "disabled"
+	end
+	name = cleanPlayerName(name)
+	if not name then
+		return nil, "no-target"
+	end
+
+	local shell, reason = self:OpenForPlayer(name, true)
+	if not shell then
+		return nil, reason
+	end
+
+	if self:ShouldFocusReplyFieldOnCommands() then
+		shell:RevealComposer(true)
+		-- FrameXML can finish deactivating the slash-command edit box after a
+		-- secure post-hook returns.  Close only that native field now, then repeat
+		-- the Messenger focus on the next frame so /r and /tt reliably end in the
+		-- intended TO field instead of losing keyboard focus during cleanup.
+		local native = nativeEditBox or _G.ChatFrame1EditBox
+		if native and native ~= shell.editBox and ChatEdit_OnEscapePressed then
+			pcall(ChatEdit_OnEscapePressed, native)
+		end
+		self:QueueComposerFocus(shell.playerKey)
+	else
+		self:CancelQueuedComposerFocus()
+	end
+	return shell
 end
 
 function Manager:ActivateReplyTarget(name, nativeEditBox)
@@ -2361,26 +2499,91 @@ function Manager:ActivateReplyTarget(name, nativeEditBox)
 
 	local key = playerKey(name)
 	local stamp = now()
-	if self.lastReplyKey == key and stamp - (self.lastReplyAt or 0) < 0.05 then
+	if self.lastReplyKey == key and stamp - (self.lastReplyAt or 0) < 0.05
+		and self.shell and self.shell.playerKey == key then
+		-- Repeated reply callbacks must not build another session, but they still
+		-- reinforce the final focus in case FrameXML cleanup runs between them.
+		if self:ShouldFocusReplyFieldOnCommands() then
+			self.shell:RevealComposer(true)
+			local native = nativeEditBox or _G.ChatFrame1EditBox
+			if native and native ~= self.shell.editBox and ChatEdit_OnEscapePressed then
+				pcall(ChatEdit_OnEscapePressed, native)
+			end
+			self:QueueComposerFocus(key)
+		end
 		return self.shell
 	end
 	self.lastReplyKey = key
 	self.lastReplyAt = stamp
 
-	local shell, reason = self:OpenForPlayer(name, true)
+	local shell, reason = self:ActivateConversationTarget(name, nativeEditBox)
 	if not shell then
 		return nil, reason
 	end
-	shell:RevealComposer(true)
+	return shell
+end
 
-	-- The Blizzard reply command has already established the correct target by
-	-- the time these secure post-hooks run. Dismiss only that native/shared edit
-	-- box; Messenger keeps its own focused TO <player> field.
-	local native = nativeEditBox or _G.ChatFrame1EditBox
-	if native and native ~= shell.editBox and ChatEdit_OnEscapePressed then
-		pcall(ChatEdit_OnEscapePressed, native)
+function Manager:ActivateTellTarget(input, nativeEditBox)
+	if not self.enabled or getConversationSettings().tellTargetEnabled == false then
+		return nil, "disabled"
+	end
+	local name, reason = self:ResolveTellTarget()
+	if not name then
+		self:PrintTellTargetFailure(reason)
+		return nil, reason
+	end
+
+	local shell
+	shell, reason = self:ActivateConversationTarget(name, nativeEditBox)
+	if not shell then
+		self:PrintTellTargetFailure(reason)
+		return nil, reason
+	end
+
+	input = tostring(input or "")
+	if trim(input) ~= "" then
+		local session = shell:GetActiveSession()
+		if session then session.draft = input end
+		shell.editBox:SetText(input)
+		if shell.placeholder then shell.placeholder:Hide() end
+		shell:Send()
 	end
 	return shell
+end
+
+function Manager:RefreshTellTargetCommand()
+	local shouldOwn = self.enabled and getConversationSettings().tellTargetEnabled ~= false
+	if shouldOwn and not self.tellTargetCommandRegistered then
+		if type(addon.RegisterChatCommand) ~= "function" then
+			return false
+		end
+		local callback = function(input, editBox)
+			return Manager:ActivateTellTarget(input, editBox)
+		end
+		-- The Smart owner is explicit and persistent: Manager disable/settings
+		-- changes release it, while the copied native fallback remains a weak
+		-- AceConsole owner that follows its module lifecycle.
+		local ok, registered = pcall(addon.RegisterChatCommand, addon, "tt", callback, true)
+		if ok and registered ~= false then
+			self.tellTargetCommandRegistered = true
+			self.tellTargetCommandCallback = callback
+			return true
+		end
+		return false
+	elseif not shouldOwn and self.tellTargetCommandRegistered then
+		-- AceConsole uses one global slot per slash command. A conflict/fallback
+		-- transition can replace our callback before Manager is told to disable;
+		-- never unregister that newer owner while clearing our own stale state.
+		local slashCommands = _G and _G.SlashCmdList
+		local liveCallback = type(slashCommands) == "table" and slashCommands.ACECONSOLE_TT or nil
+		local stillOwnsLiveCommand = liveCallback == nil or liveCallback == self.tellTargetCommandCallback
+		if stillOwnsLiveCommand and type(addon.UnregisterChatCommand) == "function" then
+			pcall(addon.UnregisterChatCommand, addon, "tt")
+		end
+		self.tellTargetCommandRegistered = false
+		self.tellTargetCommandCallback = nil
+	end
+	return self.tellTargetCommandRegistered == true
 end
 
 function Manager:InstallReplyHooks()
@@ -2389,27 +2592,15 @@ function Manager:InstallReplyHooks()
 	end
 	self.replyHooksInstalled = true
 	if type(ChatFrame_ReplyTell) == "function" then
-		hooksecurefunc("ChatFrame_ReplyTell", function(editBox)
+		hooksecurefunc("ChatFrame_ReplyTell", function(chatFrame)
 			local target = ChatEdit_GetLastTellTarget and ChatEdit_GetLastTellTarget()
-			Manager:ActivateReplyTarget(target, editBox)
+			Manager:ActivateReplyTarget(target, getChatFrameEditBox(chatFrame))
 		end)
 	end
 	if type(ChatFrame_ReplyTell2) == "function" then
-		hooksecurefunc("ChatFrame_ReplyTell2", function(editBox)
+		hooksecurefunc("ChatFrame_ReplyTell2", function(chatFrame)
 			local target = ChatEdit_GetLastToldTarget and ChatEdit_GetLastToldTarget()
-			Manager:ActivateReplyTarget(target, editBox)
-		end)
-	end
-	if type(ChatEdit_ExtractTellTarget) == "function" then
-		hooksecurefunc("ChatEdit_ExtractTellTarget", function(editBox)
-			local chatType = editBox and editBox.chatType
-			if not chatType and editBox and editBox.GetAttribute then
-				local ok, attribute = pcall(editBox.GetAttribute, editBox, "chatType")
-				if ok then chatType = attribute end
-			end
-			if chatType == "WHISPER" then
-				Manager:ActivateReplyTarget(getEditBoxTellTarget(editBox), editBox)
-			end
+			Manager:ActivateReplyTarget(target, getChatFrameEditBox(chatFrame))
 		end)
 	end
 end
@@ -2435,6 +2626,12 @@ function Manager:Initialize()
 		if event == "PLAYER_REGEN_ENABLED" then
 			Manager:DrainPending()
 		end
+	end)
+	self.focusDriver = CreateFrame("Frame")
+	self.focusDriver:Hide()
+	self.focusDriver:SetScript("OnUpdate", function(frame)
+		frame:Hide()
+		Manager:ApplyQueuedComposerFocus()
 	end)
 
 	Engine:RegisterListener("ConversationWindows", function(record)

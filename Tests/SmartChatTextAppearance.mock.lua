@@ -50,7 +50,7 @@ local addon = ChattyChattyBangBang
 local settings = addon:GetSmartSettings()
 local defaultAppearance = addon:GetSmartChatTextAppearance("global")
 assert(defaultAppearance.font == nil and defaultAppearance.size == 0 and defaultAppearance.outline == "INHERIT"
-	and defaultAppearance.spacing == 1,
+	and defaultAppearance.spacing == 1 and defaultAppearance.entryGapRows == 0,
 	"global Smart Chat text should inherit the current chat font by default")
 
 local options = addon:GetSmartChatTextAppearanceOptions()
@@ -140,22 +140,24 @@ local changed, appearance = addon:SetSmartChatTextAppearance("global", {
 	size = 14,
 	outline = "OUTLINE",
 	spacing = 3,
+	entryGapRows = 2,
 })
 assert(changed and appearance.font == "Mono Test" and appearance.size == 14 and appearance.outline == "OUTLINE"
-	and appearance.spacing == 3,
+	and appearance.spacing == 3 and appearance.entryGapRows == 2,
 	"global Smart Chat text appearance did not save the selected raw LSM key")
 assert(settings.textAppearance.font == "Mono Test" and settings.textAppearance.font ~= "lsm:Mono Test",
 	"Smart Chat persisted an invented wrapper instead of the raw LSM key")
 assert(refreshes == 1, "text appearance change did not request a focused live dock refresh")
 
-changed, appearance = addon:SetSmartChatTextAppearance("general", { size = 17, spacing = 5 })
+changed, appearance = addon:SetSmartChatTextAppearance("general", { size = 17, spacing = 5, entryGapRows = 1 })
 assert(changed and appearance.font == "Mono Test" and appearance.size == 17 and appearance.outline == "OUTLINE"
-	and appearance.spacing == 5,
+	and appearance.spacing == 5 and appearance.entryGapRows == 1,
 	"per-tab appearance did not resolve inherited global fields")
 assert(settings.viewOptions.general.textAppearance.size == 17
 	and settings.viewOptions.general.textAppearance.font == nil
 	and settings.viewOptions.general.textAppearance.outline == nil
-	and settings.viewOptions.general.textAppearance.spacing == 5,
+	and settings.viewOptions.general.textAppearance.spacing == 5
+	and settings.viewOptions.general.textAppearance.entryGapRows == 1,
 	"per-tab state should remain a sparse override rather than copying globals")
 
 assert(addon:SetSmartChatTextAppearance("global", { font = "Alpha Sans" }))
@@ -166,7 +168,7 @@ assert(appearance.font == "Alpha Sans" and appearance.size == 17 and appearance.
 assert(addon:ResetSmartChatTextAppearance("general"))
 appearance = addon:GetSmartChatTextAppearance("general")
 assert(appearance.font == "Alpha Sans" and appearance.size == 14 and appearance.outline == "OUTLINE"
-	and appearance.spacing == 3,
+	and appearance.spacing == 3 and appearance.entryGapRows == 2,
 	"resetting a tab did not restore all-tab inheritance")
 assert(settings.viewOptions.general == nil,
 	"an empty per-tab text override should not leave an empty viewOptions record")
@@ -180,12 +182,16 @@ assert(not addon:SetSmartChatTextAppearance("global", { spacing = 9 }),
 	"out-of-range line gaps must be rejected")
 assert(not addon:SetSmartChatTextAppearance("global", { spacing = 1.5 }),
 	"line gaps must reject decimal pixel values instead of rounding them")
+assert(not addon:SetSmartChatTextAppearance("global", { entryGapRows = 3 }),
+	"entry gaps must reject more than two blank rows")
+assert(not addon:SetSmartChatTextAppearance("global", { entryGapRows = 1.5 }),
+	"entry gaps must reject fractional rows")
 assert(not addon:SetSmartChatTextAppearance("general", { font = "bad\001font" }),
 	"control characters must not become LSM font keys")
 
 -- Read-migrate the short-lived wrapper format but save the canonical raw key.
 addon.db.profile.smartChat = {
-	textAppearance = { font = "lsm:Mono Test", size = 13, outline = "NONE", spacing = 1.5 },
+	textAppearance = { font = "lsm:Mono Test", size = 13, outline = "NONE", spacing = 1.5, entryGapRows = 9 },
 }
 settings = addon:GetSmartSettings()
 appearance = addon:GetSmartChatTextAppearance("global")
@@ -193,5 +199,7 @@ assert(appearance.font == "Mono Test" and settings.textAppearance.font == "Mono 
 	"legacy lsm:<name> text setting was not normalized to the raw LSM key")
 assert(appearance.spacing == 1 and settings.textAppearance.spacing == 1,
 	"legacy or decimal line gaps did not normalize to the compact whole-pixel default")
+assert(appearance.entryGapRows == 0 and settings.textAppearance.entryGapRows == 0,
+	"invalid legacy entry gap did not normalize to the compact default")
 
 print("Smart Chat text appearance mock: PASS")

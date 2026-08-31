@@ -159,15 +159,17 @@ end
 local modules = {}
 for index = 1, 11 do
 	modules[#modules + 1] = {
-		id = "smart-" .. index,
-		label = index == 1 and "Automatic Whisper Windows" or ("Chat Feature " .. index),
+		id = index == 2 and "tell-target" or ("smart-" .. index),
+		label = index == 1 and "Automatic Whisper Windows"
+			or (index == 2 and "Tell Target (/tt)" or ("Chat Feature " .. index)),
 		navLabel = index == 1 and "Whisper Windows" or nil,
 		status = "smart",
 		category = "Chat Features",
 		statusLabel = "RUNS IN CHATTY",
 		summary = "This feature runs on Chatty's own chat surface.",
-		configPage = "dock",
-		smartSetting = index == 1 and "composerAutoHide" or nil,
+		configPage = index == 2 and "conversations" or "dock",
+		configSection = index == 2 and "opening" or nil,
+		smartSetting = index == 1 and "composerAutoHide" or (index == 2 and "tellTargetEnabled" or nil),
 	}
 end
 for index = 1, 11 do
@@ -215,6 +217,8 @@ function addon:SetModuleCatalogPreference(id, enabled)
 end
 function addon:GetComposerAutoHideSetting() return true end
 function addon:SetComposerAutoHide(value) self.composerAutoHide = value and true or false end
+function addon:GetTellTargetSettings() return { enabled = self.tellTargetEnabled ~= false } end
+function addon:SetTellTargetEnabled(value) self.tellTargetEnabled = value and true or false return true, self.tellTargetEnabled end
 
 dofile("Core/Config.lua")
 
@@ -296,6 +300,29 @@ expect(config.moduleInspectorStatus:GetText() == "RUNS IN CHATTY",
 	"Chatty feature inspector must use the full human status")
 expect(not shown(config.modulePreferenceToggle) and shown(config.moduleSmartToggle),
 	"Chatty inspector must not expose the native-fallback preference")
+
+config:SelectModule("tell-target")
+expect(shown(config.moduleSmartToggle)
+	and config.moduleSmartToggle.label:GetText() == "ENABLE /TT TELL TARGET",
+	"Tell Target did not expose its live Chatty setting in the module inspector")
+config.moduleSmartToggle:SetValue(false)
+expect(addon.tellTargetEnabled == false,
+	"Tell Target module toggle did not use its public Smart setting")
+local openedPage, openedSection
+local originalShowPage = config.ShowPage
+local originalSetMessengerSection = config.SetMessengerSection
+config.ShowPage = function(self, pageId)
+	openedPage = pageId == "conversations" and "messenger" or pageId
+	self.activePage = openedPage
+end
+config.SetMessengerSection = function(_, section)
+	openedSection = section
+end
+config.moduleOpenConfig.scripts.OnClick()
+config.ShowPage = originalShowPage
+config.SetMessengerSection = originalSetMessengerSection
+expect(openedPage == "messenger" and openedSection == "opening",
+	"Tell Target module did not open Messenger directly at its shortcut settings")
 
 config:SelectModule("adapter-1")
 expect(config.moduleFilter == "legacy",

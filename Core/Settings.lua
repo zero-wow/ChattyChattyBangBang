@@ -30,6 +30,7 @@ local BUILT_IN_SOURCE_VIEWS_SCHEMA = 2
 -- again in profiles that already chose a custom tab order.
 local VIEW_SOURCE_MEMBERSHIP_SCHEMA = 1
 local MESSENGER_APPEARANCE_SCHEMA = 1
+local TELL_TARGET_SETTINGS_SCHEMA = 1
 local MESSENGER_TAB_NAME_DEFAULT_LENGTH = 14
 local MESSENGER_TAB_NAME_MIN_LENGTH = 4
 local MESSENGER_TAB_NAME_MAX_LENGTH = 32
@@ -76,12 +77,16 @@ local defaults = {
 	-- current ChatFontNormal face/size/flags; a selected value is the raw
 	-- LibSharedMedia font key resolved at render time.
 	textAppearance = {
-		schema = 2,
+		schema = 3,
 		size = 0,
 		outline = "INHERIT",
 		-- ScrollingMessageFrame:SetSpacing is pixel padding between rendered
 		-- lines. 0 keeps lines tight; 8 is deliberately the compact safe cap.
 		spacing = 1,
+		-- Entry gaps are logical blank rows, distinct from ScrollingMessageFrame's
+		-- pixel gap between every rendered line. Zero preserves the established
+		-- compact layout until a player deliberately opts in.
+		entryGapRows = 0,
 	},
 	dock = {
 		point = "BOTTOMLEFT",
@@ -158,6 +163,7 @@ local defaults = {
 			schema = MESSAGE_BAND_STYLE_SCHEMA,
 			enabled = false,
 			extent = "full",
+			extendUnderScrollbar = false,
 			color = { mode = "theme", theme = "surfaceRaised", r = 0.085, g = 0.112, b = 0.158 },
 			alpha = 0.50,
 		},
@@ -215,6 +221,12 @@ local defaults = {
 	conversations = {
 		autoOpenWhispers = true,
 		deferInCombat = true,
+		-- Chatty owns /tt while Smart Chat is active.  The copied Chatter module
+		-- remains available only to native fallback, so these preferences are kept
+		-- beside the Messenger behavior they control rather than in legacy modules.
+		tellTargetEnabled = true,
+		focusReplyFieldOnCommands = true,
+		tellTargetSettingsSchema = TELL_TARGET_SETTINGS_SCHEMA,
 		-- INHERIT follows this one Messenger-wide chrome preference. Individual
 		-- regions may instead be pinned on, shown on hover or click, or removed
 		-- completely without changing whisper capture.
@@ -846,7 +858,7 @@ local NEW_MESSAGE_INDICATOR_FONTS = {
 
 -- Smart Chat text uses LibSharedMedia keys and an exact installed-SharedMedia
 -- fallback map. An absent key inherits whatever ChatFontNormal resolves to.
-local SMART_CHAT_TEXT_APPEARANCE_SCHEMA = 2
+local SMART_CHAT_TEXT_APPEARANCE_SCHEMA = 3
 local SOURCE_COLUMN_ALIGNMENT_DEFAULT_FONT = "SourceCodePro (Regular)"
 local SMART_CHAT_TEXT_OUTLINES = {
 	INHERIT = true,
@@ -877,6 +889,14 @@ local SMART_CHAT_TEXT_APPEARANCE_OPTIONS = {
 		minimum = 0,
 		maximum = 8,
 		default = 1,
+	},
+	-- ScrollingMessageFrame has no per-message pixel padding API. The dock
+	-- therefore renders a transparent blank *row* before later logical entries.
+	-- Keep this compact and explicit rather than claiming arbitrary pixels.
+	entryGapRows = {
+		minimum = 0,
+		maximum = 2,
+		default = 0,
 	},
 }
 
@@ -1161,6 +1181,18 @@ local function normalizeSmartChatTextSpacing(spacing)
 	return spacing
 end
 
+local function normalizeSmartChatEntryGapRows(rows)
+	rows = tonumber(rows)
+	if rows == nil or rows ~= math.floor(rows) then
+		return nil
+	end
+	if rows < SMART_CHAT_TEXT_APPEARANCE_OPTIONS.entryGapRows.minimum
+		or rows > SMART_CHAT_TEXT_APPEARANCE_OPTIONS.entryGapRows.maximum then
+		return nil
+	end
+	return rows
+end
+
 local function normalizeSmartChatTextOutline(outline)
 	outline = string.upper(trim(outline, 24))
 	if outline == "THICK" then
@@ -1189,6 +1221,10 @@ local function normalizeSmartChatTextAppearance(appearance)
 	appearance.spacing = normalizeSmartChatTextSpacing(appearance.spacing)
 	if appearance.spacing == nil then
 		appearance.spacing = fallback.spacing
+	end
+	appearance.entryGapRows = normalizeSmartChatEntryGapRows(appearance.entryGapRows)
+	if appearance.entryGapRows == nil then
+		appearance.entryGapRows = fallback.entryGapRows
 	end
 	appearance.schema = SMART_CHAT_TEXT_APPEARANCE_SCHEMA
 	return appearance
@@ -1239,6 +1275,9 @@ local function normalizeSmartChatTextAppearanceOverride(appearance)
 	end
 	if appearance.spacing ~= nil then
 		normalized.spacing = normalizeSmartChatTextSpacing(appearance.spacing)
+	end
+	if appearance.entryGapRows ~= nil then
+		normalized.entryGapRows = normalizeSmartChatEntryGapRows(appearance.entryGapRows)
 	end
 	if next(normalized) == nil then
 		return nil
@@ -2364,6 +2403,7 @@ function addon:GetSmartChatTextAppearance(viewId)
 		if override.size ~= nil then appearance.size = override.size end
 		if override.outline ~= nil then appearance.outline = override.outline end
 		if override.spacing ~= nil then appearance.spacing = override.spacing end
+		if override.entryGapRows ~= nil then appearance.entryGapRows = override.entryGapRows end
 	end
 	return appearance
 end
@@ -2453,6 +2493,14 @@ local function normalizeSmartChatTextAppearancePatch(patch)
 		normalized.spacing = spacing
 		changed = true
 	end
+	if patch.entryGapRows ~= nil then
+		local rows = normalizeSmartChatEntryGapRows(patch.entryGapRows)
+		if rows == nil then
+			return nil, "invalid-entry-gap-rows"
+		end
+		normalized.entryGapRows = rows
+		changed = true
+	end
 	if not changed then
 		return nil, "invalid-patch"
 	end
@@ -2475,6 +2523,7 @@ function addon:SetSmartChatTextAppearance(viewId, patch)
 		if normalized.size ~= nil then global.size = normalized.size end
 		if normalized.outline ~= nil then global.outline = normalized.outline end
 		if normalized.spacing ~= nil then global.spacing = normalized.spacing end
+		if normalized.entryGapRows ~= nil then global.entryGapRows = normalized.entryGapRows end
 		global.schema = SMART_CHAT_TEXT_APPEARANCE_SCHEMA
 		settings.textAppearance = global
 	else
@@ -2490,6 +2539,7 @@ function addon:SetSmartChatTextAppearance(viewId, patch)
 		if normalized.size ~= nil then override.size = normalized.size end
 		if normalized.outline ~= nil then override.outline = normalized.outline end
 		if normalized.spacing ~= nil then override.spacing = normalized.spacing end
+		if normalized.entryGapRows ~= nil then override.entryGapRows = normalized.entryGapRows end
 		options.textAppearance = normalizeSmartChatTextAppearanceOverride(override)
 		removeEmptyViewOptions(settings, viewId)
 	end
@@ -3577,6 +3627,7 @@ local function normalizeDockMessageBands(dock)
 		schema = MESSAGE_BAND_STYLE_SCHEMA,
 		enabled = stored.enabled == true,
 		extent = messageBandExtents[stored.extent] and stored.extent or fallback.extent,
+		extendUnderScrollbar = stored.extendUnderScrollbar == true,
 		color = {
 			mode = mode,
 			theme = theme,
@@ -3738,6 +3789,10 @@ local function migrateSmartSettings(settings)
 	conversations.actionStripOrientation = actionStripOrientation
 	conversations.actionStripCollapsed = conversations.actionStripCollapsed == true
 	conversations.tabNameMaxLength = normalizeMessengerTabNameMaxLength(conversations.tabNameMaxLength)
+	conversations.tellTargetEnabled = conversations.tellTargetEnabled ~= false
+	conversations.focusReplyFieldOnCommands = conversations.focusReplyFieldOnCommands ~= false
+	conversations.tellTargetSettingsSchema = math.max(TELL_TARGET_SETTINGS_SCHEMA,
+		math.floor(tonumber(conversations.tellTargetSettingsSchema) or 0))
 	conversations.autoOpenWhispers = conversations.autoOpenWhispers ~= false
 	conversations.deferInCombat = conversations.deferInCombat ~= false
 	conversations.chromeAutoHide = conversations.chromeAutoHide == true
@@ -3814,6 +3869,18 @@ function addon:GetSmartSettings()
 		tonumber(rawget(profile.smartChat, "viewSourceMembershipSchema")) or 0
 	local migrateViewSourceMemberships =
 		storedViewSourceMembershipSchema < VIEW_SOURCE_MEMBERSHIP_SCHEMA
+	-- Tell Target used to exist only as a copied native-frame module. Capture
+	-- both raw tables before AceDB exposes new defaults so an explicit old
+	-- disabled preference can seed Chatty's replacement exactly once.
+	local rawConversations = rawget(profile.smartChat, "conversations")
+	if type(rawConversations) ~= "table" then rawConversations = nil end
+	local migrateTellTargetSettings =
+		(tonumber(rawConversations and rawget(rawConversations, "tellTargetSettingsSchema")) or 0)
+		< TELL_TARGET_SETTINGS_SCHEMA
+	local rawTellTargetEnabled = rawConversations and rawget(rawConversations, "tellTargetEnabled")
+	local legacyModules = rawget(profile, "modules")
+	local legacyTellTargetEnabled = not (type(legacyModules) == "table"
+		and rawget(legacyModules, "Tell Target (/tt)") == false)
 	-- AceDB supplies new defaults through a metatable, so use raw values here
 	-- before applyDefaults can mask an old explicit showComposer=false choice.
 	-- This one-time bridge lets existing compact profiles become the matching
@@ -3871,6 +3938,13 @@ function addon:GetSmartSettings()
 		previousKeywordColorGroups = copy(profile.smartChat.keywordColorGroups)
 	end
 	applyDefaults(profile.smartChat, defaults)
+	if migrateTellTargetSettings then
+		local conversations = profile.smartChat.conversations
+		if rawTellTargetEnabled == nil then
+			conversations.tellTargetEnabled = legacyTellTargetEnabled
+		end
+		conversations.tellTargetSettingsSchema = TELL_TARGET_SETTINGS_SCHEMA
+	end
 	if migrateLegacyMessageBandStyle then
 		local bands = profile.smartChat.dock.messageBands
 		bands.schema = MESSAGE_BAND_STYLE_SCHEMA
@@ -3949,6 +4023,8 @@ function addon:GetMessengerSettings()
 	return {
 		autoOpenWhispers = settings.autoOpenWhispers ~= false,
 		deferInCombat = settings.deferInCombat ~= false,
+		tellTargetEnabled = settings.tellTargetEnabled ~= false,
+		focusReplyFieldOnCommands = settings.focusReplyFieldOnCommands ~= false,
 		chromeAutoHide = autoHide,
 		actionButtonStyle = settings.actionButtonStyle == "icons" and "icons" or "text",
 		actionStripCollapsed = settings.actionStripCollapsed == true,
@@ -3965,6 +4041,36 @@ function addon:GetMessengerSettings()
 		resolvedComposerVisibility = resolveMessengerMode(settings.composerVisibility, autoHide),
 		appearance = copy(normalizeMessengerAppearance(settings)),
 	}
+end
+
+function addon:GetTellTargetSettings()
+	local settings = self:GetSmartSettings().conversations
+	return {
+		enabled = settings.tellTargetEnabled ~= false,
+		focusReplyFieldOnCommands = settings.focusReplyFieldOnCommands ~= false,
+	}
+end
+
+local function refreshTellTarget(owner)
+	local controller = owner.TellTarget
+	if controller and type(controller.ApplySettings) == "function" then
+		controller:ApplySettings()
+	end
+end
+
+function addon:SetTellTargetEnabled(enabled)
+	local settings = self:GetSmartSettings().conversations
+	settings.tellTargetEnabled = enabled and true or false
+	refreshTellTarget(self)
+	return true, settings.tellTargetEnabled
+end
+
+function addon:SetMessengerReplyCommandFocusEnabled(enabled)
+	local settings = self:GetSmartSettings().conversations
+	settings.focusReplyFieldOnCommands = enabled and true or false
+	-- ConversationWindows reads this at command activation time; no frame
+	-- rebuild or focus change should occur merely because settings were edited.
+	return true, settings.focusReplyFieldOnCommands
 end
 
 function addon:GetMessengerAppearanceSettings()
@@ -4280,6 +4386,14 @@ function addon:SetSmartChatMessageBandExtent(extent)
 	bands.extent = extent
 	refreshSmartChatMessageBands(self)
 	return true, bands.extent
+end
+
+function addon:SetSmartChatMessageBandExtendUnderScrollbar(enabled)
+	local settings = self:GetSmartSettings()
+	local bands = normalizeDockMessageBands(settings.dock)
+	bands.extendUnderScrollbar = enabled and true or false
+	refreshSmartChatMessageBands(self)
+	return true, bands.extendUnderScrollbar
 end
 
 function addon:SetSmartChatMessageBandColor(r, g, b, themeName)

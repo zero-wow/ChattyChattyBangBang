@@ -15,6 +15,7 @@ ChattyChattyBangBang = {
 					messageBands = {
 						enabled = true,
 						extent = "unknown",
+						extendUnderScrollbar = "yes",
 						color = { mode = "custom", r = -1, g = 2, b = 0.5 },
 						alpha = 4,
 					},
@@ -35,6 +36,7 @@ assert(dock.transparency.backgroundAlpha == 0 and dock.transparency.borderAlpha 
 	and dock.transparency.overallAlpha == 0.4,
 	"independent opacity settings were not normalized to 0..1")
 assert(dock.messageBands.enabled and dock.messageBands.extent == "full"
+	and dock.messageBands.extendUnderScrollbar == false
 	and dock.messageBands.color.mode == "custom"
 	and dock.messageBands.color.r == 0 and dock.messageBands.color.g == 1
 	and dock.messageBands.color.b == 0.5 and dock.messageBands.alpha == 1,
@@ -68,12 +70,14 @@ assert(addon:SetSmartChatMessageBandsEnabled(false))
 assert(addon:SetSmartChatMessageBandExtent("afterPlayer"))
 assert(not addon:SetSmartChatMessageBandExtent("outside"),
 	"invalid message-band extent was accepted")
+assert(addon:SetSmartChatMessageBandExtendUnderScrollbar(true))
 assert(addon:SetSmartChatMessageBandColor(0.1, 0.2, 0.3))
 assert(addon:SetSmartChatMessageBandAlpha(0.35))
 local bands = addon:GetSmartChatMessageBandSettings()
 assert(not bands.enabled and bands.extent == "afterPlayer"
+	and bands.extendUnderScrollbar == true
 	and bands.color.mode == "custom" and bands.color.theme == nil
-	and bands.alpha == 0.35 and bandRefreshes == 4,
+	and bands.alpha == 0.35 and bandRefreshes == 5,
 	"custom message-band setters did not persist or refresh live")
 assert(addon:SetSmartChatMessageBandColor(0.8, 0.6, 0.2, "gold"))
 bands = addon:GetSmartChatMessageBandSettings()
@@ -91,6 +95,7 @@ assert(settings.dock.transparency.backgroundAlpha == 1
 assert(addon:ResetSmartChatMessageBands())
 assert(settings.dock.messageBands.enabled == false
 	and settings.dock.messageBands.extent == "full"
+	and settings.dock.messageBands.extendUnderScrollbar == false
 	and settings.dock.messageBands.schema == 2
 	and settings.dock.messageBands.color.theme == "surfaceRaised"
 	and settings.dock.messageBands.alpha == 0.50,
@@ -110,12 +115,13 @@ assert(bands.schema == 2 and bands.color.theme == "surfaceRaised" and bands.alph
 addon.db.profile.smartChat.dock.messageBands = {
 	enabled = true,
 	extent = "afterPlayer",
+	extendUnderScrollbar = true,
 	color = { mode = "theme", theme = "accentSoft", r = 0.16, g = 0.28, b = 0.42 },
 	alpha = 0.22,
 }
 bands = addon:GetSmartChatMessageBandSettings()
 assert(bands.color.theme == "accentSoft" and bands.alpha == 0.22
-	and bands.extent == "afterPlayer",
+	and bands.extent == "afterPlayer" and bands.extendUnderScrollbar == true,
 	"deliberate message-band styling was overwritten by the factory migration")
 
 print("Smart Chat readability settings mock passed")

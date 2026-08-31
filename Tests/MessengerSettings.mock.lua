@@ -9,6 +9,16 @@ local exported = addon:GetMessengerSettings()
 local appearanceTargets = { "window", "title", "tabs", "chat", "reply", "border" }
 
 assert(exported.chromeAutoHide == false, "Messenger chrome auto-hide should be opt-in")
+assert(settings.tellTargetEnabled == true and settings.focusReplyFieldOnCommands == true
+	and settings.tellTargetSettingsSchema == 1,
+	"Tell Target and slash-command focus should default on with the current schema")
+assert(exported.tellTargetEnabled == true and exported.focusReplyFieldOnCommands == true,
+	"Messenger settings getter omitted Tell Target command behavior")
+local tellTarget = addon:GetTellTargetSettings()
+assert(tellTarget.enabled == true and tellTarget.focusReplyFieldOnCommands == true,
+	"Tell Target settings getter omitted its enabled or shared focus state")
+tellTarget.enabled = false
+assert(settings.tellTargetEnabled == true, "Tell Target settings getter leaked SavedVariables")
 assert(exported.actionStripCollapsed == false and exported.actionStripOrientation == "horizontal",
 	"Messenger actions should start expanded on the tab row")
 assert(settings.tabNameMaxLength == 14 and exported.tabNameMaxLength == 14,
@@ -55,10 +65,29 @@ local refreshes = 0
 addon.ConversationWindows = {
 	ApplySettings = function() refreshes = refreshes + 1 end,
 }
+local tellTargetRefreshes = 0
+addon.TellTarget = {
+	ApplySettings = function() tellTargetRefreshes = tellTargetRefreshes + 1 end,
+}
+
+local ok, value = addon:SetTellTargetEnabled(false)
+assert(ok and value == false and settings.tellTargetEnabled == false
+	and tellTargetRefreshes == 1 and refreshes == 0,
+	"Tell Target enable setting did not persist or apply command ownership")
+ok, value = addon:SetMessengerReplyCommandFocusEnabled(false)
+assert(ok and value == false and settings.focusReplyFieldOnCommands == false
+	and tellTargetRefreshes == 1 and refreshes == 0,
+	"shared /r and /tt focus setting caused a frame rebuild or failed to persist")
+tellTarget = addon:GetTellTargetSettings()
+assert(tellTarget.enabled == false and tellTarget.focusReplyFieldOnCommands == false,
+	"Tell Target settings getter did not reflect live saved choices")
+assert(addon:SetTellTargetEnabled(true) and addon:SetMessengerReplyCommandFocusEnabled(true))
+assert(tellTargetRefreshes == 2 and refreshes == 0,
+	"restoring Tell Target settings refreshed the wrong runtime owner")
 
 assert(type(addon.SetMessengerTabNameMaxLength) == "function",
 	"Messenger tab-name maximum setter is unavailable")
-local ok, value = addon:SetMessengerTabNameMaxLength("20")
+ok, value = addon:SetMessengerTabNameMaxLength("20")
 assert(ok and value == 20 and settings.tabNameMaxLength == 20 and refreshes == 1,
 	"Messenger tab-name maximum did not accept an integer edit-box value or refresh live")
 local invalidTabNameLengths = { 3, 33, 20.5, "20.5", "twenty", math.huge, -math.huge }
@@ -208,6 +237,7 @@ addon.db.profile.smartChat = {
 		tabNameMaxLength = "far too long",
 	},
 }
+addon.db.profile.modules = { ["Tell Target (/tt)"] = false }
 settings = addon:GetSmartSettings().conversations
 assert(settings.titleBarVisibility == "hidden"
 	and settings.actionVisibility == "auto"
@@ -215,8 +245,16 @@ assert(settings.titleBarVisibility == "hidden"
 	and settings.actionButtonStyle == "icons"
 	and settings.actionStripCollapsed == true
 	and settings.actionStripOrientation == "vertical"
-	and settings.tabNameMaxLength == 14,
+	and settings.tabNameMaxLength == 14
+	and settings.tellTargetEnabled == false
+	and settings.focusReplyFieldOnCommands == true
+	and settings.tellTargetSettingsSchema == 1,
 	"legacy/malformed Messenger visibility values were not normalized")
+assert(addon.db.profile.modules["Tell Target (/tt)"] == false,
+	"Tell Target migration changed the native-fallback preference")
+settings.tellTargetEnabled = true
+assert(addon:GetSmartSettings().conversations.tellTargetEnabled == true,
+	"Tell Target legacy preference was reapplied after its one-time migration")
 settings.tabNameMaxLength = 100
 settings = addon:GetSmartSettings().conversations
 assert(settings.tabNameMaxLength == 14,

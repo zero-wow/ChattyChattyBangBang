@@ -177,6 +177,28 @@ UIParent = newFrame("UIParent")
 ChatFontNormal = {}
 function CreateFrame(kind, _, parent) return newFrame(kind, parent) end
 function UnitFactionGroup() return "Alliance" end
+local targetUnit = {
+	exists = true,
+	player = true,
+	self = false,
+	name = "TargetPlayer",
+	realm = nil,
+	guid = "Player-Target",
+}
+function UnitExists(unit) return unit == "target" and targetUnit.exists or unit == "player" end
+function UnitIsPlayer(unit) return unit == "target" and targetUnit.player or unit == "player" end
+function UnitIsUnit(left, right)
+	return (left == "player" and right == "target" or left == "target" and right == "player")
+		and targetUnit.self or left == right
+end
+function UnitGUID(unit)
+	if unit == "player" then return "Player-Self" end
+	if unit == "target" then return targetUnit.self and "Player-Self" or targetUnit.guid end
+end
+function UnitName(unit)
+	if unit == "player" then return "SelfPlayer", "Home Realm" end
+	if unit == "target" then return targetUnit.name, targetUnit.realm end
+end
 function GetTime() return 100 end
 local inCombat = false
 function InCombatLockdown() return inCombat end
@@ -193,6 +215,8 @@ function ChatEdit_GetLastToldTarget() return "ToldTarget" end
 local escaped
 function ChatEdit_OnEscapePressed(editBox) escaped = editBox end
 ChatFrame1EditBox = newFrame("EditBox", UIParent)
+ChatFrame1 = newFrame("ScrollingMessageFrame", UIParent)
+ChatFrame1.editBox = ChatFrame1EditBox
 
 local Theme = { ICON_PATH = "icon" }
 function Theme:CreatePanel(parent, fillName, borderName)
@@ -253,6 +277,8 @@ local settings = {
 	conversations = {
 		autoOpenWhispers = true,
 		deferInCombat = true,
+		tellTargetEnabled = true,
+		focusReplyFieldOnCommands = true,
 		chromeAutoHide = false,
 		titleBarVisibility = "inherit",
 		actionVisibility = "inherit",
@@ -288,6 +314,28 @@ ChattyChattyBangBang = {
 	MessageEngine = Engine,
 	Compatibility = {},
 }
+local registeredChatCommands = {}
+local unregisteredChatCommands = {}
+SlashCmdList = {}
+local registerChatCommandCalls = 0
+local registerChatCommandPersist
+local printedStatuses = {}
+function ChattyChattyBangBang:RegisterChatCommand(command, callback, persist)
+	registerChatCommandCalls = registerChatCommandCalls + 1
+	registerChatCommandPersist = persist
+	registeredChatCommands[command] = callback
+	SlashCmdList["ACECONSOLE_" .. string.upper(command)] = callback
+	return true
+end
+function ChattyChattyBangBang:UnregisterChatCommand(command)
+	registeredChatCommands[command] = nil
+	SlashCmdList["ACECONSOLE_" .. string.upper(command)] = nil
+	unregisteredChatCommands[#unregisteredChatCommands + 1] = command
+	return true
+end
+function ChattyChattyBangBang:Print(message)
+	printedStatuses[#printedStatuses + 1] = tostring(message or "")
+end
 function ChattyChattyBangBang:GetSmartSettings() return settings end
 function ChattyChattyBangBang:GetMessengerAppearanceSettings()
 	return settings.conversations.appearance
@@ -305,10 +353,20 @@ end
 
 assert(loadfile("Core/ConversationWindows.lua"))()
 local Manager = ChattyChattyBangBang.ConversationWindows
+expect(ChattyChattyBangBang.TellTarget == Manager,
+	"Tell Target settings did not resolve to the Messenger runtime owner")
 expect(Manager:Initialize(), "manager should initialize")
-expect(hooks.ChatFrame_ReplyTell and hooks.ChatFrame_ReplyTell2 and hooks.ChatEdit_ExtractTellTarget,
-	"native reply paths should be hooked")
+expect(hooks.ChatFrame_ReplyTell and hooks.ChatFrame_ReplyTell2
+	and hooks.ChatEdit_ExtractTellTarget == nil,
+	"reply hooks are incomplete or still hijack ordinary /w target parsing")
 Manager:SetEnabled(true)
+expect(type(registeredChatCommands.tt) == "function" and Manager.tellTargetCommandRegistered,
+	"Smart Messenger did not take ownership of /tt when enabled")
+expect(registerChatCommandCalls == 1 and registerChatCommandPersist == true,
+	"Smart /tt was not registered as one explicit persistent owner")
+Manager:ApplySettings()
+expect(registerChatCommandCalls == 1,
+	"reapplying unchanged Messenger settings registered /tt more than once")
 local window = Manager:GetShell()
 window.tabStrip:SetWidth(356)
 window:ApplyChromeLayout(true)
@@ -441,11 +499,20 @@ window.hovered = false
 window:ApplyChromeLayout(true)
 expect(not window.composer:IsShown(), "manual composer hide should reclaim its lane")
 
-hooks.ChatFrame_ReplyTell(ChatFrame1EditBox)
+hooks.ChatFrame_ReplyTell(ChatFrame1)
 expect(window.playerName == "ReplyTarget", "/r should select the reply conversation")
 expect(window.composer:IsShown() and window.editBox:HasFocus(), "/r should reveal and focus the TO row")
 expect(window.route:GetText() == "TO ReplyTarget", "reply row should name its destination")
 expect(escaped == ChatFrame1EditBox, "native reply edit box should close after handoff")
+-- FrameXML finishes slash-command cleanup after the secure reply hook. Mimic
+-- that late focus loss, then tick Chatty's one-frame driver: the intended
+-- Messenger field must be the final keyboard owner, not merely an immediate
+-- focus that disappears as /r returns.
+window.editBox:ClearFocus()
+expect(not window.editBox:HasFocus(), "reply cleanup simulation did not clear immediate focus")
+Manager.focusDriver.scripts.OnUpdate(Manager.focusDriver, 0)
+expect(window.editBox:HasFocus() and window.composer:IsShown(),
+	"queued /r focus did not survive native slash-command cleanup")
 
 -- Enter is the keyboard continuation path: a successful whisper should clear
 -- only the sent draft while keeping the same player's temporarily revealed TO
@@ -538,6 +605,146 @@ expect(#sentWhispers == 3 and sentWhispers[3].message == "switching send"
 expect(window.playerName == "SwitchTarget" and window.editBox:GetText() == "new target draft"
 	and window:GetActiveSession().draft == "new target draft" and not window.editBox:HasFocus(),
 	"completed Messenger send cleared or focused a newly selected conversation")
+SendChatMessage = nil
+
+-- `/tt` is owned by Messenger while Smart Chat is active. A blank command
+-- opens the current player target; inline text uses Window:Send so history,
+-- failure handling, and focus retention have exactly one send path.
+local tellTargetWhispers = {}
+SendChatMessage = function(message, chatType, language, target)
+	tellTargetWhispers[#tellTargetWhispers + 1] = {
+		message = message, chatType = chatType, language = language, target = target,
+	}
+end
+targetUnit.exists = true
+targetUnit.player = true
+targetUnit.self = false
+targetUnit.name = "CrossTarget"
+targetUnit.realm = "Other Realm"
+targetUnit.guid = "Player-CrossTarget"
+escaped = nil
+registeredChatCommands.tt("", ChatFrame1EditBox)
+expect(window.playerName == "CrossTarget-OtherRealm" and #tellTargetWhispers == 0,
+	"blank /tt did not open the realm-qualified target without sending")
+expect(window.editBox:HasFocus() and escaped == ChatFrame1EditBox,
+	"blank /tt did not immediately focus Messenger and dismiss the native field")
+window.editBox:ClearFocus()
+Manager.focusDriver.scripts.OnUpdate(Manager.focusDriver, 0)
+expect(window.editBox:HasFocus(), "/tt focus did not survive native slash cleanup")
+
+registeredChatCommands.tt("inline hello", ChatFrame1EditBox)
+expect(#tellTargetWhispers == 1 and tellTargetWhispers[1].message == "inline hello"
+	and tellTargetWhispers[1].chatType == "WHISPER"
+	and tellTargetWhispers[1].target == "CrossTarget-OtherRealm",
+	"inline /tt did not send once through the selected Messenger session")
+expect(window.editBox:GetText() == "" and window.editBox:HasFocus(),
+	"inline /tt did not leave an empty focused continuation field")
+
+-- Friendly/assist state is deliberately irrelevant: Ascension may permit
+-- cross-faction tells, so every non-self player target reaches the server.
+targetUnit.name = "HostileTarget"
+targetUnit.realm = nil
+registeredChatCommands.tt("enemy hello", ChatFrame1EditBox)
+expect(tellTargetWhispers[#tellTargetWhispers].target == "HostileTarget",
+	"/tt rejected a non-self player before the server could apply faction policy")
+
+local preservedPlayer = window.playerName
+setReplyText("preserved Messenger draft")
+local sentBeforeInvalidTargets = #tellTargetWhispers
+targetUnit.exists = false
+local invalidShell, invalidReason = registeredChatCommands.tt("do not send", ChatFrame1EditBox)
+expect(invalidShell == nil and invalidReason == "no-target"
+	and window.playerName == preservedPlayer and window.editBox:GetText() == "preserved Messenger draft"
+	and #tellTargetWhispers == sentBeforeInvalidTargets,
+	"missing /tt target changed the active Messenger session, draft, or send count")
+expect(printedStatuses[#printedStatuses] == "/tt needs a player target.",
+	"missing /tt target did not report a concise reason")
+
+targetUnit.exists = true
+targetUnit.player = false
+local _, nonPlayerReason = Manager:ResolveTellTarget()
+expect(nonPlayerReason == "not-player", "/tt accepted a non-player unit")
+targetUnit.player = true
+targetUnit.self = true
+local _, selfReason = Manager:ResolveTellTarget()
+expect(selfReason == "self", "/tt accepted the player as their own tell target")
+targetUnit.self = false
+
+-- If command focusing is disabled, Chatty may still open a requested target,
+-- but it must leave the established native reply field alone and must not
+-- schedule a later focus steal.
+settings.conversations.focusReplyFieldOnCommands = false
+targetUnit.name = "NoFocusTarget"
+targetUnit.realm = nil
+window.editBox:ClearFocus()
+escaped = nil
+registeredChatCommands.tt("", ChatFrame1EditBox)
+expect(window.playerName == "NoFocusTarget" and not window.editBox:HasFocus()
+	and escaped == nil and Manager.pendingComposerFocusKey == nil,
+	"disabled /tt focus still dismissed the native field or queued a focus steal")
+hooks.ChatFrame_ReplyTell2(ChatFrame1)
+expect(window.playerName == "ToldTarget" and not window.editBox:HasFocus()
+	and escaped == nil and Manager.pendingComposerFocusKey == nil,
+	"disabled shared reply focus still stole ReplyTell2 from the native field")
+hooks.ChatFrame_ReplyTell(ChatFrame1)
+expect(window.playerName == "ReplyTarget" and not window.editBox:HasFocus()
+	and escaped == nil and Manager.pendingComposerFocusKey == nil,
+	"disabled shared reply focus still stole /r from the native field")
+settings.conversations.focusReplyFieldOnCommands = true
+
+-- A queued focus belongs to one exact selected session and one visible shell.
+-- Switching tabs before the next frame must discard it rather than refocusing
+-- or reopening the old target.
+targetUnit.name = "QueuedTarget"
+registeredChatCommands.tt("", ChatFrame1EditBox)
+window.editBox:ClearFocus()
+Manager:OpenForPlayer("ManualSwitch", true)
+Manager.focusDriver.scripts.OnUpdate(Manager.focusDriver, 0)
+expect(window.playerName == "ManualSwitch" and not window.editBox:HasFocus(),
+	"stale /tt focus moved into a different Messenger session")
+
+settings.conversations.tellTargetEnabled = false
+local unregistersBeforeDisable = #unregisteredChatCommands
+Manager:ApplySettings()
+expect(registeredChatCommands.tt == nil and not Manager.tellTargetCommandRegistered
+	and #unregisteredChatCommands == unregistersBeforeDisable + 1
+	and unregisteredChatCommands[#unregisteredChatCommands] == "tt",
+	"disabling Tell Target did not release /tt ownership")
+Manager:ApplySettings()
+expect(#unregisteredChatCommands == unregistersBeforeDisable + 1,
+	"reapplying disabled Tell Target unregistered /tt more than once")
+settings.conversations.tellTargetEnabled = true
+local registrationsBeforeEnable = registerChatCommandCalls
+Manager:ApplySettings()
+expect(type(registeredChatCommands.tt) == "function" and Manager.tellTargetCommandRegistered
+	and registerChatCommandCalls == registrationsBeforeEnable + 1
+	and registerChatCommandPersist == true,
+	"re-enabling Tell Target did not reclaim /tt ownership")
+Manager:ApplySettings()
+expect(registerChatCommandCalls == registrationsBeforeEnable + 1,
+	"reapplying enabled Tell Target registered a duplicate /tt handler")
+
+-- A failure transition may let the weak native fallback replace the global
+-- AceConsole slot before Messenger receives its disable call. Clearing Smart's
+-- stale flag must not unregister that newer owner.
+local fallbackTellTargetHandler = function() end
+SlashCmdList.ACECONSOLE_TT = fallbackTellTargetHandler
+registeredChatCommands.tt = fallbackTellTargetHandler
+settings.conversations.tellTargetEnabled = false
+local unregistersBeforeReplacementDisable = #unregisteredChatCommands
+Manager:ApplySettings()
+expect(SlashCmdList.ACECONSOLE_TT == fallbackTellTargetHandler
+	and registeredChatCommands.tt == fallbackTellTargetHandler
+	and not Manager.tellTargetCommandRegistered
+	and #unregisteredChatCommands == unregistersBeforeReplacementDisable,
+	"Messenger teardown unregistered a newer fallback /tt owner")
+-- Simulate the weak fallback's normal module disable before Smart reclaims /tt.
+SlashCmdList.ACECONSOLE_TT = nil
+registeredChatCommands.tt = nil
+settings.conversations.tellTargetEnabled = true
+Manager:ApplySettings()
+expect(type(registeredChatCommands.tt) == "function" and Manager.tellTargetCommandRegistered,
+	"Messenger did not reclaim /tt after the fallback owner released it")
 SendChatMessage = nil
 
 settings.conversations.actionButtonStyle = "text"
@@ -883,5 +1090,26 @@ expect(window.frame:GetAlpha() == 0.8 and window.frame.backgroundAlpha == 0.25
 	and window.confirm.borderAlpha == 0.6 and window.display:GetAlpha() == 0.45
 	and window.title:GetAlpha() == 0.45 and activeSession.tab.text:GetAlpha() == 0.45,
 	"Theme refresh did not restore Messenger's independent appearance settings")
+
+-- Smart/runtime lifecycle transitions release and reclaim the persistent
+-- command exactly once. This is the clean gap in which native fallback's weak
+-- Tell Target module can own /tt without either handler shadowing the other.
+local lifecycleRegistrations = registerChatCommandCalls
+local lifecycleUnregistrations = #unregisteredChatCommands
+Manager:SetEnabled(false)
+expect(registeredChatCommands.tt == nil and not Manager.tellTargetCommandRegistered
+	and #unregisteredChatCommands == lifecycleUnregistrations + 1,
+	"disabling Messenger did not release its persistent /tt owner exactly once")
+Manager:SetEnabled(false)
+expect(#unregisteredChatCommands == lifecycleUnregistrations + 1,
+	"repeated Messenger disable unregistered /tt more than once")
+Manager:SetEnabled(true)
+expect(type(registeredChatCommands.tt) == "function" and Manager.tellTargetCommandRegistered
+	and registerChatCommandCalls == lifecycleRegistrations + 1
+	and registerChatCommandPersist == true,
+	"re-enabling Messenger did not reclaim one persistent /tt owner")
+Manager:SetEnabled(true)
+expect(registerChatCommandCalls == lifecycleRegistrations + 1,
+	"repeated Messenger enable registered a duplicate /tt handler")
 
 print("ConversationWindowsLayout.mock.lua: PASS")

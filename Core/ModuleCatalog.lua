@@ -37,7 +37,7 @@ local catalog = {
 	{ id = "chat-copy", label = "Chat Copy", legacyName = "Chat Copy", compatibility = COMPATIBILITY.NATIVE_FALLBACK, summary = "Native chat-frame copy window." },
 	{ id = "timestamps", label = "Timestamps", legacyName = "Timestamps", compatibility = COMPATIBILITY.NATIVE_FALLBACK, summary = "Native chat timestamp formatter." },
 	{ id = "invite-links", label = "Invite Links", legacyName = "Invite Links", compatibility = COMPATIBILITY.NATIVE_FALLBACK, summary = "Native chat invite-link behavior." },
-	{ id = "tell-target", label = "Tell Target (/tt)", legacyName = "Tell Target (/tt)", compatibility = COMPATIBILITY.NATIVE_FALLBACK, summary = "Native edit-box /tt command." },
+	{ id = "tell-target", label = "Tell Target (/tt)", legacyName = "Tell Target (/tt)", compatibility = COMPATIBILITY.SMART_NATIVE, configPage = "conversations", configSection = "opening", smartSetting = "tellTargetEnabled", summary = "Chatty's /tt command opens your current player target in Messenger; its reply-field focus behavior is shared with /r." },
 	{ id = "highlights", label = "Highlights", legacyName = "Highlights", compatibility = COMPATIBILITY.NATIVE_FALLBACK, summary = "Native global-filter highlights. Not replayed by Smart Chat." },
 	{ id = "justify-text", label = "Justify Text", legacyName = "Justify Text", compatibility = COMPATIBILITY.NATIVE_FALLBACK, summary = "Native chat-frame text alignment." },
 	{ id = "chat-autolog", label = "Chat Autolog", legacyName = "Chat Autolog", compatibility = COMPATIBILITY.NATIVE_FALLBACK, summary = "Native chat log automation." },

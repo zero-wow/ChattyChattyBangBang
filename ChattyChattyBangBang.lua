@@ -1,5 +1,5 @@
 ChattyChattyBangBang = LibStub("AceAddon-3.0"):NewAddon("ChattyChattyBangBang", "AceConsole-3.0", "AceHook-3.0") 	--, "AceHook-3.0", "AceTimer-3.0", "AceConsole-3.0", "AceEvent-3.0", "LibSink-2.0")
-local FALLBACK_VERSION = "2.24.0"
+local FALLBACK_VERSION = "2.25.0"
 local metadataVersion = GetAddOnMetadata and GetAddOnMetadata("ChattyChattyBangBang", "Version")
 if type(metadataVersion) ~= "string" or metadataVersion == "" then
 	metadataVersion = FALLBACK_VERSION
@@ -71,12 +71,13 @@ local defaults = {
 		-- player's current ChatFontNormal face; non-empty values are raw
 		-- LibSharedMedia font keys resolved by Core/Settings.lua.
 		textAppearance = {
-			schema = 2,
+			schema = 3,
 			size = 0,
 			outline = "INHERIT",
 			-- ScrollingMessageFrame:SetSpacing uses pixels between rendered lines.
 			-- Keep the default compact while allowing a little breathing room.
 			spacing = 1,
+			entryGapRows = 0,
 		},
 		dock = {
 				point = "BOTTOMLEFT",
@@ -120,6 +121,7 @@ local defaults = {
 					schema = 2,
 					enabled = false,
 					extent = "full",
+					extendUnderScrollbar = false,
 					color = { mode = "theme", theme = "surfaceRaised", r = 0.085, g = 0.112, b = 0.158 },
 					alpha = 0.50,
 			},
@@ -169,6 +171,9 @@ local defaults = {
 			conversations = {
 				autoOpenWhispers = true,
 				deferInCombat = true,
+				tellTargetEnabled = true,
+				focusReplyFieldOnCommands = true,
+				tellTargetSettingsSchema = 1,
 				chromeAutoHide = false,
 				titleBarVisibility = "inherit",
 				actionVisibility = "inherit",

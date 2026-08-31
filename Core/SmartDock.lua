@@ -99,6 +99,10 @@ local MESSAGE_SCROLL_TO_BOTTOM_GAP = 4
 local MESSAGE_SCROLLBAR_DISPLAY_INSET = MESSAGE_SCROLLBAR_RIGHT_INSET
 	+ math.max(MESSAGE_SCROLLBAR_WIDTH, MESSAGE_SCROLL_TO_BOTTOM_WIDTH)
 	+ MESSAGE_SCROLLBAR_TEXT_GUTTER
+-- Full-width row shading may paint through the otherwise transparent scrollbar
+-- lane, but stops at the backdrop's one-pixel inner inset so the panel border
+-- remains crisp. The message viewport and scrollbar hit geometry never move.
+local MESSAGE_BAND_PANEL_EDGE_INSET = 1
 -- When the title bar is intentionally hidden, the unused portion of the tab
 -- rail becomes its quiet replacement grab area.  Use the same small movement
 -- threshold as tab reordering so a simple click in the rail never nudges the
@@ -151,6 +155,15 @@ local MANUAL_WRAP_VALIDATION_PASSES = 4
 -- dock's 720px maximum height can expose fewer than ninety entries at once;
 -- 128 keeps the pool strictly bounded while covering every supported layout.
 local MESSAGE_BAND_POOL_LIMIT = 128
+-- ScrollingMessageFrame supports a per-rendered-line pixel gap but has no
+-- per-message height API. A logical-entry gap is therefore represented by a
+-- transparent, non-empty physical row inside the *same* AddMessage call. Keep
+-- the markup here so the renderer, cache, and focused mock share one exact
+-- contract. A bare newline is not reliable on old clients because a trailing
+-- empty line can be discarded by either the message frame or FontString.
+local ENTRY_GAP_SPACER_ROW = "|c00FFFFFF |r\n"
+local ENTRY_GAP_ROWS_MIN = 0
+local ENTRY_GAP_ROWS_MAX = 2
 local MESSAGE_BAND_EXTENTS = {
 	full = true,
 	afterTimestamp = true,
@@ -652,11 +665,15 @@ local function normalizeSmartChatTextAppearance(appearance)
 	-- Settings enforces 0-8. Mirror that guard here for mixed-version reloads
 	-- and manually edited SavedVariables before they reach the native frame.
 	spacing = math.max(0, math.min(8, spacing))
+	local entryGapRows = tonumber(appearance.entryGapRows)
+	entryGapRows = math.floor((entryGapRows or ENTRY_GAP_ROWS_MIN) + 0.5)
+	entryGapRows = math.max(ENTRY_GAP_ROWS_MIN, math.min(ENTRY_GAP_ROWS_MAX, entryGapRows))
 	return {
 		font = font,
 		size = size,
 		outline = outline,
 		spacing = spacing,
+		entryGapRows = entryGapRows,
 	}
 end
 
@@ -3312,6 +3329,25 @@ function Dock:MeasureDisplayRecordLines(renderedText)
 	return math.max(1, math.floor((textHeight / fontHeight) + 0.45))
 end
 
+function Dock:GetDisplayRecordGapRows(index)
+	-- There is no separator before the first logical message. Every later
+	-- record receives its requested rows *before* its text, which avoids a
+	-- permanent trailing blank row below the newest message.
+	if not index or index <= 1 then
+		return 0
+	end
+	return self:GetSmartChatTextAppearance(self.activeView).entryGapRows or 0
+end
+
+function Dock:FormatDisplayRecordForDisplay(renderedText, gapRows)
+	gapRows = math.max(ENTRY_GAP_ROWS_MIN, math.min(ENTRY_GAP_ROWS_MAX,
+		math.floor(tonumber(gapRows) or 0)))
+	if gapRows <= 0 then
+		return renderedText
+	end
+	return string.rep(ENTRY_GAP_SPACER_ROW, gapRows) .. renderedText
+end
+
 function Dock:RefreshDisplayRecordMeasurements()
 	if not self.display or not self.displayRecords then
 		return
@@ -3323,7 +3359,14 @@ function Dock:RefreshDisplayRecordMeasurements()
 	self.displayMeasurementWidth = width
 	for index = 1, #self.displayRecords do
 		local entry = self.displayRecords[index]
-		entry.lines = self:MeasureDisplayRecordLines(self:FormatDisplayRecord(entry.record))
+		-- Preserve the rows that were actually encoded into this AddMessage
+		-- payload. Once ScrollingMessageFrame evicts its oldest message, the new
+		-- first cached entry can still contain its original leading spacer; using
+		-- its new table index would make resize-time hit/band geometry one row short.
+		entry.gapRows = math.max(ENTRY_GAP_ROWS_MIN, math.min(ENTRY_GAP_ROWS_MAX,
+			math.floor(tonumber(entry.gapRows) or 0)))
+		entry.contentLines = self:MeasureDisplayRecordLines(self:FormatDisplayRecord(entry.record))
+		entry.lines = entry.gapRows + entry.contentLines
 	end
 end
 
@@ -3365,19 +3408,26 @@ function Dock:GetVisibleDisplayRecordEntries()
 	for index = 1, #records do
 		local entry = records[index]
 		local entryLines = math.max(1, tonumber(entry.lines) or 1)
+		local gapRows = math.max(0, math.min(entryLines - 1, math.floor(tonumber(entry.gapRows) or 0)))
 		local entryFirst = logicalCursor + 1
 		local entryLast = logicalCursor + entryLines
+		local contentFirst = entryFirst + gapRows
 		logicalCursor = entryLast
 		if entryLast >= firstVisibleLine and entryFirst <= lastVisibleLine then
 			table.insert(visible, {
 				index = index,
 				entry = entry,
 				record = entry.record,
-				firstLine = entryFirst,
-				lastLine = entryLast,
-				visibleFirstLine = math.max(entryFirst, firstVisibleLine),
-				visibleLastLine = math.min(entryLast, lastVisibleLine),
-			})
+			firstLine = entryFirst,
+			lastLine = entryLast,
+			contentFirstLine = contentFirst,
+			contentLastLine = entryLast,
+			visibleFirstLine = math.max(entryFirst, firstVisibleLine),
+			visibleLastLine = math.min(entryLast, lastVisibleLine),
+			visibleContentFirstLine = math.max(contentFirst, firstVisibleLine),
+			visibleContentLastLine = math.min(entryLast, lastVisibleLine),
+			hasVisibleContent = entryLast >= firstVisibleLine and contentFirst <= lastVisibleLine,
+		})
 		end
 	end
 	return visible, {
@@ -3397,7 +3447,7 @@ function Dock:GetVisibleAlignmentRecords()
 	local entries = self:GetVisibleDisplayRecordEntries()
 	local records = {}
 	for index = 1, #entries do
-		if entries[index].record then
+		if entries[index].hasVisibleContent and entries[index].record then
 			table.insert(records, entries[index].record)
 		end
 	end
@@ -3481,6 +3531,7 @@ function Dock:GetMessageBandAppearance()
 	return {
 		enabled = stored.enabled == true,
 		extent = normalizeMessageBandExtent(stored.extent),
+		extendUnderScrollbar = stored.extendUnderScrollbar == true,
 		r = r,
 		g = g,
 		b = b,
@@ -3582,6 +3633,17 @@ function Dock:RefreshMessageBands()
 		self:HideMessageBands()
 		return false
 	end
+	local bandRightOffset = 0
+	if appearance.extendUnderScrollbar then
+		local rightInset = tonumber(self.transientMessageRightInset)
+		if rightInset == nil then
+			local settings = addon.GetSmartSettings and addon:GetSmartSettings() or nil
+			local dockSettings = type(settings) == "table" and settings.dock or nil
+			rightInset = type(dockSettings) == "table" and dockSettings.showScrollButtons == false
+				and 4 or MESSAGE_SCROLLBAR_DISPLAY_INSET
+		end
+		bandRightOffset = math.max(0, rightInset - MESSAGE_BAND_PANEL_EDGE_INSET)
+	end
 
 	local used = 0
 	for visibleIndex = 1, #visibleEntries do
@@ -3590,20 +3652,20 @@ function Dock:RefreshMessageBands()
 		local index = visible.index
 		local alternating = entry.bandAlternate
 		if alternating == nil then alternating = index % 2 == 0 end
-		if alternating then
+		if alternating and visible.hasVisibleContent then
 			local startX = self:MeasureMessageBandPrefix(entry.record, appearance.extent)
 			if startX and startX < displayWidth and used < MESSAGE_BAND_POOL_LIMIT then
 				used = used + 1
 				local band = self:AcquireMessageBand(used)
 				if band then
 					local top = geometry.topInset
-						+ (visible.visibleFirstLine - geometry.firstVisibleLine) * lineHeight
+						+ (visible.visibleContentFirstLine - geometry.firstVisibleLine) * lineHeight
 					local bottom = math.min(displayHeight,
 						geometry.topInset
-						+ (visible.visibleLastLine - geometry.firstVisibleLine + 1) * lineHeight)
+						+ (visible.visibleContentLastLine - geometry.firstVisibleLine + 1) * lineHeight)
 					band:ClearAllPoints()
 					band:SetPoint("TOPLEFT", display, "TOPLEFT", math.max(0, startX), -top)
-					band:SetPoint("BOTTOMRIGHT", display, "TOPRIGHT", 0, -bottom)
+					band:SetPoint("BOTTOMRIGHT", display, "TOPRIGHT", bandRightOffset, -bottom)
 					band:SetVertexColor(appearance.r, appearance.g, appearance.b, appearance.alpha)
 					band:Show()
 				end
@@ -3635,13 +3697,17 @@ function Dock:AppendDisplayRecord(record)
 	if not self.display or not record then
 		return
 	end
-	local renderedText = self:FormatDisplayRecord(record)
-	self.display:AddMessage(renderedText, 1, 1, 1)
 	self.displayRecords = self.displayRecords or {}
 	local previous = self.displayRecords[#self.displayRecords]
+	local gapRows = self:GetDisplayRecordGapRows(#self.displayRecords + 1)
+	local renderedText = self:FormatDisplayRecord(record)
+	local contentLines = self:MeasureDisplayRecordLines(renderedText)
+	self.display:AddMessage(self:FormatDisplayRecordForDisplay(renderedText, gapRows), 1, 1, 1)
 	table.insert(self.displayRecords, {
 		record = record,
-		lines = self:MeasureDisplayRecordLines(renderedText),
+		gapRows = gapRows,
+		contentLines = contentLines,
+		lines = gapRows + contentLines,
 		-- Alternate against the previous *visible record*, not MessageEngine's
 		-- global id: a filtered tab can skip ids but should never show two adjacent
 		-- entries with the same zebra state.
@@ -3685,7 +3751,9 @@ function Dock:GetDisplayRecordAtCursor()
 
 	for index = 1, #visibleEntries do
 		local visible = visibleEntries[index]
-		if targetLine >= visible.visibleFirstLine and targetLine <= visible.visibleLastLine then
+		if visible.hasVisibleContent
+			and targetLine >= visible.visibleContentFirstLine
+			and targetLine <= visible.visibleContentLastLine then
 			return visible.record, lineInViewport, lineHeight, topInset
 		end
 	end

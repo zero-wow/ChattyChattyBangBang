@@ -226,6 +226,8 @@ local settings = {
 	conversations = {
 		autoOpenWhispers = true,
 		deferInCombat = true,
+		tellTargetEnabled = true,
+		focusReplyFieldOnCommands = true,
 		chromeAutoHide = false,
 		titleBarVisibility = "inherit",
 		actionVisibility = "inherit",
@@ -285,6 +287,8 @@ function addon:GetMessengerSettings()
 	return {
 		autoOpenWhispers = conversations.autoOpenWhispers,
 		deferInCombat = conversations.deferInCombat,
+		tellTargetEnabled = conversations.tellTargetEnabled,
+		focusReplyFieldOnCommands = conversations.focusReplyFieldOnCommands,
 		chromeAutoHide = conversations.chromeAutoHide,
 		titleBarVisibility = conversations.titleBarVisibility,
 		actionVisibility = conversations.actionVisibility,
@@ -306,6 +310,8 @@ end
 
 function addon:SetMessengerPopupWhispersEnabled(value) settings.conversations.autoOpenWhispers = value return true end
 function addon:SetMessengerCombatDeferralEnabled(value) settings.conversations.deferInCombat = value return true end
+function addon:SetTellTargetEnabled(value) settings.conversations.tellTargetEnabled = value return true, value end
+function addon:SetMessengerReplyCommandFocusEnabled(value) settings.conversations.focusReplyFieldOnCommands = value return true, value end
 function addon:SetMessengerChromeAutoHideEnabled(value) settings.conversations.chromeAutoHide = value return true end
 function addon:SetMessengerElementVisibility(element, mode)
 	local keys = { title = "titleBarVisibility", actions = "actionVisibility", composer = "composerVisibility" }
@@ -462,11 +468,19 @@ function addon:GetSmartChatTextAppearanceOptions()
 		outlines = {},
 		size = { minimum = 8, maximum = 32, inherit = 0 },
 		spacing = { minimum = 0, maximum = 8, default = 1 },
+		entryGapRows = { minimum = 0, maximum = 2, default = 0 },
 	}
 end
 
+local smartChatTextAppearance = { size = 0, outline = "INHERIT", spacing = 1, entryGapRows = 0 }
 function addon:GetSmartChatTextAppearance()
-	return { size = 0, outline = "INHERIT", spacing = 1 }
+	return smartChatTextAppearance
+end
+function addon:SetSmartChatTextAppearance(_, patch)
+	for key, value in pairs(patch or {}) do
+		smartChatTextAppearance[key] = value
+	end
+	return true, smartChatTextAppearance
 end
 
 function addon:GetViewSourceColumnAlignment()
@@ -538,6 +552,31 @@ assert(sectionTabsWidth <= 636
 	and config.messengerSectionButtons.actions.point[4] == 6
 	and config.messengerSectionButtons.appearance.point[4] == 6,
 	"Messenger's five attached tabs overflow or lost their six-pixel control gutters")
+assert(config.messengerTellTargetToggle and config.messengerTellTargetToggle:IsShown()
+	and config.messengerReplyCommandFocusToggle and config.messengerReplyCommandFocusToggle:IsShown(),
+	"Messenger OPENING did not expose both chat-shortcut settings")
+assert(config.messengerTellTargetToggle.label:GetText() == "ENABLE /TT TELL TARGET"
+	and config.messengerReplyCommandFocusToggle.label:GetText() == "FOCUS REPLY FIELD FOR /R AND /TT",
+	"Messenger shortcut settings do not clearly identify /tt and shared /r focus")
+assert(config.messengerTellTargetToggle.point[4] == 8
+	and config.messengerTellTargetToggle.point[5] == -283
+	and config.messengerReplyCommandFocusToggle.point[4] == 8
+	and config.messengerReplyCommandFocusToggle.point[5] == -313
+	and config.messengerTellTargetToggle.width == 636
+	and config.messengerReplyCommandFocusToggle.width == 636,
+	"Messenger shortcut controls escaped their full-width x=8..644 lanes")
+assert((-config.messengerReplyCommandFocusToggle.point[5])
+	- (-config.messengerTellTargetToggle.point[5] + config.messengerTellTargetToggle.height) >= 6,
+	"Messenger shortcut hit targets lost their visible vertical gutter")
+config.messengerTellTargetToggle:SetValue(false)
+config.messengerReplyCommandFocusToggle:SetValue(false)
+assert(settings.conversations.tellTargetEnabled == false
+	and settings.conversations.focusReplyFieldOnCommands == false,
+	"Messenger shortcut controls did not save through their public APIs")
+config:RefreshMessengerPage()
+assert(config.messengerTellTargetToggle.checked == false
+	and config.messengerReplyCommandFocusToggle.checked == false,
+	"Messenger shortcut controls did not refresh their saved state")
 
 config:SetMessengerSection("tabs")
 assert(config.messengerSection == "tabs"
@@ -550,6 +589,9 @@ assert(not config.messengerSectionGroups.opening[1]:IsShown()
 	and not config.messengerSectionGroups.actions[1]:IsShown()
 	and not config.messengerSectionGroups.appearance[1]:IsShown(),
 	"Messenger TABS did not exclusively replace every sibling pane")
+assert(not config.messengerTellTargetToggle:IsShown()
+	and not config.messengerReplyCommandFocusToggle:IsShown(),
+	"Messenger OPENING shortcut controls leaked into the TABS pane")
 assert(config.messengerTabNameMaxLengthEdit:GetText() == "14",
 	"Messenger player-name length did not read its saved/default value")
 assert(config.messengerTabNameLengthTitle:GetText() == "PLAYER NAME LENGTH"
@@ -926,6 +968,16 @@ assert(config.messageTextSizeLabel.point[4] == 0 and config.messageTextSizeLabel
 assert(config.messageTextSpacingLabel.point[4] == 204 and config.messageTextSpacingLabel.point[5] == -82
 	and config.messageTextSpacingEdit.width == 34 and config.messageTextSpacingEdit.point[4] == 5,
 	"line-gap controls escaped or overlapped the bounded SIZE row")
+assert(config.messageTextEntryGapLabel.point[2] == config.messageTextResetButton
+	and config.messageTextEntryGapLabel.point[4] == 14
+	and config.messageTextEntryGapEdit.width == 34 and config.messageTextEntryGapEdit.point[4] == 5,
+	"logical entry-gap control lost its explicit live-width reset-row gutter")
+local resetAndEntryGapWidth = config.messageTextResetButton.width + 14
+	+ math.ceil(string.len(config.messageTextEntryGapLabel:GetText()) * 7 * 1.7)
+	+ 5 + config.messageTextEntryGapEdit.width + 5
+	+ math.ceil(string.len(config.messageTextEntryGapHint:GetText()) * 7 * 1.7)
+assert(resetAndEntryGapWidth <= 408,
+	"reset and logical entry-gap controls can overlap or exceed the wide-font inspector")
 assert(config.messageTextOutlineLabel.point[4] == 0 and config.messageTextOutlineLabel.point[5] == -110
 	and config.messageTextOutlineButtons[1].point[2] == config.messageTextOutlineLabel
 	and config.messageTextOutlineButtons[1].point[4] == 6,
@@ -1070,6 +1122,14 @@ config.messageTextSpacingEdit:SetText("1.5")
 config.messageTextSpacingEdit.scripts.OnEditFocusLost(config.messageTextSpacingEdit)
 assert(config.messageTextSpacingEdit:GetText() == "1" and config.viewsStatus:GetText():find("whole number", 1, true),
 	"line-gap UI rounded a decimal instead of rejecting it as a noninteger")
+config.messageTextEntryGapEdit:SetText("1.5")
+config.messageTextEntryGapEdit.scripts.OnEditFocusLost(config.messageTextEntryGapEdit)
+assert(config.messageTextEntryGapEdit:GetText() == "0" and config.viewsStatus:GetText():find("whole number", 1, true),
+	"entry-gap UI rounded a fractional logical row instead of rejecting it")
+config.messageTextEntryGapEdit:SetText("2")
+config.messageTextEntryGapEdit.scripts.OnEditFocusLost(config.messageTextEntryGapEdit)
+assert(smartChatTextAppearance.entryGapRows == 2,
+	"entry-gap UI did not send a valid logical-row value through the public text API")
 config.messageTextChooseFontButton.scripts.OnClick(config.messageTextChooseFontButton)
 assert(config.messageTextFontPicker:IsShown() and config.messageTextFontRows[1]:IsShown(),
 	"compact font dropdown did not expose the inherited current-chat fallback")

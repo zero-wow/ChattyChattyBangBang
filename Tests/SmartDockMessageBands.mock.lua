@@ -4,6 +4,7 @@
 local bandSettings = {
 	enabled = true,
 	extent = "afterPlayer",
+	extendUnderScrollbar = false,
 	color = { theme = "surfaceRaised" },
 	alpha = 0.22,
 }
@@ -69,6 +70,7 @@ dock.display = display
 dock.messageMeasure = measure
 dock.messageBandHost = host
 dock.messageBandPool = {}
+dock.transientMessageRightInset = 16
 dock.displayMeasurementWidth = 300 -- The test supplies exact logical line counts.
 dock.displayRecords = {
 	{ record = { timestamp = "12:34", sender = "One", text = "one" }, lines = 1, bandAlternate = false },
@@ -117,6 +119,30 @@ assert(textures[1].points[1][4] == 35, "AFTER CHANNEL used the wrong formatted b
 bandSettings.extent = "full"
 dock:RefreshMessageBands()
 assert(textures[1].points[1][4] == 0, "FULL LINE did not begin at the chat edge")
+assert(textures[1].points[2][4] == 0,
+	"ordinary message shade no longer stopped at the readable text viewport")
+
+-- Full bleed changes only the decorative right endpoint: the chat viewport,
+-- every configured left boundary, and the scrollbar hit lane remain separate.
+bandSettings.extendUnderScrollbar = true
+dock:RefreshMessageBands()
+assert(textures[1].points[1][4] == 0 and textures[1].points[2][4] == 15,
+	"full-bleed shade did not reach the content panel's one-pixel inner edge")
+bandSettings.extent = "afterPlayer"
+dock:RefreshMessageBands()
+assert(textures[1].points[1][4] == 60 and textures[1].points[2][4] == 15,
+	"full-bleed shade changed the configured metadata boundary instead of only its right edge")
+
+-- Before the first live layout pass, derive the same lane from the persisted
+-- scrollbar preference. Hidden scrollbar chrome still keeps a stable text
+-- inset while decorative paint reaches the same one-pixel panel edge.
+dock.transientMessageRightInset = nil
+function ChattyChattyBangBang:GetSmartSettings()
+	return { dock = { showScrollButtons = false } }
+end
+dock:RefreshMessageBands()
+assert(textures[1].points[2][4] == 3,
+	"pre-layout full bleed did not derive the hidden-scrollbar viewport inset")
 
 bandSettings.enabled = false
 assert(dock:RefreshMessageBands() == false and textures[1].shown == false,

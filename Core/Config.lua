@@ -299,7 +299,7 @@ end
 local function getAddonVersion()
 	local version = addon.GetVersion and addon:GetVersion() or addon.VERSION
 	if type(version) ~= "string" or version == "" then
-		return "2.24.0"
+		return "2.25.0"
 	end
 	return version
 end
@@ -1163,6 +1163,9 @@ function Config:RefreshDockPage()
 	local bands = addon.GetSmartChatMessageBandSettings and addon:GetSmartChatMessageBandSettings()
 		or dock.messageBands or {}
 	if self.dockMessageBandsToggle then self.dockMessageBandsToggle:SetValue(bands.enabled == true, true) end
+	if self.dockMessageBandsScrollbarToggle then
+		self.dockMessageBandsScrollbarToggle:SetValue(bands.extendUnderScrollbar == true, true)
+	end
 	local extent = bands.extent or "full"
 	for id, button in pairs(self.dockMessageBandExtentButtons or {}) do
 		setChoiceStyle(button, id == extent)
@@ -1633,7 +1636,7 @@ function Config:BuildDockPage()
 	local bandsTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
 	bandsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -225)
 	bandsTitle:SetText("TABLE-STYLE MESSAGE ROWS")
-	self.dockMessageBandsToggle = Theme:CreateCompactToggle(page, "SHADE ALTERNATING ROWS", 250)
+	self.dockMessageBandsToggle = Theme:CreateCompactToggle(page, "ALTERNATING ROWS", 250)
 	self.dockMessageBandsToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -244)
 	self.dockMessageBandsToggle.OnValueChanged = function(_, value)
 		if type(addon.SetSmartChatMessageBandsEnabled) == "function" then
@@ -1648,6 +1651,22 @@ function Config:BuildDockPage()
 	end
 	setControlTooltip(self.dockMessageBandsToggle, "Shade alternating messages",
 		"A wrapped message keeps one continuous background; the next logical chat entry alternates.")
+	self.dockMessageBandsScrollbarToggle = Theme:CreateCompactToggle(page, "UNDER SCROLLBAR", 230)
+	self.dockMessageBandsScrollbarToggle:SetPoint("LEFT", self.dockMessageBandsToggle, "RIGHT", CONTROL_GAP, 0)
+	self.dockMessageBandsScrollbarToggle.OnValueChanged = function(_, value)
+		if type(addon.SetSmartChatMessageBandExtendUnderScrollbar) == "function" then
+			addon:SetSmartChatMessageBandExtendUnderScrollbar(value)
+		else
+			local dock = getDockSettings()
+			dock.messageBands = dock.messageBands or {}
+			dock.messageBands.extendUnderScrollbar = value and true or false
+			if addon.SmartDock and addon.SmartDock.RefreshMessageBands then addon.SmartDock:RefreshMessageBands() end
+		end
+		Config:SetDockStatus(value and "Alternating shade now continues beneath the transparent scrollbar lane."
+			or "Alternating shade now ends before the scrollbar lane.", "success")
+	end
+	setControlTooltip(self.dockMessageBandsScrollbarToggle, "Extend row shade",
+		"Extends only the alternating background through the transparent scrollbar lane. Chat text, wrapping, hyperlinks, and scrollbar hit targets never move.")
 	local extentTitle = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
 	extentTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -278)
 	extentTitle:SetText("ROW SPAN")
@@ -2220,7 +2239,7 @@ function Config:BuildDockPage()
 			responsiveTitle, self.dockResponsiveMetadataToggle,
 			lineSpacingTitle, self.dockLineSpacingEdit, lineSpacingHint,
 			responsiveHint,
-			bandsTitle, self.dockMessageBandsToggle, extentTitle,
+			bandsTitle, self.dockMessageBandsToggle, self.dockMessageBandsScrollbarToggle, extentTitle,
 			bandColorTitle, bandAlphaLabel, self.dockMessageBandAlphaEdit,
 			self.dockMessageBandsResetButton, bandsHint,
 		},
@@ -4189,6 +4208,7 @@ local function getSmartChatTextAppearanceOptions()
 		},
 		size = { minimum = 8, maximum = 32, inherit = 0 },
 		spacing = { minimum = 0, maximum = 8, default = 1 },
+		entryGapRows = { minimum = 0, maximum = 2, default = 0 },
 	}
 end
 
@@ -4199,7 +4219,7 @@ local function getSmartChatTextAppearance(scope)
 			return appearance
 		end
 	end
-	return { size = 0, outline = "INHERIT" }
+	return { size = 0, outline = "INHERIT", spacing = 1, entryGapRows = 0 }
 end
 
 local function getSmartChatTextAppearanceOverride(scope)
@@ -4475,6 +4495,9 @@ function Config:RefreshSmartChatTextAppearanceControls()
 	end
 	if self.messageTextSpacingEdit then
 		self.messageTextSpacingEdit:SetText(tostring(tonumber(appearance.spacing) or 1))
+	end
+	if self.messageTextEntryGapEdit then
+		self.messageTextEntryGapEdit:SetText(tostring(tonumber(appearance.entryGapRows) or 0))
 	end
 	for _, button in ipairs(self.messageTextOutlineButtons or {}) do
 		style(button, button.outlineId == (appearance.outline or "INHERIT"))
@@ -5153,6 +5176,41 @@ function Config:BuildViewsPage()
 	spacingHint:SetText("0-8 PX")
 	self.messageTextSpacingHint = spacingHint
 
+	-- ScrollingMessageFrame only supports pixels between every rendered line.
+	-- ENTRY GAP is deliberately separate: it inserts blank rows only between
+	-- logical messages, so a wrapped message remains visually cohesive.
+	local entryGapLabel = Theme:CreateText(text, "GameFontHighlightSmall", "textMuted")
+	-- This shares the reset row. Anchor to the live-width reset button so wider
+	-- client fonts retain an explicit gutter instead of pushing the two controls
+	-- into one another.
+	entryGapLabel:SetText("ENTRY GAP")
+	self.messageTextEntryGapLabel = entryGapLabel
+	self.messageTextEntryGapEdit = Theme:CreateEditBox(text, 34, 20, false)
+	self.messageTextEntryGapEdit:SetPoint("LEFT", entryGapLabel, "RIGHT", 5, 0)
+	self.messageTextEntryGapEdit:SetMaxLetters(2)
+	setControlTooltip(entryGapLabel, "Entry gap",
+		"Use 0 to 2 blank rows between logical messages. This is independent of LINE GAP, which spaces every rendered line.")
+	setControlTooltip(self.messageTextEntryGapEdit, "Entry gap",
+		"Use 0 to 2 blank rows between logical messages. 0 keeps the compact layout.")
+	self.messageTextEntryGapEdit:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
+	self.messageTextEntryGapEdit:HookScript("OnEditFocusLost", function()
+		local options = getSmartChatTextAppearanceOptions()
+		local rows = tonumber(Config.messageTextEntryGapEdit:GetText())
+		local bounds = options.entryGapRows or { minimum = 0, maximum = 2 }
+		if rows == nil or rows ~= math.floor(rows)
+			or rows < bounds.minimum or rows > bounds.maximum then
+			Config:RefreshSmartChatTextAppearanceControls()
+			Config:SetViewsStatus("Entry gap must be a whole number from " .. tostring(bounds.minimum)
+				.. " to " .. tostring(bounds.maximum) .. " rows.", "warning")
+			return
+		end
+		Config:ApplySmartChatTextAppearance({ entryGapRows = rows }, "Entry gap applied.")
+	end)
+	local entryGapHint = Theme:CreateText(text, "GameFontHighlightSmall", "textMuted")
+	entryGapHint:SetPoint("LEFT", self.messageTextEntryGapEdit, "RIGHT", 5, 0)
+	entryGapHint:SetText("0-2")
+	self.messageTextEntryGapHint = entryGapHint
+
 	local outlineLabel = Theme:CreateText(text, "GameFontHighlightSmall", "textMuted")
 	outlineLabel:SetPoint("TOPLEFT", text, "TOPLEFT", 0, -110)
 	outlineLabel:SetText("OUTLINE")
@@ -5183,10 +5241,9 @@ function Config:BuildViewsPage()
 	self.messageTextResetButton:SetScript("OnClick", function()
 		Config:ResetSmartChatTextAppearance()
 	end)
-	local resetHint = Theme:CreateText(text, "GameFontHighlightSmall", "textMuted")
-	resetHint:SetPoint("LEFT", self.messageTextResetButton, "RIGHT", 6, 0)
-	resetHint:SetText("A tab reset returns to ALL TABS.")
-	self.messageTextResetHint = resetHint
+	setControlTooltip(self.messageTextResetButton, "Reset this tab",
+		"Removes this tab's text overrides and returns it to the ALL TABS appearance.")
+	entryGapLabel:SetPoint("LEFT", self.messageTextResetButton, "RIGHT", 14, 0)
 	self.messageTextAlignmentTitle = Theme:CreateText(text, "GameFontNormalSmall", "gold")
 	self.messageTextAlignmentTitle:SetPoint("TOPLEFT", text, "TOPLEFT", 0, -166)
 	self.messageTextAlignmentTitle:SetText("ALIGNMENT - ALL TABS")
@@ -9087,6 +9144,12 @@ function Config:RefreshMessengerPage()
 	if self.messengerCombatToggle then
 		self.messengerCombatToggle:SetValue(settings.deferInCombat ~= false, true)
 	end
+	if self.messengerTellTargetToggle then
+		self.messengerTellTargetToggle:SetValue(settings.tellTargetEnabled ~= false, true)
+	end
+	if self.messengerReplyCommandFocusToggle then
+		self.messengerReplyCommandFocusToggle:SetValue(settings.focusReplyFieldOnCommands ~= false, true)
+	end
 	if self.messengerTabNameMaxLengthEdit then
 		local tabNameMaxLength = tonumber(settings.tabNameMaxLength)
 		if not tabNameMaxLength or tabNameMaxLength ~= math.floor(tabNameMaxLength)
@@ -9227,8 +9290,38 @@ function Config:BuildMessengerPage()
 	local behaviorDetail = addOpening(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
 	behaviorDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -214)
 	behaviorDetail:SetWidth(PAGE_WIDTH)
+	behaviorDetail:SetHeight(36)
 	behaviorDetail:SetJustifyH("LEFT")
 	behaviorDetail:SetText("New whispers join the existing Messenger shell. /r, Reply, and player-name actions can still open it when automatic opening is off.")
+
+	local shortcutsTitle = addOpening(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	shortcutsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -264)
+	shortcutsTitle:SetText("CHAT SHORTCUTS")
+
+	self.messengerTellTargetToggle = addOpening(Theme:CreateCompactToggle(page, "ENABLE /TT TELL TARGET", PAGE_WIDTH))
+	self.messengerTellTargetToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -283)
+	self.messengerTellTargetToggle.OnValueChanged = function(_, value)
+		setMessengerBoolean("SetTellTargetEnabled", "tellTargetEnabled", value)
+		Config:RefreshMessengerPage()
+	end
+	setControlTooltip(self.messengerTellTargetToggle, "Tell your target with /tt",
+		"With a player targeted, /tt opens that person's Messenger tab. Add text after /tt to send it immediately and keep the reply field ready.")
+
+	self.messengerReplyCommandFocusToggle = addOpening(Theme:CreateCompactToggle(page, "FOCUS REPLY FIELD FOR /R AND /TT", PAGE_WIDTH))
+	self.messengerReplyCommandFocusToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -313)
+	self.messengerReplyCommandFocusToggle.OnValueChanged = function(_, value)
+		setMessengerBoolean("SetMessengerReplyCommandFocusEnabled", "focusReplyFieldOnCommands", value)
+		Config:RefreshMessengerPage()
+	end
+	setControlTooltip(self.messengerReplyCommandFocusToggle, "Focus Messenger after a chat shortcut",
+		"Keeps the selected person's Messenger reply field focused after /r or /tt, including after sending /tt text. Turn it off to leave keyboard focus with the normal chat command.")
+
+	local shortcutsDetail = addOpening(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	shortcutsDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -346)
+	shortcutsDetail:SetSize(PAGE_WIDTH, 42)
+	shortcutsDetail:SetJustifyH("LEFT")
+	if shortcutsDetail.SetJustifyV then shortcutsDetail:SetJustifyV("TOP") end
+	shortcutsDetail:SetText("/tt uses your current player target. /r uses the last whisper target. Both select the matching Messenger tab; explicit commands ignore automatic-popup and combat deferral.")
 
 	local tabControls = {}
 	local function addTab(control)
@@ -11750,6 +11843,12 @@ function Config:RefreshModulesPage(keepStatus)
 			local enabled = addon.GetEditBoxBorderSetting and addon:GetEditBoxBorderSetting()
 			self.moduleSmartToggle:SetValue(enabled == true, true)
 			self.moduleSmartToggle:Show()
+		elseif selected.smartSetting == "tellTargetEnabled" and addon.SetTellTargetEnabled then
+			hasSmartToggle = true
+			self.moduleSmartToggle.label:SetText("ENABLE /TT TELL TARGET")
+			local tellTarget = addon.GetTellTargetSettings and addon:GetTellTargetSettings()
+			self.moduleSmartToggle:SetValue(not tellTarget or tellTarget.enabled ~= false, true)
+			self.moduleSmartToggle:Show()
 		else
 			self.moduleSmartToggle:Hide()
 		end
@@ -11763,6 +11862,8 @@ function Config:RefreshModulesPage(keepStatus)
 			self.moduleNativeNote:SetText("Idle only: Enter, /, or reply temporarily reveals the composer, and the message surface uses its space when it closes.")
 		elseif selected.smartSetting == "editBoxBorder" then
 			self.moduleNativeNote:SetText("Adds a background and border only behind the typing field. SAY, send, and the shared chat route stay clean; old native Edit Box Polish hooks remain off.")
+		elseif selected.smartSetting == "tellTargetEnabled" then
+			self.moduleNativeNote:SetText("/tt opens your current player target in Messenger. Text after /tt sends once, then the same reply field stays ready when shortcut focus is enabled.")
 		else
 			self.moduleNativeNote:SetText("This feature runs directly in Chatty. Its copied fallback code stays dormant so it cannot alter hidden chat frames.")
 		end
@@ -11917,12 +12018,21 @@ function Config:BuildModulesPage()
 			Config:SetModuleStatus(value
 				and "Typing-field background and border shown."
 				or "Typing field returned to the clean integrated surface.", "success")
+		elseif module.smartSetting == "tellTargetEnabled" and addon.SetTellTargetEnabled then
+			addon:SetTellTargetEnabled(value)
+			Config:SetModuleStatus(value
+				and "/tt Tell Target enabled for Messenger."
+				or "/tt Tell Target disabled; native fallback remains unchanged.", "success")
 		else
 			Config:SetModuleStatus("That Chatty feature is unavailable.", "warning")
 			Config:RefreshModulesPage(true)
 			return
 		end
-		Config:RefreshDockPage()
+		if module.smartSetting == "tellTargetEnabled" then
+			Config:RefreshMessengerPage()
+		else
+			Config:RefreshDockPage()
+		end
 		Config:RefreshModulesPage(true)
 	end
 	setControlTooltip(self.moduleSmartToggle, "Feature setting", "Changes this feature directly on Chatty's own chat surface.")
@@ -11935,6 +12045,9 @@ function Config:BuildModulesPage()
 		local module = addon.GetModuleCatalogStatus and addon:GetModuleCatalogStatus(Config.selectedModuleId)
 		if module and module.configPage then
 			Config:ShowPage(module.configPage)
+			if module.configSection and Config.activePage == "messenger" then
+				Config:SetMessengerSection(module.configSection)
+			end
 		end
 	end)
 	self.moduleNativeNote = Theme:CreateText(inspector, "GameFontHighlightSmall", "textMuted")
@@ -12348,6 +12461,7 @@ function Config:ReloadProfile()
 	self.dockLineSpacingEdit = nil
 	self.dockLineSpacingHint = nil
 	self.dockMessageBandsToggle = nil
+	self.dockMessageBandsScrollbarToggle = nil
 	self.dockMessageBandExtentButtons = nil
 	self.dockMessageBandColorButtons = nil
 	self.dockMessageBandAlphaEdit = nil
@@ -12423,6 +12537,8 @@ function Config:ReloadProfile()
 	self.messengerStatus = nil
 	self.messengerWhispersToggle = nil
 	self.messengerCombatToggle = nil
+	self.messengerTellTargetToggle = nil
+	self.messengerReplyCommandFocusToggle = nil
 	self.messengerTabNameLengthTitle = nil
 	self.messengerTabNameMaxLengthEdit = nil
 	self.messengerTabNameLengthHint = nil
@@ -12563,6 +12679,9 @@ function Config:ReloadProfile()
 	self.messageTextSpacingLabel = nil
 	self.messageTextSpacingEdit = nil
 	self.messageTextSpacingHint = nil
+	self.messageTextEntryGapLabel = nil
+	self.messageTextEntryGapEdit = nil
+	self.messageTextEntryGapHint = nil
 	self.messageTextOutlineLabel = nil
 	self.messageTextOutlineButtons = nil
 	self.messageTextResetButton = nil
