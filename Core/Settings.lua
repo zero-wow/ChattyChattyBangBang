@@ -31,6 +31,7 @@ local BUILT_IN_SOURCE_VIEWS_SCHEMA = 2
 local VIEW_SOURCE_MEMBERSHIP_SCHEMA = 1
 local MESSENGER_APPEARANCE_SCHEMA = 1
 local TELL_TARGET_SETTINGS_SCHEMA = 1
+local LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA = 1
 local MESSENGER_TAB_NAME_DEFAULT_LENGTH = 14
 local MESSENGER_TAB_NAME_MIN_LENGTH = 4
 local MESSENGER_TAB_NAME_MAX_LENGTH = 32
@@ -72,6 +73,15 @@ local defaults = {
 	historyCapacity = CHAT_HISTORY_DEFAULT_LINES_PER_SOURCE,
 	persistHistory = true,
 	historySettingsSchema = CHAT_HISTORY_SETTINGS_SCHEMA,
+	-- Blizzard's /run, /script, and /dump commands print directly into the
+	-- native chat frame instead of firing chat events. Keep their narrow bridge
+	-- independently configurable so ordinary AddMessage traffic is never
+	-- mistaken for received chat.
+	localCommandOutput = {
+		schema = LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA,
+		enabled = true,
+		destination = "system",
+	},
 	-- This is intentionally Smart Chat presentation state, not the legacy
 	-- ChatFont module's native-frame profile.  An absent font inherits the
 	-- current ChatFontNormal face/size/flags; a selected value is the raw
@@ -3655,6 +3665,39 @@ local function isLegacyFactoryMessageBandStyle(stored)
 		and (alpha == nil or math.abs(alpha - 0.16) < 0.0001)
 end
 
+local function normalizeLocalCommandOutput(settings)
+	local stored = settings.localCommandOutput
+	if type(stored) ~= "table" then
+		stored = {}
+		settings.localCommandOutput = stored
+	end
+	local destination = type(stored.destination) == "string"
+		and string.lower(trim(stored.destination, 16)) or "system"
+	if destination ~= "active" then
+		destination = "system"
+	end
+	local enabled = stored.enabled ~= false
+	local needsRepair = stored.schema ~= LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA
+		or stored.enabled ~= enabled or stored.destination ~= destination
+	if not needsRepair then
+		for key in pairs(stored) do
+			if key ~= "schema" and key ~= "enabled" and key ~= "destination" then
+				needsRepair = true
+				break
+			end
+		end
+	end
+	if needsRepair then
+		stored = {
+			schema = LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA,
+			enabled = enabled,
+			destination = destination,
+		}
+		settings.localCommandOutput = stored
+	end
+	return stored
+end
+
 local function migrateSmartSettings(settings)
 	-- 2.11 renamed the original blue-and-gold palette to describe what it
 	-- actually is.  This is deliberately a migration rather than a reset, so a
@@ -3665,6 +3708,7 @@ local function migrateSmartSettings(settings)
 	settings.persistHistory = settings.persistHistory ~= false
 	settings.historyCapacity = normalizeChatHistoryLinesPerSource(settings.historyCapacity)
 	settings.historySettingsSchema = CHAT_HISTORY_SETTINGS_SCHEMA
+	normalizeLocalCommandOutput(settings)
 
 	local dock = settings.dock
 	if type(dock) ~= "table" then
@@ -3989,6 +4033,43 @@ function addon:GetSmartSettings()
 	migrateSmartSettings(profile.smartChat)
 	refreshSyncRoutingCache(self, profile.smartChat)
 	return profile.smartChat
+end
+
+function addon:GetLocalCommandOutputSettings()
+	return copy(normalizeLocalCommandOutput(self:GetSmartSettings()))
+end
+
+local function refreshLocalCommandCapture(owner)
+	local engine = owner.MessageEngine
+	if engine and type(engine.RefreshLocalCommandCapture) == "function" then
+		engine:RefreshLocalCommandCapture()
+	end
+end
+
+function addon:SetLocalCommandOutputEnabled(enabled)
+	if type(enabled) ~= "boolean" then
+		return false, "boolean-required"
+	end
+	local settings = normalizeLocalCommandOutput(self:GetSmartSettings())
+	settings.enabled = enabled
+	refreshLocalCommandCapture(self)
+	return true, settings.enabled
+end
+
+-- Descriptive alias used by the configuration surface. Keep the shorter name
+-- for integrations that adopted the first internal draft of this setting.
+function addon:SetLocalCommandOutputCaptureEnabled(enabled)
+	return self:SetLocalCommandOutputEnabled(enabled)
+end
+
+function addon:SetLocalCommandOutputDestination(destination)
+	destination = type(destination) == "string" and string.lower(trim(destination, 16)) or ""
+	if destination ~= "system" and destination ~= "active" then
+		return false, "invalid-destination"
+	end
+	local settings = normalizeLocalCommandOutput(self:GetSmartSettings())
+	settings.destination = destination
+	return true, destination
 end
 
 local messengerVisibilityKeys = {

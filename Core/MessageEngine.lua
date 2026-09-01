@@ -44,6 +44,11 @@ local chatEvents = {
 	"CHAT_MSG_INSTANCE_CHAT_LEADER",
 }
 
+local localCommandRefreshEvents = {
+	"ADDON_LOADED",
+	"PLAYER_LOGIN",
+}
+
 local directCategories = {
 	CHAT_MSG_WHISPER = "conversations",
 	CHAT_MSG_WHISPER_INFORM = "conversations",
@@ -785,6 +790,9 @@ local persistedFields = {
 	"presenceId", "bnetAccountId", "isBNet", "direction",
 	"sourceGroup", "sourceId", "sourceLabel",
 	"isAddonMessage", "addonPrefix", "addonPayload", "addonDistribution",
+	-- /run and /dump may be routed to the tab that was active when they ran.
+	-- Keep that factual primary destination stable when saved history reloads.
+	"localCommandView",
 }
 
 local function copyRecordForPersistence(record)
@@ -1301,6 +1309,40 @@ local viewForCategory = {
 	loot = "loot",
 }
 
+local localCommandBuiltInViews = {}
+for _, viewId in pairs(viewForCategory) do
+	localCommandBuiltInViews[viewId] = true
+end
+
+local function isLocalCommandOutputViewAvailable(viewId)
+	if type(viewId) ~= "string" or viewId == "" or viewId == "sync" then
+		return false
+	end
+	if viewId == "system" then
+		return true
+	end
+
+	-- GetSmartViews includes enabled state and custom rails. If it is not yet
+	-- available during an unusually early startup call, built-ins remain safe;
+	-- unknown custom IDs fall back to System rather than losing the output.
+	if type(addon.GetSmartViews) == "function" then
+		local ok, views = pcall(addon.GetSmartViews, addon)
+		if ok and type(views) == "table" then
+			for index = 1, #views do
+				local definition = views[index]
+				if type(definition) == "table" and definition.id == viewId then
+					return definition.enabled ~= false
+				end
+			end
+		end
+	end
+	return localCommandBuiltInViews[viewId] == true
+end
+
+local function normalizeLocalCommandOutputView(viewId)
+	return isLocalCommandOutputViewAvailable(viewId) and viewId or "system"
+end
+
 local function isKnownSyncAddonPayload(prefix, payload)
 	-- CHAT_MSG_ADDON is not a wildcard feed: it only arrives for prefixes that
 	-- another addon has registered.  Even then, recording every payload would
@@ -1757,6 +1799,23 @@ function Engine:Classify(record)
 		provider:ClassifyMessage(record)
 	end
 	self:ApplyCustomViews(record)
+
+	-- Command output remains System-classified and keeps its independently
+	-- configurable source, but its primary presentation tab may be the tab that
+	-- was active when the command ran. Replace only the generated primary
+	-- membership; preserve deliberate custom term matches and source feeds.
+	if record.localCommandView then
+		local targetView = normalizeLocalCommandOutputView(record.localCommandView)
+		local previousView = record.view
+		local memberships = type(record.views) == "table" and record.views or {}
+		if previousView and previousView ~= targetView then
+			memberships[previousView] = nil
+		end
+		record.localCommandView = targetView
+		record.view = targetView
+		memberships[targetView] = true
+		record.views = memberships
+	end
 end
 
 -- Return a small, read-only explanation of the routing decision for one
@@ -1981,11 +2040,51 @@ function Engine:NormalizeUIError(...)
 	return record
 end
 
-function Engine:CaptureLocalFeedback(text)
+function Engine:GetLocalCommandOutputSettings()
+	if type(addon.GetLocalCommandOutputSettings) == "function" then
+		local ok, settings = pcall(addon.GetLocalCommandOutputSettings, addon)
+		if ok and type(settings) == "table" then
+			return {
+				enabled = settings.enabled ~= false,
+				destination = settings.destination == "active" and "active" or "system",
+			}
+		end
+	end
+	local smart = type(addon.GetSmartSettings) == "function" and addon:GetSmartSettings() or nil
+	local settings = type(smart) == "table" and smart.localCommandOutput or nil
+	return {
+		enabled = not settings or settings.enabled ~= false,
+		destination = settings and settings.destination == "active" and "active" or "system",
+	}
+end
+
+function Engine:ResolveLocalCommandOutputView(settings)
+	settings = type(settings) == "table" and settings or self:GetLocalCommandOutputSettings()
+	if settings.destination ~= "active" then
+		return "system"
+	end
+
+	local viewId
+	local dock = addon.SmartDock
+	if dock and type(dock.activeView) == "string" then
+		viewId = dock.activeView
+	end
+	if not viewId and type(addon.GetSmartSettings) == "function" then
+		local smart = addon:GetSmartSettings()
+		viewId = type(smart) == "table" and type(smart.dock) == "table"
+			and smart.dock.activeView or nil
+	end
+	return normalizeLocalCommandOutputView(viewId)
+end
+
+function Engine:CaptureLocalFeedback(text, destinationView)
 	-- Intentionally direct: print() / DEFAULT_CHAT_FRAME:AddMessage() are not
-	-- chat events, and hooking AddMessage would catch every ordinary frame line
-	-- as well.  This makes locally-authored diagnostics explicit and one-way.
-	text = trim(text, 512)
+	-- chat events. The general public bridge remains explicit; the command
+	-- bridge below observes AddMessage only inside /run, /script, or /dump.
+	-- Command inspectors can legitimately emit wider table/value rows than an
+	-- ordinary chat line. Preserve a useful bounded row without letting a macro
+	-- inject an unbounded SavedVariables string.
+	text = trim(text, destinationView and 2048 or 512)
 	if text == "" then
 		return nil, "empty"
 	end
@@ -2005,6 +2104,8 @@ function Engine:CaptureLocalFeedback(text)
 		sourceGroup = "system",
 		sourceId = "system:local-debug",
 		sourceLabel = "Local add-on feedback",
+		localCommandView = type(destinationView) == "string"
+			and normalizeLocalCommandOutputView(destinationView) or nil,
 	}
 	self.nextId = self.nextId + 1
 	self:Classify(record)
@@ -2013,6 +2114,110 @@ function Engine:CaptureLocalFeedback(text)
 		return delivered
 	end
 	return nil, reason
+end
+
+function Engine:CaptureLocalCommandFrameOutput(text)
+	local stack = self.localCommandCaptureViews
+	local destinationView = type(stack) == "table" and stack[#stack] or nil
+	if not self.enabled or type(destinationView) ~= "string" then
+		return nil, "inactive"
+	end
+	-- A presentation/settings fault must never turn a working Blizzard command
+	-- into a failed /run or /dump after its native output has already printed.
+	local ok, record, reason = pcall(self.CaptureLocalFeedback, self, text, destinationView)
+	if ok then
+		return record, reason
+	end
+	return nil, "capture-error"
+end
+
+local localCommandAliases = {
+	["/run"] = true,
+	["/script"] = true,
+	["/dump"] = true,
+}
+
+local function getLocalCommandSlashKeys()
+	local keys, seen, aliasesByKey = {}, {}, {}
+	for globalName, alias in pairs(_G) do
+		local key = type(globalName) == "string"
+			and string.match(globalName, "^SLASH_(.-)%d+$") or nil
+		local normalizedAlias = type(alias) == "string"
+			and string.lower(trim(alias, 24)) or nil
+		if key and localCommandAliases[normalizedAlias] then
+			aliasesByKey[key] = aliasesByKey[key] or {}
+			table.insert(aliasesByKey[key], normalizedAlias)
+			if not seen[key] then
+				seen[key] = true
+				table.insert(keys, key)
+			end
+		end
+	end
+	table.sort(keys)
+	return keys, aliasesByKey
+end
+
+function Engine:RefreshLocalCommandCapture()
+	local frame = _G.DEFAULT_CHAT_FRAME
+	if frame and type(frame.AddMessage) == "function" and type(hooksecurefunc) == "function" then
+		self.localCommandHookedFrames = self.localCommandHookedFrames or {}
+		if not self.localCommandHookedFrames[frame] then
+			local ok = pcall(hooksecurefunc, frame, "AddMessage", function(_, text)
+				Engine:CaptureLocalCommandFrameOutput(text)
+			end)
+			if ok then
+				self.localCommandHookedFrames[frame] = true
+			end
+		end
+	end
+
+	local slashCommands = _G.SlashCmdList
+	if type(slashCommands) ~= "table" then
+		return
+	end
+	self.localCommandSlashWrappers = self.localCommandSlashWrappers or {}
+	local slashKeys, aliasesByKey = getLocalCommandSlashKeys()
+	for _, key in ipairs(slashKeys) do
+		local current = slashCommands[key]
+		local existing = self.localCommandSlashWrappers[key]
+		if type(current) == "function" and (not existing or current ~= existing.wrapper) then
+			local original = current
+			local wrapper = function(...)
+				local destinationView = false
+				if Engine.enabled then
+					local settingsOk, settings = pcall(Engine.GetLocalCommandOutputSettings, Engine)
+					if settingsOk and type(settings) == "table" and settings.enabled then
+						local viewOk, resolved = pcall(Engine.ResolveLocalCommandOutputView, Engine, settings)
+						if viewOk and type(resolved) == "string" then
+							destinationView = resolved
+						end
+					end
+				end
+				Engine.localCommandCaptureViews = Engine.localCommandCaptureViews or {}
+				table.insert(Engine.localCommandCaptureViews, destinationView)
+				local ok, first, second, third, fourth, fifth = pcall(original, ...)
+				table.remove(Engine.localCommandCaptureViews)
+				if not ok then
+					error(first, 0)
+				end
+				return first, second, third, fourth, fifth
+			end
+			self.localCommandSlashWrappers[key] = {
+				original = original,
+				wrapper = wrapper,
+			}
+			slashCommands[key] = wrapper
+			-- Wrath caches resolved slash handlers separately. Merely replacing
+			-- SlashCmdList leaves an already-used /run or /dump pointing at the old
+			-- function, so invalidate only the three aliases we deliberately own.
+			local slashHash = _G.hash_SlashCmdList
+			if type(slashHash) == "table" then
+				for _, alias in ipairs(aliasesByKey[key] or {}) do
+					slashHash[string.upper(alias)] = nil
+				end
+			end
+		end
+	end
 end
 
 local function writeNativeDebugFallback(text)
@@ -2654,6 +2859,10 @@ function Engine:Initialize()
 	self:InvalidateSyncClassifier()
 	self.frame = CreateFrame("Frame")
 	self.frame:SetScript("OnEvent", function(_, event, ...)
+		if event == "ADDON_LOADED" or event == "PLAYER_LOGIN" then
+			Engine:RefreshLocalCommandCapture()
+			return
+		end
 		Engine:Capture(event, ...)
 	end)
 	self:ResetForProfile()
@@ -2671,10 +2880,15 @@ function Engine:SetEnabled(enabled)
 	self.enabled = shouldEnable
 
 	if shouldEnable then
+		self:RefreshLocalCommandCapture()
 		for index = 1, #chatEvents do
 			pcall(self.frame.RegisterEvent, self.frame, chatEvents[index])
 		end
+		for index = 1, #localCommandRefreshEvents do
+			pcall(self.frame.RegisterEvent, self.frame, localCommandRefreshEvents[index])
+		end
 	else
+		self.localCommandCaptureViews = {}
 		self.frame:UnregisterAllEvents()
 	end
 end

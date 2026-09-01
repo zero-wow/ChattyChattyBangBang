@@ -299,7 +299,7 @@ end
 local function getAddonVersion()
 	local version = addon.GetVersion and addon:GetVersion() or addon.VERSION
 	if type(version) ~= "string" or version == "" then
-		return "2.25.0"
+		return "2.26.0"
 	end
 	return version
 end
@@ -12172,22 +12172,80 @@ function Config:BuildSafetyPage()
 	return page
 end
 
-function Config:BuildIntegrationsPage()
-	local page = self:CreatePage("integrations")
-	createHeading(page, "Chat Access", "Choose where you can quickly open Chatty settings and the chat window.")
+function Config:SetIntegrationsStatus(text, colorName)
+	if not self.integrationsStatus then
+		return
+	end
+	colorName = colorName or "textMuted"
+	self.integrationsStatus:SetText(text or "")
+	Theme.texts[self.integrationsStatus] = colorName
+	local r, g, b, a = Theme:GetColor(colorName)
+	self.integrationsStatus:SetTextColor(r, g, b, a)
+end
+
+function Config:RefreshIntegrationsPage()
+	if not self.integrationsPage then
+		return
+	end
 
 	local settings = addon:GetSmartSettings()
+	if self.integrationsMinimapToggle and settings.launcher and settings.launcher.minimap then
+		self.integrationsMinimapToggle:SetValue(not settings.launcher.minimap.hide, true)
+	end
+
+	local commandOutput
+	if type(addon.GetLocalCommandOutputSettings) == "function" then
+		local ok, result = pcall(addon.GetLocalCommandOutputSettings, addon)
+		if ok and type(result) == "table" then
+			commandOutput = result
+		end
+	end
+	commandOutput = commandOutput or settings.localCommandOutput or {}
+	local enabled = commandOutput.enabled ~= false
+	local destination = commandOutput.destination == "active" and "active" or "system"
+	if self.localCommandOutputToggle then
+		self.localCommandOutputToggle:SetValue(enabled, true)
+	end
+	if self.localCommandOutputSystemButton then
+		setChoiceStyle(self.localCommandOutputSystemButton, destination == "system")
+	end
+	if self.localCommandOutputActiveButton then
+		setChoiceStyle(self.localCommandOutputActiveButton, destination == "active")
+	end
+
+	if not enabled then
+		self:SetIntegrationsStatus(
+			"Capture is off. Blizzard still prints normally, but hidden native chat may make that output invisible.",
+			"warning")
+	elseif destination == "active" then
+		self:SetIntegrationsStatus(
+			"The selected Chatty tab is the primary route; SYNC falls back to SYSTEM. CONTENTS can still mirror this source.",
+			"textMuted")
+	else
+		self:SetIntegrationsStatus(
+			"SYSTEM is the primary route. VIEWS & TABS > CONTENTS can also mirror Local add-on feedback.",
+			"textMuted")
+	end
+end
+
+function Config:BuildIntegrationsPage()
+	local page = self:CreatePage("integrations")
+	self.integrationsPage = page
+	createHeading(page, "Chat Access", "Choose launchers and where local command output appears.")
+
 	local minimap = Theme:CreateToggle(page, "Show minimap launcher", "Left toggles the dock; right opens settings; middle-click hides it.")
 	minimap:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -PAGE_TOP)
 	minimap:SetWidth(PAGE_WIDTH)
-	minimap:SetValue(not settings.launcher.minimap.hide, true)
+	self.integrationsMinimapToggle = minimap
 	minimap.OnValueChanged = function(_, value)
 		addon:SetMinimapHidden(not value)
+		Config:RefreshIntegrationsPage()
 	end
 
 	local ldb = CreateFrame("Frame", nil, page)
 	ldb:SetPoint("TOPLEFT", minimap, "BOTTOMLEFT", 0, -5)
 	ldb:SetSize(PAGE_WIDTH, 42)
+	self.integrationsLdbPanel = ldb
 	local title = Theme:CreateText(ldb, "GameFontNormalSmall", "gold")
 	title:SetPoint("TOPLEFT", ldb, "TOPLEFT", 0, 0)
 	title:SetText("LDB LAUNCHER")
@@ -12196,6 +12254,91 @@ function Config:BuildIntegrationsPage()
 	detail:SetWidth(600)
 	detail:SetJustifyH("LEFT")
 	detail:SetText("Any LDB display can expose the same left, right, and middle-click controls.")
+
+	-- Diagnostic command output is deliberately isolated in one quiet surface:
+	-- the controls configure only /run, /script, and /dump, never the broad
+	-- DEFAULT_CHAT_FRAME:AddMessage stream. Every child retains an eight-pixel
+	-- gutter from the panel edge, with destination buttons on their own row so
+	-- wider fonts cannot collide with the capture toggle.
+	local commandPanel = createQuietShellPanel(page, "surface")
+	commandPanel:SetPoint("TOPLEFT", ldb, "BOTTOMLEFT", 0, -10)
+	commandPanel:SetSize(PAGE_WIDTH, 150)
+	self.localCommandOutputPanel = commandPanel
+
+	local commandTitle = Theme:CreateText(commandPanel, "GameFontNormalSmall", "gold")
+	commandTitle:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -7)
+	commandTitle:SetText("LOCAL COMMAND OUTPUT")
+	self.localCommandOutputTitle = commandTitle
+
+	local commandDetail = Theme:CreateText(commandPanel, "GameFontHighlightSmall", "textMuted")
+	commandDetail:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -25)
+	commandDetail:SetSize(PAGE_WIDTH - 16, 24)
+	commandDetail:SetJustifyH("LEFT")
+	commandDetail:SetText("Catch text printed by /run, /script, and /dump without intercepting ordinary chat or other add-ons.")
+	self.localCommandOutputDetail = commandDetail
+
+	local capture = Theme:CreateCompactToggle(commandPanel, "CAPTURE /RUN + /DUMP OUTPUT", PAGE_WIDTH - 16)
+	capture:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -57)
+	capture.OnValueChanged = function(_, value)
+		if type(addon.SetLocalCommandOutputCaptureEnabled) ~= "function" then
+			Config:RefreshIntegrationsPage()
+			Config:SetIntegrationsStatus("Local command capture is unavailable in this build.", "warning")
+			return
+		end
+		local ok, accepted = pcall(addon.SetLocalCommandOutputCaptureEnabled, addon, value and true or false)
+		if not ok or accepted == false then
+			Config:RefreshIntegrationsPage()
+			Config:SetIntegrationsStatus("Local command capture could not be changed.", "warning")
+			return
+		end
+		Config:RefreshIntegrationsPage()
+	end
+	setControlTooltip(capture, "Capture local command output",
+		"Copies only text printed while /run, /script, or /dump is executing. Ordinary chat-frame output is never captured by this setting.")
+	self.localCommandOutputToggle = capture
+
+	local destinationLabel = Theme:CreateText(commandPanel, "GameFontHighlightSmall", "textMuted")
+	destinationLabel:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -88)
+	destinationLabel:SetWidth(96)
+	destinationLabel:SetJustifyH("LEFT")
+	destinationLabel:SetText("PRIMARY TAB")
+	self.localCommandOutputDestinationLabel = destinationLabel
+
+	local systemButton = Theme:CreateTightButton(commandPanel, "SYSTEM (SYS)", 20, false)
+	systemButton:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 112, -84)
+	setActionStyle(systemButton, "choice", "Route command output to System",
+		"Uses SYSTEM as the primary message route. Any additional CONTENTS selections remain additive.")
+	self.localCommandOutputSystemButton = systemButton
+
+	local activeButton = Theme:CreateTightButton(commandPanel, "ACTIVE TAB", 20, false)
+	activeButton:SetPoint("LEFT", systemButton, "RIGHT", CONTROL_GAP, 0)
+	setActionStyle(activeButton, "choice", "Route command output to the active tab",
+		"Uses the selected Chatty tab when the command runs. SYNC safely falls back to SYSTEM.")
+	self.localCommandOutputActiveButton = activeButton
+
+	local function chooseDestination(destination)
+		if type(addon.SetLocalCommandOutputDestination) ~= "function" then
+			Config:SetIntegrationsStatus("Local command routing is unavailable in this build.", "warning")
+			return
+		end
+		local ok, accepted = pcall(addon.SetLocalCommandOutputDestination, addon, destination)
+		if not ok or accepted == false then
+			Config:RefreshIntegrationsPage()
+			Config:SetIntegrationsStatus("Local command routing could not be changed.", "warning")
+			return
+		end
+		Config:RefreshIntegrationsPage()
+	end
+	systemButton:SetScript("OnClick", function() chooseDestination("system") end)
+	activeButton:SetScript("OnClick", function() chooseDestination("active") end)
+
+	self.integrationsStatus = Theme:CreateText(commandPanel, "GameFontHighlightSmall", "textMuted")
+	self.integrationsStatus:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -114)
+	self.integrationsStatus:SetSize(PAGE_WIDTH - 16, 28)
+	self.integrationsStatus:SetJustifyH("LEFT")
+	if self.integrationsStatus.SetJustifyV then self.integrationsStatus:SetJustifyV("TOP") end
+
+	self:RefreshIntegrationsPage()
 	return page
 end
 
@@ -12296,6 +12439,8 @@ function Config:ShowPage(id)
 		self:RefreshMessengerPage()
 	elseif id == "safety" then
 		self:RefreshSafetyPage()
+	elseif id == "integrations" then
+		self:RefreshIntegrationsPage()
 	elseif id == "colorways" then
 		self:RefreshColorwayCards()
 	elseif id == "keywords" then
@@ -12416,6 +12561,17 @@ function Config:ReloadProfile()
 	self.smartToggle = nil
 	self.minimapToggle = nil
 	self.homeStatus = nil
+	self.integrationsPage = nil
+	self.integrationsMinimapToggle = nil
+	self.integrationsLdbPanel = nil
+	self.localCommandOutputPanel = nil
+	self.localCommandOutputTitle = nil
+	self.localCommandOutputDetail = nil
+	self.localCommandOutputToggle = nil
+	self.localCommandOutputDestinationLabel = nil
+	self.localCommandOutputSystemButton = nil
+	self.localCommandOutputActiveButton = nil
+	self.integrationsStatus = nil
 	self.dockPage = nil
 	self.dockHeadingSubtitle = nil
 	self.dockLayoutTabButton = nil
@@ -13333,6 +13489,7 @@ function Config:BuildFrame()
 			Config:RefreshSemanticRoutesPage(true)
 			Config:RefreshDockPage()
 			Config:RefreshSafetyPage()
+			Config:RefreshIntegrationsPage()
 			Config:RefreshModulesPage(true)
 			Config:RefreshAlertsPage(true)
 		end

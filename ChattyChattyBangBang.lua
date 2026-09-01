@@ -1,5 +1,5 @@
 ChattyChattyBangBang = LibStub("AceAddon-3.0"):NewAddon("ChattyChattyBangBang", "AceConsole-3.0", "AceHook-3.0") 	--, "AceHook-3.0", "AceTimer-3.0", "AceConsole-3.0", "AceEvent-3.0", "LibSink-2.0")
-local FALLBACK_VERSION = "2.25.0"
+local FALLBACK_VERSION = "2.26.0"
 local metadataVersion = GetAddOnMetadata and GetAddOnMetadata("ChattyChattyBangBang", "Version")
 if type(metadataVersion) ~= "string" or metadataVersion == "" then
 	metadataVersion = FALLBACK_VERSION
@@ -67,6 +67,15 @@ local defaults = {
 		historyCapacity = 1000,
 		persistHistory = true,
 		historySettingsSchema = 1,
+		-- /run, /script, and /dump write to Blizzard's native chat frame rather
+		-- than emitting chat events. Chatty can copy only that command-scoped
+		-- output into its own message history and leave every other frame write
+		-- untouched.
+		localCommandOutput = {
+			schema = 1,
+			enabled = true,
+			destination = "system",
+		},
 		-- Smart Chat's own text presentation.  A missing font inherits the
 		-- player's current ChatFontNormal face; non-empty values are raw
 		-- LibSharedMedia font keys resolved by Core/Settings.lua.

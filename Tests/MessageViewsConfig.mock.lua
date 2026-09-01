@@ -178,6 +178,14 @@ function Theme:CreateCompactToggle(parent, label, width)
 	return button
 end
 
+function Theme:CreateToggle(parent, label, description)
+	local button = self:CreateCompactToggle(parent, label, 420)
+	button:SetHeight(34)
+	button.description = frame()
+	button.description:SetText(description or "")
+	return button
+end
+
 function Theme:RegisterTexture() end
 function Theme:RegisterFrame() end
 function Theme:ApplyFrame() end
@@ -215,6 +223,13 @@ end
 
 local settings = {
 	colorway = "Obsidian Dawn",
+	launcher = {
+		minimap = { hide = false },
+	},
+	localCommandOutput = {
+		enabled = true,
+		destination = "system",
+	},
 	dock = {
 		sourceColumnAlignment = false,
 		senderColumnAlignment = false,
@@ -277,6 +292,31 @@ local views = {
 
 function addon:GetSmartSettings()
 	return settings
+end
+
+local localCommandCaptureSetterCalls = 0
+local localCommandDestinationSetterCalls = 0
+function addon:GetLocalCommandOutputSettings()
+	return {
+		enabled = settings.localCommandOutput.enabled,
+		destination = settings.localCommandOutput.destination,
+	}
+end
+function addon:SetLocalCommandOutputCaptureEnabled(value)
+	localCommandCaptureSetterCalls = localCommandCaptureSetterCalls + 1
+	settings.localCommandOutput.enabled = value and true or false
+	return true, settings.localCommandOutput.enabled
+end
+function addon:SetLocalCommandOutputDestination(destination)
+	localCommandDestinationSetterCalls = localCommandDestinationSetterCalls + 1
+	assert(destination == "system" or destination == "active",
+		"Chat Access passed an invalid local-command destination")
+	settings.localCommandOutput.destination = destination
+	return true, destination
+end
+function addon:SetMinimapHidden(hidden)
+	settings.launcher.minimap.hide = hidden and true or false
+	return true
 end
 
 function addon:GetMessengerSettings()
@@ -525,6 +565,57 @@ config.pages = {}
 config.navigationButtons = {}
 config.content = frame()
 config:BuildViewsPage()
+
+-- Chat Access owns local diagnostic capture and its primary destination. The
+-- command controls use their own bounded surface so a wide partner-client font
+-- cannot push text into a border or collide with the launcher controls above.
+config:BuildIntegrationsPage()
+assert(config.integrationsPage and config.localCommandOutputPanel,
+	"Chat Access did not build the local-command output settings")
+assert(config.localCommandOutputPanel.width == 636
+	and config.localCommandOutputPanel.height == 150
+	and config.localCommandOutputPanel.point[4] == 0
+	and config.localCommandOutputPanel.point[5] == -10,
+	"local-command settings lost their bounded panel or launcher gutter")
+assert(config.localCommandOutputTitle.point[4] == 8
+	and config.localCommandOutputDetail.point[4] == 8
+	and config.localCommandOutputToggle.point[4] == 8
+	and config.localCommandOutputToggle.width == 620
+	and config.integrationsStatus.point[4] == 8
+	and config.integrationsStatus.width == 620,
+	"local-command controls lost their eight-pixel edge gutters")
+local commandChoiceRight = config.localCommandOutputSystemButton.point[4]
+	+ config.localCommandOutputSystemButton.width + 3
+	+ config.localCommandOutputActiveButton.width
+assert(config.localCommandOutputSystemButton.point[4] == 112
+	and config.localCommandOutputActiveButton.point[4] == 3
+	and commandChoiceRight <= 628,
+	"wide-font command destination choices overlap or cross the right gutter")
+assert(config.integrationsStatus.point[5] == -114
+	and math.abs(config.integrationsStatus.point[5]) + config.integrationsStatus.height <= 142,
+	"local-command status text crossed the panel's bottom gutter")
+assert(config.localCommandOutputToggle.checked
+	and config.localCommandOutputSystemButton.theme[2] == "gold"
+	and config.localCommandOutputActiveButton.theme[2] ~= "gold",
+	"Chat Access did not load the saved System destination")
+
+config.localCommandOutputActiveButton.scripts.OnClick()
+assert(localCommandDestinationSetterCalls == 1
+	and settings.localCommandOutput.destination == "active"
+	and config.localCommandOutputActiveButton.theme[2] == "gold"
+	and config.localCommandOutputSystemButton.theme[2] ~= "gold",
+	"ACTIVE TAB did not save or refresh its selected state")
+config.localCommandOutputToggle:SetValue(false)
+assert(localCommandCaptureSetterCalls == 1
+	and settings.localCommandOutput.enabled == false
+	and config.integrationsStatus:GetText():find("Capture is off", 1, true),
+	"command-output capture switch did not save or explain its disabled state")
+settings.localCommandOutput.enabled = true
+settings.localCommandOutput.destination = "system"
+config:RefreshIntegrationsPage()
+assert(config.localCommandOutputToggle.checked
+	and config.localCommandOutputSystemButton.theme[2] == "gold",
+	"Chat Access refresh did not reload externally changed command-output settings")
 
 config:BuildMessengerPage()
 assert(config.messengerHeading:GetText() == "Messenger",
