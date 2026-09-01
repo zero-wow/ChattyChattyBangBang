@@ -8,6 +8,7 @@ local displayHeight, displayBottom = 100, 0
 local alignmentSettingsOpenCount = 0
 local alignmentMutationCount = 0
 local tooltipLines = {}
+local shiftDown = true
 
 UIParent = {
 	GetEffectiveScale = function()
@@ -28,7 +29,7 @@ GetCursorPosition = function()
 end
 
 IsShiftKeyDown = function()
-	return true
+	return shiftDown
 end
 
 ChattyChattyBangBang = {
@@ -49,6 +50,9 @@ ChattyChattyBangBang = {
 			return { id = tonumber(id), text = "linked" }
 		end,
 	},
+	AnalyzeRecord = function()
+		return { signals = {}, reasons = {} }
+	end,
 }
 
 function ChattyChattyBangBang:SetViewSourceColumnAlignment()
@@ -166,8 +170,17 @@ local action = {
 	ClearAllPoints = function(self) self.cleared = true end,
 	SetPoint = function(self, ...) self.point = { ... } end,
 	Show = function(self) self.shown = true end,
-	Hide = function(self) self.hidden = true end,
-	IsMouseOver = function() return false end,
+	Hide = function(self) self.shown, self.hidden = false, true end,
+	IsMouseOver = function(self) return self.hovered == true end,
+}
+local analysisAction = {
+	GetHeight = action.GetHeight,
+	GetWidth = action.GetWidth,
+	ClearAllPoints = action.ClearAllPoints,
+	SetPoint = action.SetPoint,
+	Show = action.Show,
+	Hide = action.Hide,
+	IsMouseOver = action.IsMouseOver,
 }
 local choices = {
 	Hide = function(self) self.hidden = true end,
@@ -187,12 +200,14 @@ display.IsMouseOver = function() return true end
 dock.active = true
 dock.IsCollapsed = function() return false end
 dock.blockAction = action
+dock.analysisAction = analysisAction
 dock.blockChoices = choices
 dock.content = content
 dock:BuildSourceColumnAlignmentControl()
 dock.ScheduleMessageBlockActionRefresh = function() end
 dock:UpdateMessageBlockAction()
-assert(action.shown and dock.blockActionRecord.id == 1, "Shift-hover did not expose the local-error action")
+assert(action.shown and analysisAction.shown and dock.blockActionRecord.id == 1,
+	"Shift-hover did not expose both actions for the local-error record")
 assert(action.point and action.point[1] == "TOPRIGHT" and action.point[2] == display,
 	"action did not anchor to the visible message frame")
 local alignmentButton = dock.columnAlignmentSettingsButton
@@ -219,6 +234,73 @@ contentWidth = 300
 dock:UpdateSourceColumnAlignmentControl()
 assert(alignmentButton.label == "ALIGN" and alignmentButton.width >= (#alignmentButton.label * 6) + 8,
 	"minimum-width chat did not use the bounded ALIGN label with safe text padding")
+
+-- Shift actions identify one logical chat entry, not merely the wrapped row
+-- beneath the cursor. The highlight must cover all visible content rows while
+-- excluding the entry-gap spacer that belongs before the message.
+local highlight = {
+	points = {},
+	ClearAllPoints = function(self) self.points = {} end,
+	SetPoint = function(self, ...) table.insert(self.points, { ... }) end,
+	SetVertexColor = function(self, ...) self.color = { ... } end,
+	Show = function(self) self.shown, self.hidden = true, false end,
+	Hide = function(self) self.shown, self.hidden = false, true end,
+}
+dock.messageActionHighlight = highlight
+displayHeight, displayBottom = 50, 50
+display.visibleLines, display.scroll = 5, 0
+local wrappedRecord = { id = 12, text = "one logical entry wrapped onto three rows" }
+dock.displayRecords = {
+	{ record = { id = 11, text = "older" }, lines = 1, gapRows = 0 },
+	{ record = wrappedRecord, lines = 4, gapRows = 1, contentLines = 3 },
+	{ record = { id = 13, text = "newer" }, lines = 1, gapRows = 0 },
+}
+cursorY = 75
+action.hovered, analysisAction.hovered = false, false
+dock:UpdateMessageBlockAction()
+assert(action.shown and analysisAction.shown and dock.blockActionRecord == wrappedRecord,
+	"wrapped Shift-hover did not retain the exact logical action record")
+assert(highlight.shown and #highlight.points == 2,
+	"visible Shift actions did not expose one logical-entry highlight")
+assert(highlight.points[1][1] == "TOPLEFT" and highlight.points[1][2] == display
+	and highlight.points[2][1] == "BOTTOMRIGHT" and highlight.points[2][2] == display,
+	"logical-entry highlight was not bounded by the readable chat viewport")
+assert(highlight.points[1][5] == -10 and highlight.points[2][5] == -40,
+	"wrapped highlight included the entry-gap row or failed to cover all three content rows")
+
+-- When the viewport clips the first wrapped row, the same logical selection is
+-- clipped to the two rows that are actually visible instead of bleeding above
+-- the frame or moving onto the neighboring entry.
+displayHeight, displayBottom = 30, 70
+cursorY = 95
+dock:UpdateMessageBlockAction()
+assert(dock.blockActionRecord == wrappedRecord and highlight.shown,
+	"partially clipped wrapped entry lost its Shift selection")
+assert(highlight.points[1][5] == 0 and highlight.points[2][5] == -20,
+	"logical-entry highlight did not clip to the wrapped rows visible in the viewport")
+
+-- Leaving the message for either action retains the visual association. Once
+-- neither the chat nor its actions own the interaction, central cleanup must
+-- remove both the controls and their highlight.
+shiftDown = false
+display.IsMouseOver = function() return false end
+action.hovered = true
+dock:UpdateMessageBlockAction()
+assert(action.shown and highlight.shown,
+	"moving from the selected message onto its action discarded the line highlight")
+action.hovered = false
+dock:UpdateMessageBlockAction()
+assert(not action.shown and not analysisAction.shown and not highlight.shown,
+	"hidden Shift actions left a stale logical-entry highlight")
+
+shiftDown = true
+display.IsMouseOver = function() return true end
+displayHeight, displayBottom = 50, 50
+cursorY = 75
+dock:UpdateMessageBlockAction()
+assert(highlight.shown, "Shift actions could not restore their logical-entry highlight")
+dock:HideMessageBlockControls()
+assert(not highlight.shown, "central action cleanup did not hide the logical-entry highlight")
 
 dock.RebuildActiveView = function(self)
 	self.rebuilt = (self.rebuilt or 0) + 1

@@ -299,7 +299,7 @@ end
 local function getAddonVersion()
 	local version = addon.GetVersion and addon:GetVersion() or addon.VERSION
 	if type(version) ~= "string" or version == "" then
-		return "2.26.0"
+		return "2.26.1"
 	end
 	return version
 end

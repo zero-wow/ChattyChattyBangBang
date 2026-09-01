@@ -155,6 +155,11 @@ local MANUAL_WRAP_VALIDATION_PASSES = 4
 -- dock's 720px maximum height can expose fewer than ninety entries at once;
 -- 128 keeps the pool strictly bounded while covering every supported layout.
 local MESSAGE_BAND_POOL_LIMIT = 128
+-- Shift-hover actions belong to one logical message, even when that message
+-- wraps across several rendered rows. Paint one theme-aware selection behind
+-- the readable glyphs so the BLOCK / ANALYZE target stays unmistakable without
+-- becoming another mouse surface or disturbing chat layout.
+local MESSAGE_ACTION_HIGHLIGHT_ALPHA = 0.18
 -- ScrollingMessageFrame supports a per-rendered-line pixel gap but has no
 -- per-message height API. A logical-entry gap is therefore represented by a
 -- transparent, non-empty physical row inside the *same* AddMessage call. Keep
@@ -910,6 +915,9 @@ function Dock:RefreshVisibleAlignment()
 end
 
 function Dock:HandleDisplayViewportChanged()
+	-- Any scroll/viewport mutation invalidates the cached row anchors. The
+	-- existing Shift driver resolves the row again immediately when appropriate.
+	self:HideMessageActionHighlight()
 	local rebuilt = false
 	if self:IsAlignmentVisibleOnly() then
 		rebuilt = self:RefreshVisibleAlignment()
@@ -1538,6 +1546,7 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 		if display.Hide then display:Hide() end
 		if self.emptyState and self.emptyState.Hide then self.emptyState:Hide() end
 		self:HideMessageBands()
+		self:HideMessageActionHighlight()
 	else
 		if wasDisplaySuppressed then
 			if self.transientMessageDisplayWasShown ~= false and display.Show then display:Show()
@@ -2741,6 +2750,7 @@ end
 function Dock:ClearDisplayRecordCache()
 	self.displayRecords = {}
 	self.displayMeasurementWidth = nil
+	self:HideMessageActionHighlight()
 	if self.HideMessageBands then
 		self:HideMessageBands()
 	end
@@ -3546,6 +3556,59 @@ function Dock:HideMessageBands()
 	self.messageBandVisibleCount = 0
 end
 
+function Dock:HideMessageActionHighlight()
+	if self.messageActionHighlight then
+		self.messageActionHighlight:Hide()
+	end
+	self.messageActionHighlightRecord = nil
+end
+
+-- Highlight the complete visible content span for the selected logical record.
+-- Entry-gap spacer rows deliberately remain unpainted, and partially clipped
+-- messages stop at the display edge. The texture is a non-interactive parent
+-- region behind ScrollingMessageFrame, so text, links, and the slim scrollbar
+-- retain their exact hit geometry.
+function Dock:ShowMessageActionHighlight(record)
+	local highlight = self.messageActionHighlight
+	local display = self.display
+	if not highlight or not display or not record or self.transientMessageViewportSuppressed then
+		self:HideMessageActionHighlight()
+		return false
+	end
+
+	local visibleEntries, geometry = self:GetVisibleDisplayRecordEntries()
+	if not geometry then
+		self:HideMessageActionHighlight()
+		return false
+	end
+	local targetId = record.id
+	for index = 1, #visibleEntries do
+		local visible = visibleEntries[index]
+		local visibleRecord = visible.record
+		local sameRecord = visibleRecord == record
+			or (targetId ~= nil and visibleRecord and visibleRecord.id ~= nil
+				and tostring(visibleRecord.id) == tostring(targetId))
+		if sameRecord and visible.hasVisibleContent then
+			local top = geometry.topInset
+				+ (visible.visibleContentFirstLine - geometry.firstVisibleLine) * geometry.lineHeight
+			local bottom = math.min(geometry.displayHeight,
+				geometry.topInset
+				+ (visible.visibleContentLastLine - geometry.firstVisibleLine + 1) * geometry.lineHeight)
+			if bottom > top then
+				highlight:ClearAllPoints()
+				highlight:SetPoint("TOPLEFT", display, "TOPLEFT", 0, -top)
+				highlight:SetPoint("BOTTOMRIGHT", display, "TOPRIGHT", 0, -bottom)
+				highlight:Show()
+				self.messageActionHighlightRecord = record
+				return true
+			end
+		end
+	end
+
+	self:HideMessageActionHighlight()
+	return false
+end
+
 function Dock:AcquireMessageBand(index)
 	if index > MESSAGE_BAND_POOL_LIMIT then
 		return nil
@@ -4116,6 +4179,7 @@ function Dock:SetActiveViewSenderColumnAlignment(enabled)
 end
 
 function Dock:HideMessageBlockControls()
+	self:HideMessageActionHighlight()
 	if self.blockAction then
 		self.blockAction:Hide()
 	end
@@ -4215,6 +4279,7 @@ function Dock:UpdateMessageBlockAction()
 
 	local record, lineInViewport, lineHeight, topInset = self:GetShiftHoveredRecord()
 	if not record or not lineInViewport then
+		self:HideMessageActionHighlight()
 		if self.blockAction then self.blockAction:Hide() end
 		if self.analysisAction then self.analysisAction:Hide() end
 		self.blockActionRecord = nil
@@ -4227,6 +4292,12 @@ function Dock:UpdateMessageBlockAction()
 	local lineTop = (topInset or 0) + ((lineInViewport - 1) * (lineHeight or self:GetDisplayLineHeight()))
 	lineTop = math.max(0, math.min(math.max(0, displayHeight - actionHeight), lineTop))
 	local showBlock = self.blockAction and self:CanUseMessageBlocks()
+	local showAnalyze = self.analysisAction and self:CanAnalyzeMessages()
+	if showBlock or showAnalyze then
+		self:ShowMessageActionHighlight(record)
+	else
+		self:HideMessageActionHighlight()
+	end
 	if showBlock then
 		self.blockAction:ClearAllPoints()
 		self.blockAction:SetPoint("TOPRIGHT", self.display, "TOPRIGHT", -1, -lineTop)
@@ -4239,7 +4310,7 @@ function Dock:UpdateMessageBlockAction()
 		self.blockAction:Hide()
 		self.blockActionRecord = nil
 	end
-	if self.analysisAction and self:CanAnalyzeMessages() then
+	if showAnalyze then
 		self.analysisAction:ClearAllPoints()
 		if showBlock then
 			self.analysisAction:SetPoint("TOPRIGHT", self.blockAction, "TOPLEFT", -2, 0)
@@ -6707,6 +6778,8 @@ function Dock:DiscardPartialBuild()
 	self.messageBandHost = nil
 	self.messageBandPool = nil
 	self.messageBandVisibleCount = nil
+	self.messageActionHighlight = nil
+	self.messageActionHighlightRecord = nil
 	self.content = nil
 	self.messageScrollbar = nil
 	self.scrollToBottomButton = nil
@@ -7115,6 +7188,7 @@ function Dock:BeginResize(regionId)
 		return false
 	end
 
+	self:HideMessageBlockControls()
 	self.resizeDragRegion = regionId
 	self.resizeHoverRegion = regionId
 	self.headerDragActive = true
@@ -8033,6 +8107,7 @@ function Dock:Build()
 		Dock:CancelNewMessageIndicatorMove(false)
 		Dock:HideChatHelpMenu(false)
 		Dock:HideDisplayHoverHint()
+		Dock:HideMessageBlockControls()
 		Dock:HidePlayerActions()
 		Dock.headerHover = false
 		Dock.railMouseoverRevealed = false
@@ -8056,6 +8131,7 @@ function Dock:Build()
 			-- old geometry during the drag; ordinary layout changes can repaint now.
 			if Dock.resizeDragRegion then
 				Dock:HideMessageBands()
+				Dock:HideMessageActionHighlight()
 			else
 				-- Width changes rebuild explicit wraps; height-only changes still alter
 				-- which logical line spans are visible and therefore must rescope the
@@ -8286,6 +8362,17 @@ function Dock:Build()
 	-- native hyperlink renderer.
 	self.messageBandHost = content
 	self.messageBandPool = {}
+	local messageActionHighlight = content:CreateTexture(nil, "ARTWORK")
+	messageActionHighlight:SetTexture("Interface\\Buttons\\WHITE8x8")
+	if messageActionHighlight.SetDrawLayer then
+		messageActionHighlight:SetDrawLayer("ARTWORK", 2)
+	end
+	Theme:RegisterTexture(messageActionHighlight, "goldBright")
+	if messageActionHighlight.SetAlpha then
+		messageActionHighlight:SetAlpha(MESSAGE_ACTION_HIGHLIGHT_ALPHA)
+	end
+	messageActionHighlight:Hide()
+	self.messageActionHighlight = messageActionHighlight
 	self:BindHeaderHover(content)
 	content:HookScript("OnEnter", function()
 		Dock:ScheduleDisplayHoverHint()
