@@ -39,7 +39,7 @@ function Compatibility:RegisterProvider(id, provider)
 end
 
 function Compatibility:GetProvider()
-	if addon.ClientAPI:IsAddOnLoaded("Ascension-Plus") or addon.ClientAPI:IsAddOnLoaded("Ascension-Tools") then
+	if IsAddOnLoaded("Ascension-Plus") or IsAddOnLoaded("Ascension-Tools") then
 		return self.Providers.ascension or self.Providers.wrath
 	end
 	return self.Providers.wrath
@@ -57,20 +57,19 @@ end
 
 function Compatibility:GetEnabledChatAddonConflicts()
 	local conflicts = {}
-	local client = addon.ClientAPI
-	if not client then
+	if not GetNumAddOns or not GetAddOnInfo then
 		return conflicts
 	end
 
-	for index = 1, client:GetNumAddOns() do
-		local name, title, notes, enabled = client:GetAddOnInfo(index)
+	for index = 1, GetNumAddOns() do
+		local name, title, notes, enabled = GetAddOnInfo(index)
 		-- Ascension can leave a stale AddOns.txt entry enabled after the backing
 		-- folder or TOC has gone away (the old WIM entry is a real example).
 		-- An enabled checkbox is not enough to make that add-on a presentation
 		-- conflict: only an add-on that actually made it into this UI session can
 		-- own chat frames or hooks.  Chat presentation add-ons load at login, so
 		-- IsAddOnLoaded is the authoritative safety gate here.
-		local loaded = name and client:IsAddOnLoaded(name) or false
+		local loaded = not IsAddOnLoaded or IsAddOnLoaded(name)
 		if name and name ~= "ChattyChattyBangBang" and self.ChatAddons[name] and isEnabled(enabled) and loaded then
 			table.insert(conflicts, {
 				name = name,
@@ -92,12 +91,14 @@ function Compatibility:DisableAddonsAndReload(addonNames)
 	end
 
 	for _, addonName in ipairs(addonNames) do
-		if addonName and addonName ~= "ChattyChattyBangBang" then
-			pcall(function() addon.ClientAPI:DisableAddOn(addonName) end)
+		if addonName and addonName ~= "ChattyChattyBangBang" and DisableAddOn then
+			pcall(DisableAddOn, addonName)
 		end
 	end
 
-	pcall(function() addon.ClientAPI:SaveAddOns() end)
+	if SaveAddOns then
+		pcall(SaveAddOns)
+	end
 
 	if ReloadUI then
 		ReloadUI()

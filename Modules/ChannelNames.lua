@@ -90,11 +90,7 @@ function mod:OnInitialize()
 	for k, _ in pairs(self.db.profile.channels) do
 		addChannel(k)
 	end
-	-- Retail no longer exposes this legacy server-channel enumerator. Custom
-	-- channels are still discovered below through the portable channel list.
-	if EnumerateServerChannels then
-		excludeChannels(EnumerateServerChannels())
-	end
+	excludeChannels(EnumerateServerChannels())
 	for k, v in pairs(serverChannels) do
 		addChannel(k)
 	end	

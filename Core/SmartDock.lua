@@ -4862,7 +4862,20 @@ local function getComposerChannelName(target)
 end
 
 function Dock:GetGroupComposerRoute()
-	return addon.ClientAPI:GetGroupChatType()
+	local inInstance, instanceType
+	if IsInInstance then
+		inInstance, instanceType = IsInInstance()
+	end
+	if inInstance and (instanceType == "pvp" or instanceType == "arena") then
+		return "BATTLEGROUND"
+	end
+	if GetNumRaidMembers and (tonumber(GetNumRaidMembers()) or 0) > 0 then
+		return "RAID"
+	end
+	if GetNumPartyMembers and (tonumber(GetNumPartyMembers()) or 0) > 0 then
+		return "PARTY"
+	end
+	return nil
 end
 
 local function isValidComposerChannelTarget(target)

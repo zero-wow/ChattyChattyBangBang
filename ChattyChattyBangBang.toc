@@ -31,7 +31,6 @@ Localization\zhTW.lua
 Localization\koKR.lua
 
 ChattyChattyBangBang.lua
-Core\ClientAPI.lua
 Core\Settings.lua
 Core\ModuleCatalog.lua
 Core\Theme.lua
