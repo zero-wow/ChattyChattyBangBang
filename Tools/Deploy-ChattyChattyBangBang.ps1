@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Both', 'Ascension', 'Retail')]
-    [string] $Target = 'Both',
+    [ValidateSet('Retail')]
+    [string] $Target = 'Retail',
     [switch] $AllowRunningClient,
     [switch] $StageOnly
 )
@@ -43,7 +43,7 @@ if (-not $StageOnly -and -not $AllowRunningClient -and (Test-WowRunning)) {
     throw 'A World of Warcraft client is running. Close it before deployment, or pass -AllowRunningClient only if you accept an incomplete install.'
 }
 
-$selectedTargets = if ($Target -eq 'Both') { @('Ascension', 'Retail') } else { @($Target) }
+$selectedTargets = @($Target)
 $gitRevision = (git -C $sourceRoot rev-parse HEAD).Trim()
 
 foreach ($name in $selectedTargets) {
