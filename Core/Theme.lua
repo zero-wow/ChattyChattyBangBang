@@ -767,8 +767,25 @@ function Theme:GetColor(name)
 	return color[1], color[2], color[3], color[4]
 end
 
+function Theme:EnsureBackdropSupport(frame)
+	if frame and type(frame.SetBackdrop) == "function" then
+		return true
+	end
+	-- Retail stopped giving bare Frames and Buttons the legacy backdrop API.
+	-- Theme styles both kinds throughout Smart Dock and Control Center, so make
+	-- this one boundary provide the official mixin rather than making every UI
+	-- builder carry a Retail-only template argument.
+	if frame and _G.Mixin and _G.BackdropTemplateMixin then
+		_G.Mixin(frame, _G.BackdropTemplateMixin)
+		if frame.OnBackdropLoaded then
+			frame:OnBackdropLoaded()
+		end
+	end
+	return frame and type(frame.SetBackdrop) == "function" or false
+end
+
 function Theme:ApplyFrame(frame, fillName, borderName)
-	if not frame then
+	if not self:EnsureBackdropSupport(frame) then
 		return
 	end
 
@@ -1021,7 +1038,8 @@ function Theme:Refresh()
 end
 
 function Theme:CreatePanel(parent, fillName, borderName)
-	local frame = CreateFrame("Frame", nil, parent)
+	local template = _G.BackdropTemplateMixin and "BackdropTemplate" or nil
+	local frame = CreateFrame("Frame", nil, parent, template)
 	self:RegisterFrame(frame, fillName or "surface", borderName or "borderMuted")
 	return frame
 end
