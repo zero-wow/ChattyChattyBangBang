@@ -5575,7 +5575,7 @@ function addon:ApplyLegacyModuleState(enabled)
 end
 
 function addon:HasDuplicateChatterLoaded()
-	return IsAddOnLoaded and IsAddOnLoaded("Chatter") and true or false
+	return addon.ClientAPI and addon.ClientAPI:IsAddOnLoaded("Chatter") or false
 end
 
 function addon:CanRunLegacyFallback()

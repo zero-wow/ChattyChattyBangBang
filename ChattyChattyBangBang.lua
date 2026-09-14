@@ -31,9 +31,8 @@ local options = {
 					name = L["Standalone Config"],
 					desc = L["Open a standalone config window. You might consider installing |cffffff00BetterBlizzOptions|r to make the Blizzard UI options panel resizable."],
 					func = function()
-						InterfaceOptionsFrame:Hide()
-						AceConfigDialog:SetDefaultSize("ChattyChattyBangBang", 500, 550)
-						AceConfigDialog:Open("ChattyChattyBangBang")
+						if InterfaceOptionsFrame then InterfaceOptionsFrame:Hide() end
+						ChattyChattyBangBang.ClientAPI:OpenConfiguration(AceConfigDialog, "ChattyChattyBangBang", 500, 550)
 					end
 				}
 			}
@@ -587,11 +586,10 @@ function ChattyChattyBangBang:OpenConfig(input)
 		return
 	end
 
-	if input == "config" or not InterfaceOptionsFrame:IsResizable() then
+	if input == "config" or not InterfaceOptionsFrame or not InterfaceOptionsFrame.IsResizable or not InterfaceOptionsFrame:IsResizable() then
 		options.args.defaultArgs.guiHidden = true
-		InterfaceOptionsFrame:Hide()
-		AceConfigDialog:SetDefaultSize("ChattyChattyBangBang", 500, 550)
-		AceConfigDialog:Open("ChattyChattyBangBang")
+		if InterfaceOptionsFrame then InterfaceOptionsFrame:Hide() end
+		self.ClientAPI:OpenConfiguration(AceConfigDialog, "ChattyChattyBangBang", 500, 550)
 	else
 		InterfaceOptionsFrame_OpenToCategory(ChattyChattyBangBang.lastConfig)
 		options.args.defaultArgs.guiHidden = false
