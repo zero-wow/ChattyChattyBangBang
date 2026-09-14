@@ -423,7 +423,12 @@ function ChattyChattyBangBang:OnInitialize()
 
 	LibStub("AceConfigRegistry-3.0"):RegisterOptionsTable("ChattyChattyBangBang", options)
 	LibStub("AceConfigRegistry-3.0"):RegisterOptionsTable("ChattyChattyBangBangModules", options.args.modules)
-	optFrame = ACD3:AddToBlizOptions("ChattyChattyBangBang", nil, nil, "defaultArgs")
+	-- Current Retail no longer uses the legacy Interface Options panel. The
+	-- custom Control Center is opened directly there, avoiding AceConfig's old
+	-- Blizzard-options registration path during startup.
+	if not self.ClientAPI:IsRetail() then
+		optFrame = ACD3:AddToBlizOptions("ChattyChattyBangBang", nil, nil, "defaultArgs")
+	end
 	
 	for k, v in self:IterateModules() do
 		local moduleName = k
@@ -484,8 +489,10 @@ function ChattyChattyBangBang:OnInitialize()
 		tinsert(moduleNames, v.name)
 	end
 	table.sort(moduleNames)
-	for _, name in ipairs(moduleNames) do
-		ACD3:AddToBlizOptions("ChattyChattyBangBangModules", name, "ChattyChattyBangBang", moduleList[name])
+	if not self.ClientAPI:IsRetail() then
+		for _, name in ipairs(moduleNames) do
+			ACD3:AddToBlizOptions("ChattyChattyBangBangModules", name, "ChattyChattyBangBang", moduleList[name])
+		end
 	end
 	
 	self:RegisterChatCommand("ChattyChattyBangBang", "OpenConfig")
@@ -536,6 +543,11 @@ do
 end
 
 function ChattyChattyBangBang:InstallRootHooks()
+	-- Retail temporary whisper windows are protected. Smart Chat already owns
+	-- Messenger routing, so do not raw-hook Blizzard's protected constructors.
+	if self.ClientAPI:IsRetail() then
+		return
+	end
 	if not (self.hooks and self.hooks.FCF_Tab_OnClick) then
 		self:RawHook("FCF_Tab_OnClick", true)
 	end
@@ -713,7 +725,9 @@ function ChattyChattyBangBang:OnEnable()
 	
 	if not options.args.Profiles then
  		options.args.Profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db)
-		self.lastConfig = ACD3:AddToBlizOptions("ChattyChattyBangBang", L["Profiles"], "ChattyChattyBangBang", "Profiles")
+		if not self.ClientAPI:IsRetail() then
+			self.lastConfig = ACD3:AddToBlizOptions("ChattyChattyBangBang", L["Profiles"], "ChattyChattyBangBang", "Profiles")
+		end
 	end
 end
 

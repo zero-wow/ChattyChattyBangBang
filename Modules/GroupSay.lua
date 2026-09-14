@@ -43,14 +43,14 @@ function mod:SendChatMessage(input)
 end
 
 function mod:GetGroupDistribution(slash)
-	local inInstance, kind = IsInInstance()
-	if inInstance and (kind == "pvp") then
+	local route = ChattyChattyBangBang.ClientAPI:GetGroupChatType()
+	if route == "BATTLEGROUND" then
 		return slash and "/bg " or "BATTLEGROUND"
 	end
-	if GetNumRaidMembers() > 0 then
+	if route == "RAID" then
 		return slash and "/ra " or "RAID"
 	end
-	if GetNumPartyMembers() > 0 then
+	if route == "PARTY" then
 		return slash and "/p " or "PARTY"
 	end
 	return slash and "/s " or "SAY"
