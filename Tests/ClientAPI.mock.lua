@@ -21,6 +21,7 @@ dofile("Core/ClientAPI.lua")
 local api = ChattyChattyBangBang.ClientAPI
 assert(api:IsRetail(), "mainline project id should select Retail")
 assert(api:IsAddOnLoaded("Loaded") and not api:IsAddOnLoaded("Other"), "C_AddOns load state was not used")
+assert(not api:IsAddOnLoaded(nil), "missing addon names must not reach Retail C_AddOns")
 assert(api:GetNumAddOns() == 2, "C_AddOns count was not used")
 local name, title, notes, enabled = api:GetAddOnInfo(1)
 assert(name == "Loaded" and title == "Loaded title" and notes == "notes" and enabled == true,

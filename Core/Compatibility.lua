@@ -70,7 +70,7 @@ function Compatibility:GetEnabledChatAddonConflicts()
 		-- conflict: only an add-on that actually made it into this UI session can
 		-- own chat frames or hooks.  Chat presentation add-ons load at login, so
 		-- IsAddOnLoaded is the authoritative safety gate here.
-		local loaded = client:IsAddOnLoaded(name)
+		local loaded = name and client:IsAddOnLoaded(name) or false
 		if name and name ~= "ChattyChattyBangBang" and self.ChatAddons[name] and isEnabled(enabled) and loaded then
 			table.insert(conflicts, {
 				name = name,

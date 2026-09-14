@@ -19,6 +19,9 @@ function ClientAPI:IsRetail()
 end
 
 function ClientAPI:IsAddOnLoaded(name)
+	if type(name) ~= "string" or name == "" then
+		return false
+	end
 	if _G.C_AddOns and type(_G.C_AddOns.IsAddOnLoaded) == "function" then
 		return _G.C_AddOns.IsAddOnLoaded(name) and true or false
 	end

@@ -25,7 +25,8 @@ not go into a game folder.  GitHub remains the off-machine recovery history.
 Retail is the sole supported deployment target. Client differences belong in
 `Core/ClientAPI.lua`; retained Ascension-specific behavior stays isolated in
 its provider instead of leaking into the portable message and presentation
-code.
+code. The generated Retail package intentionally omits copied legacy
+native-chat modules; Smart Chat Core provides the supported Retail UI.
 
 The current Retail package is an initial compatibility build.  It has modern
 addon-management and configuration guards, but its Smart Dock must still be

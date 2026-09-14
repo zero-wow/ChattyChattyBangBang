@@ -37,14 +37,17 @@ function Write-ClientToc([string] $stage, [string] $interface) {
 function Apply-ClientPackage([string] $stage, [string] $client) {
     if ($client -ne 'Retail') { return }
 
-    # Retail removed the Backdrop XML vocabulary used by this dormant legacy
-    # native-chat module. Smart Dock owns its own border treatment, so omit the
-    # include only from the generated Retail package while retaining it for a
-    # 3.3.5 package built from the same source.
+    # The Modules folder is copied legacy Chatter functionality. It mutates
+    # retired native chat frames and several modules initialize those obsolete
+    # APIs even when their preference is disabled. Smart Chat's Core owns the
+    # live Retail experience, so generate an intentionally empty legacy module
+    # manifest for Retail while retaining the original manifest for 3.3.5.
     $modulesPath = Join-Path $stage 'modules.xml'
-    $modules = Get-Content -LiteralPath $modulesPath -Raw
-    $modules = $modules -replace '(?m)^[\t ]*<Include file="Modules\\ChatFrameBorders\.xml" />\r?\n?', ''
-    Set-Content -LiteralPath $modulesPath -Value $modules -Encoding utf8
+    @(
+        '<Ui xmlns="http://www.blizzard.com/wow/ui/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.blizzard.com/wow/ui/ ..\FrameXML\UI.xsd">',
+        '    <!-- Retail uses Smart Chat Core; legacy native-frame modules are intentionally omitted. -->',
+        '</Ui>'
+    ) | Set-Content -LiteralPath $modulesPath -Encoding utf8
 }
 
 $selectedTargets = @($Target)
