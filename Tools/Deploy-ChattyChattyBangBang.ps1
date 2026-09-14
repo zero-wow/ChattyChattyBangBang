@@ -34,6 +34,19 @@ function Write-ClientToc([string] $stage, [string] $interface) {
     Set-Content -LiteralPath $tocPath -Value $toc -Encoding utf8
 }
 
+function Apply-ClientPackage([string] $stage, [string] $client) {
+    if ($client -ne 'Retail') { return }
+
+    # Retail removed the Backdrop XML vocabulary used by this dormant legacy
+    # native-chat module. Smart Dock owns its own border treatment, so omit the
+    # include only from the generated Retail package while retaining it for a
+    # 3.3.5 package built from the same source.
+    $modulesPath = Join-Path $stage 'modules.xml'
+    $modules = Get-Content -LiteralPath $modulesPath -Raw
+    $modules = $modules -replace '(?m)^[\t ]*<Include file="Modules\\ChatFrameBorders\.xml" />\r?\n?', ''
+    Set-Content -LiteralPath $modulesPath -Value $modules -Encoding utf8
+}
+
 $selectedTargets = @($Target)
 $gitRevision = (git -C $sourceRoot rev-parse HEAD).Trim()
 
@@ -51,6 +64,7 @@ foreach ($name in $selectedTargets) {
     try {
         Copy-RuntimeTree $stage
         Write-ClientToc $stage $definition.Interface
+        Apply-ClientPackage $stage $name
         [ordered]@{
             addon = $addonName
             client = $name

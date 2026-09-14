@@ -50,7 +50,12 @@ local options = {
 function mod:OnInitialize()
 	self.db = ChattyChattyBangBang.db:RegisterNamespace(self:GetName(), defaults)
 	self:RegisterEvent("CVAR_UPDATE", "ChangedVars")
-	self:RawHook("InterfaceOptionsSocialPanelChatMouseScroll_SetScrolling",true)
+	-- This retired Interface Options callback does not exist on Retail. The
+	-- module stays available for older clients without making Retail fail during
+	-- disabled-module initialization.
+	if _G.InterfaceOptionsSocialPanelChatMouseScroll_SetScrolling then
+		self:RawHook("InterfaceOptionsSocialPanelChatMouseScroll_SetScrolling", true)
+	end
 end
 
 function mod:InterfaceOptionsSocialPanelChatMouseScroll_SetScrolling()
