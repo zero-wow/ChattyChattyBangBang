@@ -58,6 +58,10 @@ foreach ($name in $selectedTargets) {
     }
 
     $destination = Join-Path $addOnsRoot $addonName
+    # Backups must live outside AddOns. Retail scans every child directory in
+    # that folder, and a backup with its own TOC can otherwise be loaded as a
+    # second copy of this addon.
+    $backupRoot = Join-Path $sourceRoot (Join-Path '.deploy-backups' $name)
     $stageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ccbb-stage-" + [guid]::NewGuid().ToString('N'))
     $stage = Join-Path $stageRoot $addonName
     $backup = $null
@@ -79,7 +83,8 @@ foreach ($name in $selectedTargets) {
         }
 
         if (Test-Path -LiteralPath $destination) {
-            $backup = "$destination.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+            $backup = Join-Path $backupRoot ("$addonName-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
             Move-Item -LiteralPath $destination -Destination $backup
         }
         Move-Item -LiteralPath $stage -Destination $destination

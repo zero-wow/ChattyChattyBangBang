@@ -4,6 +4,7 @@
 # WoW runtime state belongs outside an addon source repository
 /WTF/
 /SavedVariables/
+/.deploy-backups/
 
 # Editors, operating systems, caches, and generated output
 /.vscode/

@@ -15,8 +15,10 @@ then use `/reload` in-game to load the new files. Use `-StageOnly` when you
 only want to validate the package without touching the live copy.
 
 It stages a fresh runtime-only copy, writes Retail's TOC interface value, then
-replaces the Retail target. If an install already exists, it is renamed to a
-timestamped sibling backup before the new copy is moved in.
+replaces the Retail target. If an install already exists, it is moved to the
+source tree's ignored `.deploy-backups\Retail` folder before the new copy is
+moved in. Backups never stay inside `AddOns`, where Retail would scan them as
+additional addons.
 The source checkout, tests, packaging tools, editor files, and Git metadata do
 not go into a game folder.  GitHub remains the off-machine recovery history.
 
