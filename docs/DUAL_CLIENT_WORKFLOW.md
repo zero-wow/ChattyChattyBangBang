@@ -10,6 +10,10 @@ Use this command after committing a shared change:
 & 'C:\Users\zero\source\ChattyChattyBangBang\Tools\Deploy-ChattyChattyBangBang.ps1'
 ```
 
+Use `-StageOnly` to validate both packages while a game client is open.  The
+normal deployment intentionally refuses to replace files while a WoW process
+is running.
+
 It stages a fresh runtime-only copy for both clients, writes the target's TOC
 interface value, then replaces each target.  If an install already exists, it
 is renamed to a timestamped sibling backup before the new copy is moved in.

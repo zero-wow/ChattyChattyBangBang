@@ -2,7 +2,8 @@
 param(
     [ValidateSet('Both', 'Ascension', 'Retail')]
     [string] $Target = 'Both',
-    [switch] $AllowRunningClient
+    [switch] $AllowRunningClient,
+    [switch] $StageOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,11 +17,18 @@ function Test-WowRunning {
 
 function Copy-RuntimeTree([string] $stage) {
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
-    $skipDirectories = @('.git', '.github', '.idea', '.vscode', 'Tests', 'Packaging', 'Tools', 'WTF', 'SavedVariables')
-    Get-ChildItem -LiteralPath $sourceRoot -Force | Where-Object {
-        $skipDirectories -notcontains $_.Name -and $_.Name -notin @('AGENTS.md', '.gitignore')
-    } | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $stage -Recurse -Force
+    # Whitelist runtime inputs so source controls, tests, docs, and future
+    # development folders never accidentally become part of an install.
+    $runtimeItems = @(
+        'ChattyChattyBangBang.lua', 'ChattyChattyBangBang.toc', 'modules.xml',
+        'Core', 'Libs', 'Localization', 'Media', 'Modules', 'Providers'
+    )
+    foreach ($item in $runtimeItems) {
+        $source = Join-Path $sourceRoot $item
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "Required runtime input is missing: $source"
+        }
+        Copy-Item -LiteralPath $source -Destination $stage -Recurse -Force
     }
 }
 
@@ -31,7 +39,7 @@ function Write-ClientToc([string] $stage, [string] $interface) {
     Set-Content -LiteralPath $tocPath -Value $toc -Encoding utf8
 }
 
-if (-not $AllowRunningClient -and (Test-WowRunning)) {
+if (-not $StageOnly -and -not $AllowRunningClient -and (Test-WowRunning)) {
     throw 'A World of Warcraft client is running. Close it before deployment, or pass -AllowRunningClient only if you accept an incomplete install.'
 }
 
@@ -59,6 +67,11 @@ foreach ($name in $selectedTargets) {
             sourceCommit = $gitRevision
             deployedAtUtc = [DateTime]::UtcNow.ToString('o')
         } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stage '.ccbb-deployment.json') -Encoding utf8
+
+        if ($StageOnly) {
+            Write-Host "$name staging verified (commit $gitRevision)"
+            continue
+        }
 
         if (Test-Path -LiteralPath $destination) {
             $backup = "$destination.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
