@@ -10,9 +10,9 @@ Use this command after committing a shared change:
 & 'D:\Code\Projects\Gaming\WoW\ChattyChattyBangBang\Tools\Deploy-ChattyChattyBangBang.ps1'
 ```
 
-Use `-StageOnly` to validate the Retail package while a game client is open.
-The normal deployment intentionally refuses to replace files while a WoW
-process is running.
+Retail accepts addon-file changes while it is running. Deploy whenever needed,
+then use `/reload` in-game to load the new files. Use `-StageOnly` when you
+only want to validate the package without touching the live copy.
 
 It stages a fresh runtime-only copy, writes Retail's TOC interface value, then
 replaces the Retail target. If an install already exists, it is renamed to a

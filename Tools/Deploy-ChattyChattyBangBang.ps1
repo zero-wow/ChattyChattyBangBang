@@ -2,7 +2,6 @@
 param(
     [ValidateSet('Retail')]
     [string] $Target = 'Retail',
-    [switch] $AllowRunningClient,
     [switch] $StageOnly
 )
 
@@ -10,10 +9,6 @@ $ErrorActionPreference = 'Stop'
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 $targets = Import-PowerShellDataFile (Join-Path $sourceRoot 'Packaging\targets.psd1')
 $addonName = 'ChattyChattyBangBang'
-
-function Test-WowRunning {
-    return @(Get-Process -Name 'Wow', 'WowClassic', 'WorldOfWarcraft' -ErrorAction SilentlyContinue).Count -gt 0
-}
 
 function Copy-RuntimeTree([string] $stage) {
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
@@ -37,10 +32,6 @@ function Write-ClientToc([string] $stage, [string] $interface) {
     $toc = Get-Content -LiteralPath $tocPath
     $toc = $toc -replace '^## Interface:.*$', "## Interface: $interface"
     Set-Content -LiteralPath $tocPath -Value $toc -Encoding utf8
-}
-
-if (-not $StageOnly -and -not $AllowRunningClient -and (Test-WowRunning)) {
-    throw 'A World of Warcraft client is running. Close it before deployment, or pass -AllowRunningClient only if you accept an incomplete install.'
 }
 
 $selectedTargets = @($Target)
