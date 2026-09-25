@@ -170,6 +170,31 @@ assert(not bar:IsShown() and not bottom:IsShown(),
 	"disabled scrollbar setting left the thumb rail or bottom affordance visible")
 settings.dock.showScrollButtons = true
 
+-- Retail keeps the moving position in GetScrollOffset even if the legacy
+-- GetCurrentScroll method exists but remains pinned to zero. Its native range
+-- may also differ from Chatty's manual wrapped-row estimate.
+display.GetCurrentScroll = function() return 0 end
+display.GetScrollOffset = function(self) return self.scroll end
+display.GetMaxScrollRange = function() return 20 end
+display.GetNumVisibleLines = function() return 4 end
+display.ScrollUp = function(self) self.scroll = math.min(20, self.scroll + 1) end
+display.ScrollDown = function(self) self.scroll = math.max(0, self.scroll - 1) end
+display.scroll = 0
+display:ScrollUp() -- Native Retail wheel movement.
+dock:HandleDisplayViewportChanged()
+assert(bar.maximum == 20 and bar.value == 19 and bottom:IsShown(),
+	"Retail wheel movement left the thumb at bottom or ignored the native range")
+local _, viewport = dock:GetVisibleDisplayRecordEntries()
+assert(viewport.lastVisibleLine == 19,
+	"visible records still used Retail's stale legacy scroll getter")
+local beforeDrag = display.setOffsetCalls
+dock:SetMessageScrollbarOffset(0)
+assert(display.scroll == 20 and display.setOffsetCalls == beforeDrag + 1,
+	"Retail thumb drag did not use the native maximum scroll range")
+dock:SetMessageScrollbarOffset(20)
+assert(display.scroll == 0 and bar.value == 20 and not bottom:IsShown(),
+	"Retail thumb drag did not return the display and thumb to newest")
+
 -- The bottom affordance is a distinct action: it must clear the unread marker
 -- and synchronize the rail immediately after native ScrollToBottom.
 dock.displayRecords = {}

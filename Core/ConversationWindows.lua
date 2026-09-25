@@ -439,7 +439,7 @@ local function addTooltip(button, text)
 			return
 		end
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
-		GameTooltip:SetText(self._tooltipText or "", 1, 1, 1, 1, true)
+		GameTooltip:SetText(self._tooltipText or "")
 		GameTooltip:Show()
 	end)
 	button:HookScript("OnLeave", function()

@@ -135,9 +135,12 @@ dock:OnMessage(messages[#messages])
 assert(dock.historyPageOffset == 401 and dock.displayRecords[400].record.id == 501
 	and #display.entries == 400 and dock.pendingVisible == 1,
 	"live chat was appended out of order or displaced an older page")
+-- On Retail the native visual-row range is authoritative; returning from an
+-- older page should land at that real top offset, not a cached-row estimate.
+display.GetMaxScrollRange = function() return 123 end
 assert(dock:StepHistoryPage(-1), "newer page did not open")
 assert(dock.historyPageOffset == 1 and dock.displayRecords[1].record.id == 502
-	and dock.pendingVisible == 1 and display.scroll > 0,
+	and dock.pendingVisible == 1 and display.scroll == 123,
 	"newer page lost continuity or its new-message marker")
 assert(dock:ScrollMessageDisplayToBottom(), "go-to-bottom failed")
 assert(dock.historyPageOffset == 0 and dock.displayRecords[400].record.id == 902

@@ -15,6 +15,7 @@ assert(source:find('Retail may mark chat secret during lockdown.', 1, true),
 
 local addon = { Theme = {} }
 ChattyChattyBangBang = addon
+CreateColor = function(r, g, b) return { r = r, g = g, b = b } end
 dofile("Core/Config.lua")
 
 local function getUpvalue(owner, expected)
@@ -47,17 +48,19 @@ dock.active = false
 applyDockRuntime("nativeChat", true)
 assert(dock.hideCount == 1, "inactive Chatty hid Blizzard chat")
 
--- Retail treats the fifth color parameter as numeric alpha, not legacy wrap.
--- These are the two tooltip paths that produced in-game SetText errors.
+-- Retail SetText accepts a color object, alpha, then wrap. AddLine still
+-- accepts separate RGB values followed directly by wrap.
 GameTooltip = {
 	SetOwner = function() end,
-	SetText = function(_, _, _, _, _, alpha, wrap)
-		assert(type(alpha) == "number" and type(wrap) == "boolean",
-			"tooltip title passed wrap in the numeric alpha slot")
+	SetText = function(_, _, color, alpha, wrap)
+		assert(type(color) == "table" and type(alpha) == "number"
+			and type(wrap) == "boolean",
+			"tooltip title did not use Retail's color-object signature")
 	end,
-	AddLine = function(_, _, _, _, _, alpha, wrap)
-		assert(type(alpha) == "number" and type(wrap) == "boolean",
-			"tooltip body passed wrap in the numeric alpha slot")
+	AddLine = function(_, _, r, g, b, wrap)
+		assert(type(r) == "number" and type(g) == "number"
+			and type(b) == "number" and type(wrap) == "boolean",
+			"tooltip body did not use Retail's RGB-then-wrap signature")
 	end,
 	Show = function() end,
 	Hide = function() end,

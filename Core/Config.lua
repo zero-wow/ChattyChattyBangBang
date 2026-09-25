@@ -2,6 +2,16 @@ local addon = ChattyChattyBangBang
 local Theme = addon.Theme
 local Config = {}
 addon.CustomConfig = Config
+local TOOLTIP_WHITE = type(CreateColor) == "function" and CreateColor(1, 1, 1) or nil
+local TOOLTIP_GOLD = type(CreateColor) == "function" and CreateColor(1, 0.82, 0.3) or nil
+
+local function setTooltipTitle(tooltip, title, color, alpha, wrap)
+	if color then
+		tooltip:SetText(title, color, alpha, wrap)
+	else
+		tooltip:SetText(title)
+	end
+end
 
 local navigation = {
 	{ id = "home", label = "Overview", group = "START HERE" },
@@ -255,9 +265,9 @@ local function setControlTooltip(control, title, body)
 	control:HookScript("OnEnter", function(self)
 		if not GameTooltip then return end
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText(title, 1, 1, 1, 1, true)
+		setTooltipTitle(GameTooltip, title, TOOLTIP_WHITE, 1, true)
 		if body and body ~= "" then
-			GameTooltip:AddLine(body, 0.72, 0.76, 0.84, 1, true)
+			GameTooltip:AddLine(body, 0.72, 0.76, 0.84, true)
 		end
 		GameTooltip:Show()
 	end)
@@ -322,7 +332,7 @@ local function createNavigationRow(parent, label, tooltip)
 		Config:ApplyNavigationRowStyle(self, self.navActive == true, true)
 		if self.tooltipText and GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(self.tooltipText, 1, 0.82, 0.3, 1, true)
+			setTooltipTitle(GameTooltip, self.tooltipText, TOOLTIP_GOLD, 1, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -5138,9 +5148,9 @@ function Config:BuildViewsPage()
 		row:SetScript("OnEnter", function(self)
 			if not GameTooltip then return end
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(self.semanticTooltipTitle or "Semantic route evidence", 1, 0.82, 0.3, 1, true)
+			setTooltipTitle(GameTooltip, self.semanticTooltipTitle or "Semantic route evidence", TOOLTIP_GOLD, 1, true)
 			if self.semanticTooltipBody and self.semanticTooltipBody ~= "" then
-				GameTooltip:AddLine(self.semanticTooltipBody, 0.72, 0.76, 0.84, 1, true)
+				GameTooltip:AddLine(self.semanticTooltipBody, 0.72, 0.76, 0.84, true)
 			end
 			GameTooltip:Show()
 		end)
@@ -6653,8 +6663,8 @@ function Config:BuildSpamPage()
 				if GameTooltip then
 					GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 					GameTooltip:AddLine("Ban report", 1, 0.8, 0.39)
-					GameTooltip:AddLine(self.reason, 0.78, 0.84, 0.94, 1, true)
-					GameTooltip:AddLine("Click for retained messages and actions.", 0.55, 0.62, 0.72, 1, true)
+					GameTooltip:AddLine(self.reason, 0.78, 0.84, 0.94, true)
+					GameTooltip:AddLine("Click for retained messages and actions.", 0.55, 0.62, 0.72, true)
 					GameTooltip:Show()
 				else
 					Config:SetSpamNotice(self.reason, "textMuted")
@@ -7733,7 +7743,7 @@ function Config:BuildRouteAuditPage()
 		row:SetScript("OnEnter", function(self)
 			if not GameTooltip or not self.record then return end
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(type(self.record.text) == "string" and self.record.text or "", 1, 1, 1, 1, true)
+			setTooltipTitle(GameTooltip, type(self.record.text) == "string" and self.record.text or "", TOOLTIP_WHITE, 1, true)
 			GameTooltip:Show()
 		end)
 		row:SetScript("OnLeave", function(self)
@@ -14406,7 +14416,7 @@ function Config:BuildFrame()
 		self.text:SetTextColor(r, g, b, a)
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-			GameTooltip:SetText("Close settings", 1, 0.82, 0.3)
+			setTooltipTitle(GameTooltip, "Close settings", TOOLTIP_GOLD)
 			GameTooltip:Show()
 		end
 	end)

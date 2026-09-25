@@ -865,6 +865,30 @@ function Dock:RefreshSmartChatTextAppearance()
 	return fontApplied, spacingApplied
 end
 
+-- Retail's ScrollingMessageFrame reports its live visual-row position through
+-- GetScrollOffset; older clients expose the same position as GetCurrentScroll.
+-- Read the live method first so wheel scrolling and thumb dragging stay paired.
+function Dock:GetDisplayScrollOffset()
+	local display = self.display
+	if not display then return 0 end
+	local offset = display.GetScrollOffset and tonumber(display:GetScrollOffset())
+	if offset == nil and display.GetCurrentScroll then
+		offset = tonumber(display:GetCurrentScroll())
+	end
+	return math.max(0, math.floor((offset or 0) + 0.5))
+end
+
+function Dock:GetDisplayScrollMaximum(geometry)
+	local display = self.display
+	if display and display.GetMaxScrollRange then
+		local nativeMaximum = tonumber(display:GetMaxScrollRange())
+		if nativeMaximum then
+			return math.max(0, math.floor(nativeMaximum + 0.5))
+		end
+	end
+	return geometry and math.max(0, math.floor(geometry.totalLines - geometry.capacity)) or 0
+end
+
 function Dock:RestoreDisplayScroll(wasAtBottom, previousScroll)
 	local display = self.display
 	if not display then return false end
@@ -873,7 +897,9 @@ function Dock:RestoreDisplayScroll(wasAtBottom, previousScroll)
 		return true
 	end
 	previousScroll = math.max(0, math.floor(tonumber(previousScroll) or 0))
-	if previousScroll > 0 and display.ScrollUp then
+	if display.SetScrollOffset then
+		display:SetScrollOffset(previousScroll)
+	elseif previousScroll > 0 and display.ScrollUp then
 		for _ = 1, previousScroll do display:ScrollUp() end
 	end
 	return true
@@ -892,9 +918,8 @@ function Dock:RefreshVisibleAlignment()
 	end
 	local display = self.display
 	if not display then return false end
-	local wasAtBottom = not display.AtBottom or display:AtBottom()
-	local previousScroll = display.GetCurrentScroll
-		and math.max(0, math.floor(tonumber(display:GetCurrentScroll()) or 0)) or 0
+	local previousScroll = self:GetDisplayScrollOffset()
+	local wasAtBottom = previousScroll == 0
 	local previousPending = math.max(0, math.floor(tonumber(self.pendingVisible) or 0))
 	local rebuilt = false
 	self.visibleAlignmentRefreshInProgress = true
@@ -943,8 +968,7 @@ function Dock:SetMessageScrollbarOffset(value)
 	-- bottom. ScrollingMessageFrame is inverse: offset 0 is the newest/bottom.
 	-- Translate at this boundary so dragging down always moves toward newest.
 	local scrollOffset = maximum - sliderValue
-	local current = display.GetCurrentScroll
-		and math.max(0, math.floor((tonumber(display:GetCurrentScroll()) or 0) + 0.5)) or 0
+	local current = self:GetDisplayScrollOffset()
 	if scrollOffset ~= current then
 		if display.SetScrollOffset then
 			display:SetScrollOffset(scrollOffset)
@@ -959,7 +983,7 @@ function Dock:SetMessageScrollbarOffset(value)
 		end
 	end
 	if (not self.historyPageOffset or self.historyPageOffset == 0)
-		and (scrollOffset == 0 or (display.AtBottom and display:AtBottom())) then
+		and self:GetDisplayScrollOffset() == 0 then
 		self:ClearPendingMessages()
 	end
 	self:HandleDisplayViewportChanged()
@@ -1003,11 +1027,14 @@ function Dock:RefreshMessageScrollbar()
 
 	scrollBar:Show()
 	local _, geometry = self:GetVisibleDisplayRecordEntries()
-	local totalLines = geometry and math.max(0, tonumber(geometry.totalLines) or 0) or 0
-	local capacity = geometry and math.max(1, tonumber(geometry.capacity) or 1) or 1
-	local maximum = math.max(0, math.floor(totalLines - capacity))
-	local scrollOffset = display.GetCurrentScroll
-		and math.max(0, math.floor((tonumber(display:GetCurrentScroll()) or 0) + 0.5)) or 0
+	local maximum = self:GetDisplayScrollMaximum(geometry)
+	local capacity = display.GetNumVisibleLines and tonumber(display:GetNumVisibleLines()) or nil
+	if not capacity or capacity < 1 then
+		capacity = geometry and tonumber(geometry.capacity) or 1
+	end
+	capacity = math.max(1, capacity)
+	local totalLines = maximum + capacity
+	local scrollOffset = self:GetDisplayScrollOffset()
 	scrollOffset = math.min(maximum, scrollOffset)
 	local sliderValue = maximum - scrollOffset
 
@@ -1029,7 +1056,7 @@ function Dock:RefreshMessageScrollbar()
 		Theme:SetScrollBarThumbSize(scrollBar, MESSAGE_SCROLLBAR_THUMB_WIDTH, height)
 	end
 
-	local atBottom = scrollOffset == 0 or (display.AtBottom and display:AtBottom())
+	local atBottom = scrollOffset == 0
 	if self.scrollToBottomButton then
 		if (self.historyPageOffset or 0) > 0 or (overflow and not atBottom) then
 			self.scrollToBottomButton:Show()
@@ -1039,9 +1066,8 @@ function Dock:RefreshMessageScrollbar()
 end
 
 function Dock:RebuildActiveViewPreservingScroll()
-	local wasAtBottom = not self.display or not self.display.AtBottom or self.display:AtBottom()
-	local previousScroll = self.display and self.display.GetCurrentScroll
-		and math.max(0, math.floor(tonumber(self.display:GetCurrentScroll()) or 0)) or 0
+	local previousScroll = self:GetDisplayScrollOffset()
+	local wasAtBottom = previousScroll == 0
 	local previousPending = math.max(0, math.floor(tonumber(self.pendingVisible) or 0))
 	self:RebuildActiveView(nil, true)
 	self:RestoreDisplayScroll(wasAtBottom, previousScroll)
@@ -1529,9 +1555,8 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 		or self.transientMessageContentHeight ~= contentHeight
 		or wasDisplaySuppressed ~= suppressDisplay
 		or self.transientMessageScrollbarSuppressed ~= suppressScrollbar
-	local wasAtBottom = not display.AtBottom or display:AtBottom()
-	local previousScroll = display.GetCurrentScroll
-		and math.max(0, math.floor(tonumber(display:GetCurrentScroll()) or 0)) or 0
+	local previousScroll = self:GetDisplayScrollOffset()
+	local wasAtBottom = previousScroll == 0
 	if suppressDisplay and not wasDisplaySuppressed then
 		self.transientMessageDisplayWasShown = frameIsShown(display)
 		self.transientMessageEmptyWasShown = frameIsShown(self.emptyState)
@@ -1904,7 +1929,7 @@ function Dock:BuildRailButton(definition)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:AddLine((self.definition and self.definition.label) or self.viewId)
 			if self.definition and self.definition.description then
-				GameTooltip:AddLine(self.definition.description, 0.56, 0.63, 0.71, 1, true)
+				GameTooltip:AddLine(self.definition.description, 0.56, 0.63, 0.71, true)
 			end
 			GameTooltip:AddLine("Click: select tab  |  SHIFT-drag: reorder + save", 0.56, 0.63, 0.71)
 			GameTooltip:Show()
@@ -3436,8 +3461,7 @@ function Dock:GetVisibleDisplayRecordEntries()
 	-- shifted overlays downward whenever one message occupied several lines.
 	-- The viewport itself is the reliable visual-line budget.
 	local visibleLines = math.max(1, math.min(capacity, totalLines))
-	local scroll = display.GetCurrentScroll and tonumber(display:GetCurrentScroll()) or 0
-	scroll = math.max(0, scroll or 0)
+	local scroll = self:GetDisplayScrollOffset()
 	local lastVisibleLine = math.max(1, math.min(totalLines, totalLines - scroll))
 	local firstVisibleLine = math.max(1, lastVisibleLine - visibleLines + 1)
 	visibleLines = lastVisibleLine - firstVisibleLine + 1
@@ -4733,7 +4757,7 @@ function Dock:StepHistoryPage(direction)
 		-- Land at the oldest visible lines of the newer page, adjacent to the
 		-- page the reader just left. SetScrollOffset uses native visual rows.
 		local _, geometry = self:GetVisibleDisplayRecordEntries()
-		local maximum = geometry and math.max(0, geometry.totalLines - geometry.capacity) or 0
+		local maximum = self:GetDisplayScrollMaximum(geometry)
 		if self.display.SetScrollOffset then self.display:SetScrollOffset(maximum) end
 		self.pendingVisible = pending
 		self:RefreshNewMessageIndicator()
@@ -6542,7 +6566,7 @@ function Dock:BindDockControlTooltip(button, title, detail)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
 		GameTooltip:AddLine(heading or "Chat control", 1, 0.82, 0.26)
 		if body and body ~= "" then
-			GameTooltip:AddLine(body, 0.56, 0.63, 0.71, 1, true)
+			GameTooltip:AddLine(body, 0.56, 0.63, 0.71, true)
 		end
 		GameTooltip:Show()
 	end)
@@ -7923,7 +7947,7 @@ function Dock:BuildMessageBlockControls()
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 			GameTooltip:AddLine("Block this message", 1, 0.82, 0.26)
-			GameTooltip:AddLine("Left click: this player + exact text. Right click: choose exact or contains.", 0.56, 0.63, 0.71, 1, true)
+			GameTooltip:AddLine("Left click: this player + exact text. Right click: choose exact or contains.", 0.56, 0.63, 0.71, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -7948,7 +7972,7 @@ function Dock:BuildMessageBlockControls()
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 			GameTooltip:AddLine("Explain this route", 1, 0.82, 0.26)
-			GameTooltip:AddLine("Shows the source, final tab, and LFG/trade signals Chatty matched. It never changes a rule.", 0.56, 0.63, 0.71, 1, true)
+			GameTooltip:AddLine("Shows the source, final tab, and LFG/trade signals Chatty matched. It never changes a rule.", 0.56, 0.63, 0.71, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -7982,7 +8006,7 @@ function Dock:BuildMessageBlockControls()
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_TOP")
 			GameTooltip:AddLine("Exact text", 1, 0.82, 0.26)
-			GameTooltip:AddLine("Hide this player's exact message in this source.", 0.56, 0.63, 0.71, 1, true)
+			GameTooltip:AddLine("Hide this player's exact message in this source.", 0.56, 0.63, 0.71, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -8000,7 +8024,7 @@ function Dock:BuildMessageBlockControls()
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_TOP")
 			GameTooltip:AddLine("Contains these words", 1, 0.82, 0.26)
-			GameTooltip:AddLine("Hide this player's messages here that contain this text.", 0.56, 0.63, 0.71, 1, true)
+			GameTooltip:AddLine("Hide this player's messages here that contain this text.", 0.56, 0.63, 0.71, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -8062,8 +8086,8 @@ function Dock:BuildMessageBlockControls()
 		hit:SetScript("OnEnter", function(self)
 			if not GameTooltip then return end
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(self.analysisTooltipTitle or "Message analysis", 1, 0.82, 0.3, 1, true)
-			GameTooltip:AddLine(self.analysisFullText or "", 0.82, 0.84, 0.9, 1, true)
+			GameTooltip:SetText(self.analysisTooltipTitle or "Message analysis")
+			GameTooltip:AddLine(self.analysisFullText or "", 0.82, 0.84, 0.9, true)
 			GameTooltip:Show()
 		end)
 		hit:SetScript("OnLeave", function(self)
