@@ -5277,22 +5277,25 @@ function Dock:SetComposerRoute(route, target)
 end
 
 function Dock:CaptureComposerRouteFromEditBox()
-	if not self.editBox or not self.editBox.GetAttribute then
+	if not self.editBox or not (self.editBox.GetChatType or self.editBox.GetAttribute) then
 		return false
 	end
-	local route = self.editBox:GetAttribute("chatType")
+	local route = self.editBox.GetChatType and self.editBox:GetChatType()
+		or self.editBox:GetAttribute("chatType")
 	route = type(route) == "string" and string.upper(route) or nil
 	if not route or not composerRouteTypes[route] then
 		return false
 	end
 	local target
 	if route == "WHISPER" then
-		target = self.editBox:GetAttribute("tellTarget")
+		target = self.editBox.GetTellTarget and self.editBox:GetTellTarget()
+			or self.editBox:GetAttribute("tellTarget")
 		if type(target) ~= "string" or target == "" then
 			return false
 		end
 	elseif route == "CHANNEL" then
-		target = tonumber(self.editBox:GetAttribute("channelTarget"))
+		target = tonumber(self.editBox.GetChannelTarget and self.editBox:GetChannelTarget()
+			or self.editBox:GetAttribute("channelTarget"))
 		if not target or target <= 0 then
 			return false
 		end
@@ -5564,19 +5567,35 @@ function Dock:ApplyComposerRoute()
 	if not route or not self.editBox then
 		return false
 	end
-	self.editBox:SetAttribute("chatType", route)
+	if type(self.editBox.SetChatType) == "function" then
+		self.editBox:SetChatType(route)
+	else
+		self.editBox:SetAttribute("chatType", route)
+	end
 	-- ChatFrame1EditBox is shared across every route. Clear a prior whisper or
 	-- channel target before applying the new one so selecting SAY/GROUP cannot
 	-- retain an invisible stale target from the previous choice.
-	self.editBox:SetAttribute("tellTarget", nil)
-	self.editBox:SetAttribute("channelTarget", nil)
+	if not self.editBox.SetChatType then
+		self.editBox:SetAttribute("tellTarget", nil)
+		self.editBox:SetAttribute("channelTarget", nil)
+	end
 	if route == "WHISPER" then
-		self.editBox:SetAttribute("tellTarget", target)
-		if ChatEdit_SetLastToldTarget then
+		if type(self.editBox.SetTellTarget) == "function" then
+			self.editBox:SetTellTarget(target)
+		else
+			self.editBox:SetAttribute("tellTarget", target)
+		end
+		if _G.ChatFrameUtil and type(_G.ChatFrameUtil.SetLastToldTarget) == "function" then
+			_G.ChatFrameUtil.SetLastToldTarget(target, "WHISPER")
+		elseif ChatEdit_SetLastToldTarget then
 			ChatEdit_SetLastToldTarget(target)
 		end
 	elseif route == "CHANNEL" then
-		self.editBox:SetAttribute("channelTarget", target)
+		if type(self.editBox.SetChannelTarget) == "function" then
+			self.editBox:SetChannelTarget(target)
+		else
+			self.editBox:SetAttribute("channelTarget", target)
+		end
 	end
 	if type(self.editBox.UpdateHeader) == "function" then
 		self.editBox:UpdateHeader()

@@ -2477,8 +2477,12 @@ function Manager:ActivateConversationTarget(name, nativeEditBox)
 		-- the Messenger focus on the next frame so /r and /tt reliably end in the
 		-- intended TO field instead of losing keyboard focus during cleanup.
 		local native = nativeEditBox or _G.ChatFrame1EditBox
-		if native and native ~= shell.editBox and ChatEdit_OnEscapePressed then
-			pcall(ChatEdit_OnEscapePressed, native)
+		if native and native ~= shell.editBox then
+			if _G.ChatFrameUtil and type(_G.ChatFrameUtil.DeactivateChat) == "function" then
+				pcall(_G.ChatFrameUtil.DeactivateChat, native)
+			elseif ChatEdit_OnEscapePressed then
+				pcall(ChatEdit_OnEscapePressed, native)
+			end
 		end
 		self:QueueComposerFocus(shell.playerKey)
 	else
@@ -2505,8 +2509,12 @@ function Manager:ActivateReplyTarget(name, nativeEditBox)
 		if self:ShouldFocusReplyFieldOnCommands() then
 			self.shell:RevealComposer(true)
 			local native = nativeEditBox or _G.ChatFrame1EditBox
-			if native and native ~= self.shell.editBox and ChatEdit_OnEscapePressed then
-				pcall(ChatEdit_OnEscapePressed, native)
+			if native and native ~= self.shell.editBox then
+				if _G.ChatFrameUtil and type(_G.ChatFrameUtil.DeactivateChat) == "function" then
+					pcall(_G.ChatFrameUtil.DeactivateChat, native)
+				elseif ChatEdit_OnEscapePressed then
+					pcall(ChatEdit_OnEscapePressed, native)
+				end
 			end
 			self:QueueComposerFocus(key)
 		end
@@ -2590,13 +2598,28 @@ function Manager:InstallReplyHooks()
 		return
 	end
 	self.replyHooksInstalled = true
-	if type(ChatFrame_ReplyTell) == "function" then
+	local chatUtil = _G.ChatFrameUtil
+	if chatUtil and type(chatUtil.ReplyTell) == "function" then
+		hooksecurefunc(chatUtil, "ReplyTell", function(chatFrame)
+			local target = chatUtil.GetLastTellTarget and chatUtil.GetLastTellTarget()
+			Manager:ActivateReplyTarget(target, getChatFrameEditBox(chatFrame))
+		end)
+	end
+	if chatUtil and type(chatUtil.ReplyTell2) == "function" then
+		hooksecurefunc(chatUtil, "ReplyTell2", function(chatFrame)
+			local target = chatUtil.GetLastToldTarget and chatUtil.GetLastToldTarget()
+			Manager:ActivateReplyTarget(target, getChatFrameEditBox(chatFrame))
+		end)
+	end
+	if not (chatUtil and type(chatUtil.ReplyTell) == "function")
+		and type(ChatFrame_ReplyTell) == "function" then
 		hooksecurefunc("ChatFrame_ReplyTell", function(chatFrame)
 			local target = ChatEdit_GetLastTellTarget and ChatEdit_GetLastTellTarget()
 			Manager:ActivateReplyTarget(target, getChatFrameEditBox(chatFrame))
 		end)
 	end
-	if type(ChatFrame_ReplyTell2) == "function" then
+	if not (chatUtil and type(chatUtil.ReplyTell2) == "function")
+		and type(ChatFrame_ReplyTell2) == "function" then
 		hooksecurefunc("ChatFrame_ReplyTell2", function(chatFrame)
 			local target = ChatEdit_GetLastToldTarget and ChatEdit_GetLastToldTarget()
 			Manager:ActivateReplyTarget(target, getChatFrameEditBox(chatFrame))
