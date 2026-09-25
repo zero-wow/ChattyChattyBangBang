@@ -158,17 +158,17 @@ local function channelRecord(text, channel, sender)
 	)
 end
 
--- These factual public sources get dedicated built-in views. Newcomers is a
--- fallback after focused LFG/Trade inference, while GuildRecruitment remains
--- source-authoritative even when its recruitment copy contains those words.
+-- The retired Newcomers channel has no built-in Retail rail. Historical
+-- messages retain their physical source but use General or semantic routes.
+-- GuildRecruitment remains source-authoritative even with LFG/Trade words.
 local newcomersConversation = channelRecord("Where is the class trainer?", "Newcomers")
-assert(newcomersConversation.view == "newcomers"
+assert(newcomersConversation.view == "general"
 	and newcomersConversation.sourceId == "channel:newcomers",
-	"ordinary Newcomers channel conversation did not route to its built-in view")
+	"historical Newcomers channel conversation did not fall back to General")
 local newcomersAnalysis = assert(engine:AnalyzeRecord(newcomersConversation))
-assert(table.concat(newcomersAnalysis.reasons, " "):find("Newcomers channel fallback", 1, true)
-	and table.concat(newcomersAnalysis.signals, " "):find("NEWCOMERS exact channel source", 1, true),
-	"Newcomers analysis did not disclose its exact-source fallback")
+assert(not table.concat(newcomersAnalysis.reasons, " "):find("Newcomers channel fallback", 1, true)
+	and not table.concat(newcomersAnalysis.signals, " "):find("NEWCOMERS exact channel source", 1, true),
+	"analysis still claims a retired Newcomers route")
 assert(channelRecord("LF pumper DPS for M10", "Newcomers").view == "groupFinder",
 	"strong LFG intent in Newcomers did not peel into Group Finder")
 assert(channelRecord("WTS Keystone boost", "Newcomers").view == "trade",
@@ -188,8 +188,8 @@ local guildInviteAnalysis = assert(engine:AnalyzeRecord(guildInvite))
 assert(table.concat(guildInviteAnalysis.reasons, " "):find("Exact GuildRecruitment channel source route", 1, true)
 	and table.concat(guildInviteAnalysis.signals, " "):find("GUILD INVITES exact GuildRecruitment source", 1, true),
 	"Guild Invites analysis did not disclose its authoritative source route")
-assert(settings.channelTargets.newcomers == 2 and settings.channelTargets.guildInvites == 2,
-	"built-in source views did not retain their observed composer channel targets")
+assert(settings.channelTargets.newcomers == nil and settings.channelTargets.guildInvites == 2,
+	"retired NC stored a composer target or Guild Invites lost its target")
 
 local ordinaryGuildChat = engine:Normalize("CHAT_MSG_GUILD", "Hello guild", "Guildmate")
 assert(ordinaryGuildChat.view == "guild" and ordinaryGuildChat.sourceId == "guild:guild",
@@ -518,6 +518,12 @@ for _, definition in ipairs(engine:GetSourceDefinitions()) do
 	end
 end
 assert(foundUnderAttackSource, "zone under attack source is missing from Message Sources")
+
+engine:Capture("CHAT_MSG_GUILD_ITEM_LOOTED", "$s looted a rare item!", "Guildmate")
+assert(#received == 10 and received[10].view == "guild"
+	and received[10].sourceId == "guild:item-looted"
+	and received[10].sender == "Guildmate",
+	"guild-item announcement was not captured with its formatting argument")
 
 settings.enabled = false
 local fallback, reason = ChattyChattyBangBang:DebugMessage("Clique invite: native fallback")

@@ -421,6 +421,109 @@ local function replaceNativeNameSubstitutions(text)
 	end)
 end
 
+-- Blizzard sends achievement announcements as a localized *template* in
+-- CHAT_MSG_ACHIEVEMENT / CHAT_MSG_GUILD_ACHIEVEMENT arg1 and supplies the
+-- character name in arg2. Unlike ordinary CHAT_MSG_SYSTEM or player chat,
+-- Blizzard's ChatFrame formats that template before displaying it. Keep this
+-- event-specific: formatting arbitrary chat text would interpret a player's
+-- percent signs as directives (and can fail on secret Retail payloads).
+local achievementTemplateEvents = {
+	CHAT_MSG_ACHIEVEMENT = true,
+	CHAT_MSG_GUILD_ACHIEVEMENT = true,
+}
+
+local function accessibleTemplateValue(value)
+	local canAccess = _G.canaccessvalue
+	if type(canAccess) == "function" then
+		local ok, accessible = pcall(canAccess, value)
+		if not ok or not accessible then return false end
+	elseif type(_G.issecretvalue) == "function" then
+		local ok, secret = pcall(_G.issecretvalue, value)
+		if not ok or secret then return false end
+	end
+	return type(value) == "string" or type(value) == "number"
+end
+
+-- Format directives individually so an unrelated literal percent sign or a
+-- native chat expression such as %t cannot invalidate the whole announcement.
+-- Localized positional forms (%1$s, %2$s) are resolved from the same explicit
+-- argument array as sequential forms. Limits avoid pathological width or
+-- precision allocations if a malformed template arrives from the server.
+local function formatTrustedTemplate(text, args)
+	if type(text) ~= "string" or type(args) ~= "table" or #text > 4096 then
+		return text
+	end
+	local output, cursor, nextArgument, substitutions = {}, 1, 1, 0
+	while cursor <= #text do
+		local percent = find(text, "%", cursor, true)
+		if not percent then
+			output[#output + 1] = sub(text, cursor)
+			break
+		end
+		output[#output + 1] = sub(text, cursor, percent - 1)
+		if sub(text, percent + 1, percent + 1) == "%" then
+			output[#output + 1] = "%"
+			cursor = percent + 2
+		else
+			local remainder = sub(text, percent)
+			local position, options, conversion = string.match(remainder,
+				"^%%(%d+)%$([-+ #0]*%d*%.?%d*)([cdiouxXeEfgGqs])")
+			local argumentIndex
+			if position then
+				argumentIndex = tonumber(position)
+			else
+				options, conversion = string.match(remainder,
+					"^%%([-+ #0]*%d*%.?%d*)([cdiouxXeEfgGqs])")
+				if conversion then
+					argumentIndex = nextArgument
+					nextArgument = nextArgument + 1
+				end
+			end
+			if conversion then
+				local directive = "%" .. options .. conversion
+				local raw = sub(text, percent, percent + #directive - 1 + (position and #position + 1 or 0))
+				local value = argumentIndex and argumentIndex >= 1 and argumentIndex <= 16 and args[argumentIndex]
+				local width, precision = string.match(options, "(%d+)%.(%d+)")
+				if not width then width = string.match(options, "(%d+)") end
+				if not precision then precision = string.match(options, "%.(%d+)") end
+				if substitutions < 32 and (not width or tonumber(width) <= 80)
+					and (not precision or tonumber(precision) <= 80)
+					and accessibleTemplateValue(value) then
+					local ok, replacement = pcall(format, directive, value)
+					output[#output + 1] = ok and replacement or raw
+				else
+					output[#output + 1] = raw
+				end
+				substitutions = substitutions + 1
+				cursor = percent + #raw
+			else
+				-- Leave unsupported format codes and native %t/%f tokens intact.
+				output[#output + 1] = "%"
+				cursor = percent + 1
+			end
+		end
+	end
+	return table.concat(output)
+end
+
+function Presentation:FormatEventText(record)
+	local text = record.text or ""
+	-- Blizzard uses a literal $s token (not printf) for guild item notices.
+	-- This event is not captured by the current engine, but historical records
+	-- and a future event registration can use the same presentation contract.
+	if record.event == "CHAT_MSG_GUILD_ITEM_LOOTED" then
+		if accessibleTemplateValue(record.sender) then
+			return gsub(text, "%$s", function() return record.sender end)
+		end
+		return text
+	end
+	if not achievementTemplateEvents[record.event] then
+		return text
+	end
+	local args = type(record.formatArgs) == "table" and record.formatArgs or { record.sender }
+	return formatTrustedTemplate(text, args)
+end
+
 function Presentation:ReplaceChatExpressions(text)
 	-- Blizzard uses both brace expressions ({skull}, {group1}) and percent
 	-- substitutions (%t, %n, %f).  The old brace-only gate meant a system line
@@ -748,7 +851,7 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 	if red then
 		source = self:ColorRGB(formattedSourceText, red, green, blue)
 	end
-	local message = self:ColorizeMessage(record.text or "")
+	local message = self:ColorizeMessage(self:FormatEventText(record))
 	local rawSender = record.sender
 	local normalizedSenderSpacing = math.max(-8,
 		math.min(8, math.floor(tonumber(senderColumnSpacing) or 2)))

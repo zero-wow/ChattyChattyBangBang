@@ -1875,7 +1875,7 @@ function Dock:BuildRailButton(definition)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:AddLine((self.definition and self.definition.label) or self.viewId)
 			if self.definition and self.definition.description then
-				GameTooltip:AddLine(self.definition.description, 0.56, 0.63, 0.71, true)
+				GameTooltip:AddLine(self.definition.description, 0.56, 0.63, 0.71, 1, true)
 			end
 			GameTooltip:AddLine("Click: select tab  |  SHIFT-drag: reorder + save", 0.56, 0.63, 0.71)
 			GameTooltip:Show()
@@ -2879,7 +2879,7 @@ function Dock:CalculateSourceColumnWidth(records)
 	end
 	-- Keep one stable lane for the current tab's rendered buffer.  SYSTEM then
 	-- gets only the player's selected blank cells after it in a System view,
-	-- while General can still accommodate ASCENSION/NEWCOMERS without its
+	-- while General can accommodate its visible source labels without
 	-- dividers wandering.
 	local longest = self:CalculateSourceColumnLongest(records)
 	if longest <= 0 then
@@ -4431,7 +4431,6 @@ end
 
 local fallbackMessageRouteDestinations = {
 	{ id = "general", label = "GENERAL" },
-	{ id = "newcomers", label = "NEWCOMERS" },
 	{ id = "groupFinder", label = "GROUP FINDER" },
 	{ id = "guildInvites", label = "GUILD INVITES" },
 	{ id = "pvp", label = "PVP" },
@@ -4945,7 +4944,7 @@ function Dock:GetSuggestedComposerRoute()
 		end
 		local channelNumber = addon:GetSmartSettings().channelTargets[self.activeView]
 		return channelNumber and "CHANNEL" or nil, channelNumber
-	elseif self.activeView == "newcomers" or self.activeView == "groupFinder"
+	elseif self.activeView == "groupFinder"
 		or self.activeView == "guildInvites" or self.activeView == "trade" then
 		local channelNumber = addon:GetSmartSettings().channelTargets[self.activeView]
 		return channelNumber and "CHANNEL" or nil, channelNumber
@@ -5893,9 +5892,12 @@ function Dock:TrackAndSuppressNativeFrame(frame)
 end
 
 function Dock:HideNativeChat()
-	-- Retail can deliver secret chat payloads during chat-messaging lockdown.
-	-- Smart Chat cannot classify those payloads, so preserve Blizzard's renderer.
-	if addon.ClientAPI and addon.ClientAPI:IsRetail() then return end
+	-- Never leave the player without a chat surface. In particular, a hidden
+	-- Smart Dock must restore Blizzard chat even when this preference is on.
+	if not self.active or not self.frame or not self.frame:IsShown()
+		or self.visibleState == false then
+		return
+	end
 	if self.nativeSnapshot or not addon:GetSmartSettings().dock.hideNativeChat then
 		return
 	end
@@ -5913,6 +5915,16 @@ function Dock:HideNativeChat()
 	self:TrackAndSuppressNativeFrame(_G.ChatFrameChannelButton)
 	self:TrackAndSuppressNativeFrame(_G.ChatFrameToggleVoiceDeafenButton)
 	self:TrackAndSuppressNativeFrame(_G.ChatFrameToggleVoiceMuteButton)
+end
+
+function Dock:SyncNativeChatVisibility()
+	local settings = addon:GetSmartSettings()
+	if self.active and self.frame and self.frame:IsShown()
+		and self.visibleState ~= false and settings.dock.hideNativeChat then
+		self:HideNativeChat()
+	else
+		self:RestoreNativeChat()
+	end
 end
 
 -- The Social/Friends micro button is not part of the native chat frame, so it
@@ -5974,8 +5986,8 @@ function Dock:RestoreSocialButtonVisibility()
 end
 
 function Dock:SuppressTemporaryChatFrame(frame)
-	if addon.ClientAPI and addon.ClientAPI:IsRetail() then return end
-	if not self.active or not frame or not addon:GetSmartSettings().dock.hideNativeChat then
+	if not self.active or not frame or not self.frame or not self.frame:IsShown()
+		or self.visibleState == false or not addon:GetSmartSettings().dock.hideNativeChat then
 		return
 	end
 	if not self.nativeSnapshot then
@@ -6104,6 +6116,7 @@ function Dock:SetVisible(visible, persist)
 			self.frame:Hide()
 		end
 	end
+	self:SyncNativeChatVisibility()
 	if not visible and self.alertPending then
 		self:DismissAlert(false)
 	end
@@ -6369,7 +6382,7 @@ function Dock:BindDockControlTooltip(button, title, detail)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
 		GameTooltip:AddLine(heading or "Chat control", 1, 0.82, 0.26)
 		if body and body ~= "" then
-			GameTooltip:AddLine(body, 0.56, 0.63, 0.71, true)
+			GameTooltip:AddLine(body, 0.56, 0.63, 0.71, 1, true)
 		end
 		GameTooltip:Show()
 	end)
@@ -6964,11 +6977,7 @@ function Dock:ApplyProfile()
 		else
 			self.frame:Hide()
 		end
-		if settings.dock.hideNativeChat then
-			self:HideNativeChat()
-		else
-			self:RestoreNativeChat()
-		end
+		self:SyncNativeChatVisibility()
 		self:ApplySocialButtonVisibility()
 	end
 end
@@ -7747,7 +7756,7 @@ function Dock:BuildMessageBlockControls()
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 			GameTooltip:AddLine("Block this message", 1, 0.82, 0.26)
-			GameTooltip:AddLine("Left click: this player + exact text. Right click: choose exact or contains.", 0.56, 0.63, 0.71, true)
+			GameTooltip:AddLine("Left click: this player + exact text. Right click: choose exact or contains.", 0.56, 0.63, 0.71, 1, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -7772,7 +7781,7 @@ function Dock:BuildMessageBlockControls()
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 			GameTooltip:AddLine("Explain this route", 1, 0.82, 0.26)
-			GameTooltip:AddLine("Shows the source, final tab, and LFG/trade signals Chatty matched. It never changes a rule.", 0.56, 0.63, 0.71, true)
+			GameTooltip:AddLine("Shows the source, final tab, and LFG/trade signals Chatty matched. It never changes a rule.", 0.56, 0.63, 0.71, 1, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -7806,7 +7815,7 @@ function Dock:BuildMessageBlockControls()
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_TOP")
 			GameTooltip:AddLine("Exact text", 1, 0.82, 0.26)
-			GameTooltip:AddLine("Hide this player's exact message in this source.", 0.56, 0.63, 0.71, true)
+			GameTooltip:AddLine("Hide this player's exact message in this source.", 0.56, 0.63, 0.71, 1, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -7824,7 +7833,7 @@ function Dock:BuildMessageBlockControls()
 		if GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_TOP")
 			GameTooltip:AddLine("Contains these words", 1, 0.82, 0.26)
-			GameTooltip:AddLine("Hide this player's messages here that contain this text.", 0.56, 0.63, 0.71, true)
+			GameTooltip:AddLine("Hide this player's messages here that contain this text.", 0.56, 0.63, 0.71, 1, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -7886,8 +7895,8 @@ function Dock:BuildMessageBlockControls()
 		hit:SetScript("OnEnter", function(self)
 			if not GameTooltip then return end
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(self.analysisTooltipTitle or "Message analysis", 1, 0.82, 0.3, true)
-			GameTooltip:AddLine(self.analysisFullText or "", 0.82, 0.84, 0.9, true)
+			GameTooltip:SetText(self.analysisTooltipTitle or "Message analysis", 1, 0.82, 0.3, 1, true)
+			GameTooltip:AddLine(self.analysisFullText or "", 0.82, 0.84, 0.9, 1, true)
 			GameTooltip:Show()
 		end)
 		hit:SetScript("OnLeave", function(self)
@@ -8143,10 +8152,12 @@ function Dock:Build()
 		if Dock.active then
 			Dock:SyncDockHoverState()
 			Dock:ApplyLayout()
+			Dock:SyncNativeChatVisibility()
 			Dock:ScheduleHeaderHoverRefresh(0)
 		end
 	end)
 	frame:SetScript("OnHide", function()
+		Dock:RestoreNativeChat()
 		Dock:CancelHeaderHoverRefresh()
 		Dock:CancelResize()
 		Dock:CancelRailTabReorder(false)
@@ -8712,7 +8723,7 @@ function Dock:Activate()
 		else
 			self.frame:Hide()
 		end
-		self:HideNativeChat()
+		self:SyncNativeChatVisibility()
 		self:ApplySocialButtonVisibility()
 	end)
 	if not ok then

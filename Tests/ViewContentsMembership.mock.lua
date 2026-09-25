@@ -67,7 +67,7 @@ assert(addon:ResetViewSources("general") and addon:ResetViewSources("trade"),
 local expectedHomes = {
 	{ "local:say", "local", "general" },
 	{ "channel:ascension", "channels", "general" },
-	{ "channel:newcomers", "channels", "newcomers" },
+	{ "channel:newcomers", "channels", "general" },
 	{ "channel:lookingforgroup", "channels", "groupFinder" },
 	{ "channel:guildrecruitment", "channels", "guildInvites" },
 	{ "channel:defense", "channels", "pvp" },

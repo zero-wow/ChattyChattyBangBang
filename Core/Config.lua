@@ -216,9 +216,9 @@ local function setControlTooltip(control, title, body)
 	control:HookScript("OnEnter", function(self)
 		if not GameTooltip then return end
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText(title, 1, 1, 1, true)
+		GameTooltip:SetText(title, 1, 1, 1, 1, true)
 		if body and body ~= "" then
-			GameTooltip:AddLine(body, 0.72, 0.76, 0.84, true)
+			GameTooltip:AddLine(body, 0.72, 0.76, 0.84, 1, true)
 		end
 		GameTooltip:Show()
 	end)
@@ -283,7 +283,7 @@ local function createNavigationRow(parent, label, tooltip)
 		Config:ApplyNavigationRowStyle(self, self.navActive == true, true)
 		if self.tooltipText and GameTooltip then
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(self.tooltipText, 1, 0.82, 0.3, true)
+			GameTooltip:SetText(self.tooltipText, 1, 0.82, 0.3, 1, true)
 			GameTooltip:Show()
 		end
 	end)
@@ -451,6 +451,15 @@ local function applyDockRuntime(action, value)
 			dock:ApplySocialButtonVisibility()
 		end
 		return
+	elseif action == "nativeChat" then
+		if dock.SyncNativeChatVisibility then
+			dock:SyncNativeChatVisibility()
+		elseif value and dock.active and dock.frame and dock.frame:IsShown() and dock.HideNativeChat then
+			dock:HideNativeChat()
+		elseif not value and dock.RestoreNativeChat then
+			dock:RestoreNativeChat()
+		end
+		return
 	elseif action == "visible" and dock.SetVisible then
 		dock:SetVisible(value and true or false, true)
 	elseif action == "collapsed" and dock.SetCollapsed then
@@ -506,8 +515,8 @@ local dockLayoutCategoryDefinitions = {
 	window = {
 		title = "WINDOW",
 		heading = "Window",
-		hint = "Show or collapse the chat frame and choose which supporting controls remain visible.",
-		tooltip = "Frame visibility, collapsed state, social button, and helper tags.",
+		hint = "Show or collapse Chatty, choose whether Blizzard chat stays visible, and tune the window.",
+		tooltip = "Chatty visibility, Blizzard chat visibility, supporting controls, opacity, and size.",
 	},
 	tabs = {
 		title = "TABS + TITLE",
@@ -1128,6 +1137,7 @@ function Config:RefreshDockPage()
 	local dock = getDockSettings()
 	if self.dockVisibleToggle then self.dockVisibleToggle:SetValue(dock.visible ~= false, true) end
 	if self.dockCollapsedToggle then self.dockCollapsedToggle:SetValue(dock.collapsed == true, true) end
+	if self.dockHideNativeChatToggle then self.dockHideNativeChatToggle:SetValue(dock.hideNativeChat == true, true) end
 	if self.dockComposerAutoHideToggle then
 		local autoHide = addon.GetComposerAutoHideSetting and addon:GetComposerAutoHideSetting()
 		if autoHide == nil then
@@ -1297,27 +1307,42 @@ function Config:BuildDockPage()
 	stateTitle:SetText("FRAME STATE")
 	self.dockVisibleToggle = createDockToggle(page, "SHOW CHAT", PAGE_GUTTER, 151, 150, "visible", "visible")
 	self.dockCollapsedToggle = createDockToggle(page, "COLLAPSE CHAT", 170, 151, 150, "collapsed", "collapsed")
-	self.dockHideSocialToggle = createDockToggle(page, "HIDE SOCIAL BUTTON", PAGE_GUTTER, 181, 190, "hideSocialButton", "socialButton")
-	self.dockTagsToggle = createDockToggle(page, "HELPER TAGS", 208, 181, 170, "showClassificationTags", "classificationTags")
+	self.dockHideNativeChatToggle = Theme:CreateCompactToggle(page, "HIDE BLIZZARD CHAT", 230)
+	self.dockHideNativeChatToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -181)
+	self.dockHideNativeChatToggle.OnValueChanged = function(_, value)
+		getDockSettings().hideNativeChat = value and true or false
+		applyDockRuntime("nativeChat", value)
+		Config:SetDockStatus(value and "Blizzard chat hiding requested while Chatty is shown."
+			or "Blizzard chat remains visible.", "success")
+	end
+	local nativeChatWarning = Theme:CreateText(page, "GameFontHighlightSmall", "warning")
+	nativeChatWarning:SetPoint("TOPLEFT", page, "TOPLEFT", 250, -177)
+	nativeChatWarning:SetWidth(394)
+	nativeChatWarning:SetHeight(32)
+	nativeChatWarning:SetJustifyH("LEFT")
+	nativeChatWarning:SetText("Retail may mark chat secret during lockdown.\nHidden Blizzard chat can miss those messages.")
+	self.dockHideSocialToggle = createDockToggle(page, "HIDE SOCIAL BUTTON", PAGE_GUTTER, 219, 190, "hideSocialButton", "socialButton")
+	self.dockTagsToggle = createDockToggle(page, "HELPER TAGS", 208, 219, 170, "showClassificationTags", "classificationTags")
 	setControlTooltip(self.dockVisibleToggle, "Show chat", "Turns Chatty's organized chat window on or off.")
 	setControlTooltip(self.dockCollapsedToggle, "Collapse chat", "Keeps only the compact title controls visible until the window is expanded.")
+	setControlTooltip(self.dockHideNativeChatToggle, "Hide Blizzard chat", "Hides Blizzard chat while Chatty is shown and restores it when Chatty closes. During Retail messaging lockdown, secret messages can still reach Blizzard chat but cannot be read by Chatty; hiding Blizzard chat may leave those messages unseen.")
 	setControlTooltip(self.dockHideSocialToggle, "Hide social button", "Removes Blizzard's social notification button from the Chatty window.")
 	setControlTooltip(self.dockTagsToggle, "Helper tags", "Shows Chatty's routing hints on messages when available.")
 
 	local transparencyTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
-	transparencyTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -231)
+	transparencyTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -249)
 	transparencyTitle:SetText("WINDOW TRANSPARENCY")
 	local transparencyHint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-	transparencyHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -250)
+	transparencyHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -268)
 	transparencyHint:SetWidth(PAGE_WIDTH)
 	transparencyHint:SetJustifyH("LEFT")
 	transparencyHint:SetText("Background and border opacity leave chat text crisp. Whole UI also fades text and controls.")
 	local function createTransparencyField(label, x, setterName, key)
 		local fieldLabel = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-		fieldLabel:SetPoint("TOPLEFT", page, "TOPLEFT", x, -276)
+		fieldLabel:SetPoint("TOPLEFT", page, "TOPLEFT", x, -291)
 		fieldLabel:SetText(label)
 		local editBox = Theme:CreateEditBox(page, 64, 22, false)
-		editBox:SetPoint("TOPLEFT", page, "TOPLEFT", x, -292)
+		editBox:SetPoint("TOPLEFT", page, "TOPLEFT", x, -307)
 		setControlTooltip(editBox, label .. " opacity", key == "overallAlpha"
 			and "Fades the complete Chatty window, including messages and controls. Use 0 to 100%."
 			or "Fades only this part of Chatty's chrome. Message text remains fully opaque. Use 0 to 100%.")
@@ -2212,6 +2237,7 @@ function Config:BuildDockPage()
 		window = {
 			stateTitle,
 			self.dockVisibleToggle, self.dockCollapsedToggle,
+			self.dockHideNativeChatToggle, nativeChatWarning,
 			self.dockHideSocialToggle, self.dockTagsToggle,
 			transparencyTitle, transparencyHint,
 			backgroundAlphaLabel, borderAlphaLabel, overallAlphaLabel,
@@ -2388,7 +2414,6 @@ local builtInViewIds = {
 	conversations = true,
 	group = true,
 	pvp = true,
-	newcomers = true,
 	groupFinder = true,
 	guildInvites = true,
 	trade = true,
@@ -5020,9 +5045,9 @@ function Config:BuildViewsPage()
 		row:SetScript("OnEnter", function(self)
 			if not GameTooltip then return end
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(self.semanticTooltipTitle or "Semantic route evidence", 1, 0.82, 0.3, true)
+			GameTooltip:SetText(self.semanticTooltipTitle or "Semantic route evidence", 1, 0.82, 0.3, 1, true)
 			if self.semanticTooltipBody and self.semanticTooltipBody ~= "" then
-				GameTooltip:AddLine(self.semanticTooltipBody, 0.72, 0.76, 0.84, true)
+				GameTooltip:AddLine(self.semanticTooltipBody, 0.72, 0.76, 0.84, 1, true)
 			end
 			GameTooltip:Show()
 		end)
@@ -6468,8 +6493,8 @@ function Config:BuildSpamPage()
 				if GameTooltip then
 					GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 					GameTooltip:AddLine("Ban report", 1, 0.8, 0.39)
-					GameTooltip:AddLine(self.reason, 0.78, 0.84, 0.94, true)
-					GameTooltip:AddLine("Click for retained messages and actions.", 0.55, 0.62, 0.72, true)
+					GameTooltip:AddLine(self.reason, 0.78, 0.84, 0.94, 1, true)
+					GameTooltip:AddLine("Click for retained messages and actions.", 0.55, 0.62, 0.72, 1, true)
 					GameTooltip:Show()
 				else
 					Config:SetSpamNotice(self.reason, "textMuted")
@@ -7072,7 +7097,6 @@ end
 local function semanticRouteLabel(category)
 	if category == "groupFinder" then return "GROUP FINDER" end
 	if category == "guildInvites" then return "GUILD INVITES" end
-	if category == "newcomers" then return "NEWCOMERS" end
 	if category == "pvp" then return "PVP" end
 	if category == "trade" then return "TRADE" end
 	if category == "general" then return "GENERAL" end
@@ -12599,6 +12623,7 @@ function Config:ReloadProfile()
 	self.dockLayoutGroups = nil
 	self.dockVisibleToggle = nil
 	self.dockCollapsedToggle = nil
+	self.dockHideNativeChatToggle = nil
 	self.dockHideSocialToggle = nil
 	self.dockComposerAutoHideToggle = nil
 	self.dockEditBoxBorderToggle = nil

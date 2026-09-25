@@ -18,6 +18,7 @@ local chatEvents = {
 	"CHAT_MSG_ADDON",
 	"CHAT_MSG_GUILD",
 	"CHAT_MSG_GUILD_ACHIEVEMENT",
+	"CHAT_MSG_GUILD_ITEM_LOOTED",
 	"CHAT_MSG_OFFICER",
 	"CHAT_MSG_PARTY",
 	"CHAT_MSG_PARTY_LEADER",
@@ -59,6 +60,7 @@ local directCategories = {
 	CHAT_MSG_DND = "conversations",
 	CHAT_MSG_GUILD = "guild",
 	CHAT_MSG_GUILD_ACHIEVEMENT = "guild",
+	CHAT_MSG_GUILD_ITEM_LOOTED = "guild",
 	CHAT_MSG_OFFICER = "guild",
 	CHAT_MSG_PARTY = "group",
 	CHAT_MSG_PARTY_LEADER = "group",
@@ -153,6 +155,7 @@ registerStaticSource("CHAT_MSG_DND", "conversations", "conversation:dnd", "DND r
 
 registerStaticSource("CHAT_MSG_GUILD", "guild", "guild:guild", "Guild chat")
 registerStaticSource("CHAT_MSG_GUILD_ACHIEVEMENT", "guild", "guild:achievement", "Guild achievements")
+registerStaticSource("CHAT_MSG_GUILD_ITEM_LOOTED", "guild", "guild:item-looted", "Guild item notices")
 registerStaticSource("CHAT_MSG_OFFICER", "guild", "guild:officer", "Officer chat")
 
 registerStaticSource("CHAT_MSG_PARTY", "group", "group:party", "Party chat")
@@ -1145,7 +1148,6 @@ local function copySemanticRouteCatalog()
 end
 
 local publicSourceViewById = {
-	["channel:newcomers"] = "newcomers",
 	["channel:guildrecruitment"] = "guildInvites",
 }
 
@@ -1220,7 +1222,6 @@ local function analyzeSemanticRoute(text, channel, sourceId, sender)
 	local isUnderAttackNotice = isZoneUnderAttackNotice(text, sender)
 	local isDefenseChannel = isDefensePublicSource(sourceId, channel)
 	local sourceView = getPublicSourceView(sourceId, channel)
-	local isNewcomersSource = sourceView == "newcomers"
 	local isGuildRecruitmentSource = sourceView == "guildInvites"
 	local isLfgChannel = contains(channel, "lookingforgroup") or contains(channel, "looking for group")
 	local isTradeChannel = contains(channel, "trade")
@@ -1259,11 +1260,6 @@ local function analyzeSemanticRoute(text, channel, sourceId, sender)
 	elseif isTradeChannel then
 		category = "trade"
 		table.insert(reasons, "Trade channel route.")
-	-- Newcomers is a useful home for ordinary onboarding conversation, but
-	-- strong LFG/Trade/PVP intent above deliberately peels into a focused view.
-	elseif isNewcomersSource then
-		category = "newcomers"
-		table.insert(reasons, "Newcomers channel fallback after LFG/Trade/PVP inference.")
 	else
 		if not lfgEnabled then table.insert(reasons, "Group Finder inference is disabled.") end
 		if not tradeEnabled then table.insert(reasons, "Trade inference is disabled.") end
@@ -1279,7 +1275,6 @@ local function analyzeSemanticRoute(text, channel, sourceId, sender)
 		intent = lfg.intent,
 		isUnderAttackNotice = isUnderAttackNotice,
 		isDefenseChannel = isDefenseChannel,
-		isNewcomersSource = isNewcomersSource,
 		isGuildRecruitmentSource = isGuildRecruitmentSource,
 		isLfgChannel = isLfgChannel,
 		isTradeChannel = isTradeChannel,
@@ -1299,7 +1294,6 @@ local viewForCategory = {
 	general = "general",
 	sync = "sync",
 	conversations = "conversations",
-	newcomers = "newcomers",
 	groupFinder = "groupFinder",
 	guildInvites = "guildInvites",
 	trade = "trade",
@@ -1642,7 +1636,7 @@ function Engine:CompileCustomViews(force)
 end
 
 -- Custom terms are normally body text. Public-channel labels are useful
--- identifiers too (for example, a custom NEWCOMERS rail), but only for public
+-- identifiers too (for example, a custom channel-specific rail), but only for public
 -- channel records: expanding this to every source would make broad words such
 -- as "guild" capture every guild-chat line regardless of its body.
 local function getCustomViewTermMatch(record, normalized, term)
@@ -1673,14 +1667,13 @@ local function shouldApplyCustomViewMatch(record, primaryView, matchKind)
 	if record.routeOverrideCategory then
 		return false
 	end
-	-- A channel-name term is a convenient source feed (for example NEWCOMERS),
+	-- A channel-name term is a convenient source feed,
 	-- not a second copy of messages already understood as Trade, Group Finder,
 	-- System, or Loot. Preserve broader user-authored source lenses when the
-	-- primary route is that factual source's built-in home; the exact legacy NC
-	-- shape is migrated away by Settings. Body-text rules remain intentional
-	-- mirrors everywhere that is not manually moved.
+	-- primary route is that factual source's built-in home. Body-text rules
+	-- remain intentional mirrors everywhere that is not manually moved.
 	if matchKind == "source" and primaryView ~= "general"
-		and primaryView ~= "newcomers" and primaryView ~= "guildInvites" then
+		and primaryView ~= "guildInvites" then
 		return false
 	end
 	return matchKind ~= nil
@@ -1847,7 +1840,6 @@ function Engine:AnalyzeRecord(record)
 		semanticAnalysis = analyzeSemanticRoute(normalized, channel, record.sourceId, record.sender)
 		local isUnderAttackNotice = semanticAnalysis.isUnderAttackNotice
 		local isDefenseChannel = semanticAnalysis.isDefenseChannel
-		local isNewcomersSource = semanticAnalysis.isNewcomersSource
 		local isGuildRecruitmentSource = semanticAnalysis.isGuildRecruitmentSource
 		local intent = semanticAnalysis.intent
 		local isLfgChannel = semanticAnalysis.isLfgChannel
@@ -1886,9 +1878,6 @@ function Engine:AnalyzeRecord(record)
 		end
 		if isTradeChannel then
 			table.insert(signals, "Trade channel")
-		end
-		if isNewcomersSource then
-			table.insert(signals, "NEWCOMERS exact channel source")
 		end
 		if isGuildRecruitmentSource then
 			table.insert(signals, "GUILD INVITES exact GuildRecruitment source")
@@ -2361,7 +2350,7 @@ function Engine:Normalize(event, ...)
 	self.nextId = self.nextId + 1
 	self:Classify(record)
 	if (record.view == "groupFinder" or record.view == "trade" or record.view == "pvp"
-		or record.view == "newcomers" or record.view == "guildInvites")
+		or record.view == "guildInvites")
 		and tonumber(channelNumber) and tonumber(channelNumber) > 0 then
 		addon:GetSmartSettings().channelTargets[record.view] = tonumber(channelNumber)
 	end

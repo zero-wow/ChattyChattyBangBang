@@ -91,7 +91,6 @@ assert(dock:GetComposerRouteLabel("WHISPER", "Tester-Realm") == "REPLY", "whispe
 -- numbered public channel currently visible in that custom filter.
 settings.views = {
 	general = true,
-	newcomers = true,
 	groupFinder = true,
 	guildInvites = true,
 	pvp = true,
@@ -104,7 +103,6 @@ settings.views = {
 ChattyChattyBangBang.GetSmartViews = function()
 	return {
 		{ id = "general", key = "G", label = "General", enabled = true },
-		{ id = "newcomers", key = "NC", label = "Newcomers", enabled = true },
 		{ id = "groupFinder", key = "LFG", label = "Group Finder", enabled = true },
 		{ id = "guildInvites", key = "GU INV", label = "Guild Invites", enabled = true },
 		{ id = "pvp", key = "PVP", label = "PVP", enabled = true },
@@ -146,15 +144,10 @@ suggestedRoute, suggestedTarget = dock:GetSuggestedComposerRoute()
 assert(suggestedRoute == "CHANNEL" and suggestedTarget == 1,
 	"custom view did not retain a saved numbered-channel fallback")
 
--- Factual public-source rails retain the numbered channel observed by the
--- engine. They remain writable just like Group Finder and Trade.
-settings.channelTargets.newcomers = 2
+-- Surviving factual public-source rails retain the numbered channel observed
+-- by the engine. They remain writable just like Group Finder and Trade.
 settings.channelTargets.guildInvites = 1
 settings.channelTargets.pvp = 1
-dock.activeView = "newcomers"
-suggestedRoute, suggestedTarget = dock:GetSuggestedComposerRoute()
-assert(suggestedRoute == "CHANNEL" and suggestedTarget == 2 and not dock:IsReadOnlyView(),
-	"built-in Newcomers view did not retain a writable numbered-channel target")
 dock.activeView = "guildInvites"
 suggestedRoute, suggestedTarget = dock:GetSuggestedComposerRoute()
 assert(suggestedRoute == "CHANNEL" and suggestedTarget == 1 and not dock:IsReadOnlyView(),
@@ -170,7 +163,7 @@ assert(suggestedRoute == "BATTLEGROUND" and suggestedTarget == nil,
 activeInstanceType = "none"
 
 -- The manual route is session-local per view. Switching tabs must not discard
--- Newcomers' channel choice or leak it into General.
+-- a custom view's channel choice or leak it into General.
 dock.title = { SetText = function() end }
 dock.subtitle = { SetText = function() end, Hide = function() end }
 dock.RefreshRailState = function() end

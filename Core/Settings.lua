@@ -23,6 +23,7 @@ local RAIL_UNREAD_COUNT_APPEARANCE_SCHEMA = 1
 local RAIL_UNREAD_COUNT_FONT_SIZE_MIN = 8
 local RAIL_UNREAD_COUNT_FONT_SIZE_MAX = 16
 local BUILT_IN_SOURCE_VIEWS_SCHEMA = 2
+local RETIRED_NEWCOMERS_VIEW_SCHEMA = 1
 -- CONTENTS used to be an exclusion-only filter whose checked state was never
 -- saved. Schema 1 turns it into an additive, per-view source feed with clean
 -- factual homes while keeping semantic/custom routing as a second membership
@@ -272,7 +273,6 @@ local defaults = {
 	},
 	views = {
 		general = true,
-		newcomers = true,
 		-- Protocol traffic is deliberately quiet by default.  The Sync rail is
 		-- still available from Organized Views / Rails & Sources whenever a
 		-- player wants to inspect it.
@@ -292,10 +292,11 @@ local defaults = {
 	-- Visual tab order only.  It is intentionally independent from customViews:
 	-- moving a rail must never alter its classifier terms or message routing.
 	railOrder = {
-		"general", "newcomers", "sync", "conversations", "group", "groupFinder",
+		"general", "sync", "conversations", "group", "groupFinder",
 		"guildInvites", "pvp", "trade", "guild", "system", "loot",
 	},
 	builtInSourceViewsSchema = BUILT_IN_SOURCE_VIEWS_SCHEMA,
+	retiredNewcomersViewSchema = RETIRED_NEWCOMERS_VIEW_SCHEMA,
 	viewSourceMembershipSchema = VIEW_SOURCE_MEMBERSHIP_SCHEMA,
 	-- Per-view presentation and source visibility overrides.  A missing value
 	-- always means "use the built-in/default source home" so the table stays
@@ -688,7 +689,6 @@ addon.SmartViews = {
 	-- deliberately preserved exactly as typed; RESET returns to this concise,
 	-- scan-friendly uppercase baseline.
 	{ id = "general", key = "G", label = "GENERAL", description = "World, zone, local, and channel traffic." },
-	{ id = "newcomers", key = "NC", label = "NEWCOMERS", description = "Newcomers channel conversation that is not better identified as Group Finder or Trade." },
 	{ id = "sync", key = "SYNC", label = "SYNC", description = "Addon protocol traffic and marked sync channels." },
 	{ id = "conversations", key = "C", label = "CHAT", description = "Whispers, replies, and direct player chat." },
 	{ id = "group", key = "GRP", label = "GROUP", description = "Party, raid, instance, and raid-warning chat." },
@@ -710,6 +710,9 @@ local builtInViewIds = {}
 for index = 1, #addon.SmartViews do
 	builtInViewIds[addon.SmartViews[index].id] = true
 end
+-- The old built-in identifier remains reserved: importing a hand-edited
+-- custom view must not revive the removed Retail NC rail by ID collision.
+builtInViewIds.newcomers = true
 
 -- Every physical source has one calm, factual home. Routing rules may add an
 -- additional topic view, but they never have to steal the line from this home:
@@ -728,6 +731,7 @@ local sourceHomeViewById = {
 	["conversation:dnd"] = "conversations",
 	["guild:guild"] = "guild",
 	["guild:achievement"] = "guild",
+	["guild:item-looted"] = "guild",
 	["guild:officer"] = "guild",
 	["group:party"] = "group",
 	["group:raid"] = "group",
@@ -743,7 +747,6 @@ local sourceHomeViewById = {
 	["system:achievement"] = "system",
 	["loot:loot"] = "loot",
 	["loot:money"] = "loot",
-	["channel:newcomers"] = "newcomers",
 	["channel:guildrecruitment"] = "guildInvites",
 	["channel:guild-recruitment"] = "guildInvites",
 	["channel:lookingforgroup"] = "groupFinder",
@@ -1817,82 +1820,11 @@ local function normalizeStoredCustomViews(settings)
 	return views, changed
 end
 
--- Convert only the exact one-source custom Newcomers lens that predates the
--- built-in view. Broader term rules and locally styled custom views remain
--- untouched, so this migration cannot swallow a player's unrelated work.
-local function migrateExactNewcomersCustomView(settings)
-	local customViews = normalizeStoredCustomViews(settings)
-	local viewOptions = type(settings.viewOptions) == "table" and settings.viewOptions or {}
-	for index = 1, #customViews do
-		local view = customViews[index]
-		local options = viewOptions[view.id]
-		local sources = type(options) == "table" and options.sources or nil
-		local exactPresentation = string.lower(trim(view.label, 40)) == "newcomers"
-			and string.upper(trim(view.key, 6)) == "NC"
-		local exactTerms = type(view.terms) == "table" and #view.terms == 1
-			and string.lower(trim(view.terms[1], MAX_TERM_LENGTH)) == "newcomers"
-		local sourceIsolated = type(sources) == "table" and next(sources) ~= nil
-			and sources["channel:newcomers"] ~= false
-		if sourceIsolated then
-			for sourceId, enabled in pairs(sources) do
-				if sourceId ~= "channel:newcomers" and enabled ~= false then
-					sourceIsolated = false
-					break
-				end
-			end
-		end
-		local sourceOptionsOnly = type(options) == "table"
-		if sourceOptionsOnly then
-			for key in pairs(options) do
-				if key ~= "sources" then
-					sourceOptionsOnly = false
-					break
-				end
-			end
-		end
-
-		if exactPresentation and exactTerms and sourceIsolated and sourceOptionsOnly then
-			local customId = view.id
-			local wasEnabled = view.enabled ~= false
-				and (type(settings.views) ~= "table" or settings.views[customId] ~= false)
-			table.remove(customViews, index)
-			settings.customViews = customViews
-			settings.customViewRevision = math.max(0,
-				math.floor(tonumber(settings.customViewRevision) or 0)) + 1
-			settings.views = type(settings.views) == "table" and settings.views or {}
-			settings.views[customId] = nil
-			settings.views.newcomers = wasEnabled
-			viewOptions[customId] = nil
-
-			if type(settings.railOrder) == "table" then
-				for railIndex, viewId in pairs(settings.railOrder) do
-					if type(railIndex) == "number" and viewId == customId then
-						settings.railOrder[railIndex] = "newcomers"
-					end
-				end
-			end
-			if type(settings.dock) == "table" and settings.dock.activeView == customId then
-				settings.dock.activeView = "newcomers"
-			end
-			if type(settings.channelTargets) == "table" then
-				local target = tonumber(settings.channelTargets[customId])
-				if target and target > 0 then
-					settings.channelTargets.newcomers = math.floor(target)
-				end
-				settings.channelTargets[customId] = nil
-			end
-			return true
-		end
-	end
-	return false
-end
-
 -- applyDefaults fills missing numeric array slots, which can make a newly
 -- introduced rail look as though it was deliberately present in an old custom
 -- order. Remove only this release's injected defaults before normalization so
--- the anchor rules can place them intentionally. An exact NC conversion keeps
--- its replaced slot because that location was already the player's choice.
-local function prepareBuiltInSourceViewRailMigration(settings, keepMigratedNewcomers)
+-- the anchor rules can place them intentionally.
+local function prepareBuiltInSourceViewRailMigration(settings)
 	local source = type(settings.railOrder) == "table" and settings.railOrder or {}
 	local maximumIndex = #source
 	for key in pairs(source) do
@@ -1903,8 +1835,7 @@ local function prepareBuiltInSourceViewRailMigration(settings, keepMigratedNewco
 	local clean = {}
 	for index = 1, maximumIndex do
 		local viewId = source[index]
-		if type(viewId) == "string" and viewId ~= "guildInvites"
-			and (keepMigratedNewcomers or viewId ~= "newcomers") then
+		if type(viewId) == "string" and viewId ~= "guildInvites" then
 			table.insert(clean, viewId)
 		end
 	end
@@ -2006,7 +1937,6 @@ local function normalizeRailOrder(settings, customViews)
 			end
 		end
 	end
-	insertAfter("newcomers", "general")
 	insertAfter("guildInvites", "groupFinder")
 	insertAfter("pvp", "guildInvites")
 	for index = 1, #addon.SmartViews do
@@ -2072,7 +2002,7 @@ local migrationStaticSourceIds = {
 	"addon:alcver", "system:addon-feedback",
 	"conversation:whisper", "conversation:bnet-whisper", "conversation:bnet-conversation",
 	"conversation:afk", "conversation:dnd",
-	"guild:guild", "guild:achievement", "guild:officer",
+	"guild:guild", "guild:achievement", "guild:item-looted", "guild:officer",
 	"group:party", "group:raid", "group:raid-warning", "group:battleground", "group:instance",
 	"system:message", "system:ui-error", "system:local-debug", "system:achievement",
 	"system:battleground", "system:under-attack", "loot:loot", "loot:money",
@@ -3287,7 +3217,7 @@ local function normalizeBlockSettings(settings)
 end
 
 local MESSAGE_ROUTE_OVERRIDE_LIMIT = 64
-local MESSAGE_ROUTE_OVERRIDE_SCHEMA = 2
+local MESSAGE_ROUTE_OVERRIDE_SCHEMA = 3
 -- These are the built-in destinations that can safely receive a public-channel
 -- line as its primary route.  Private/social rails (CHAT, GROUP, GUILD) keep
 -- their meaning, and SYNC remains reserved for protocol traffic.  Custom views
@@ -3295,7 +3225,6 @@ local MESSAGE_ROUTE_OVERRIDE_SCHEMA = 2
 -- brittle primary classifier target.
 local messageRouteOverrideDestinations = {
 	{ id = "general", label = "GENERAL" },
-	{ id = "newcomers", label = "NEWCOMERS" },
 	{ id = "groupFinder", label = "GROUP FINDER" },
 	{ id = "guildInvites", label = "GUILD INVITES" },
 	{ id = "pvp", label = "PVP" },
@@ -3909,6 +3838,9 @@ function addon:GetSmartSettings()
 	local storedBuiltInSourceViewsSchema =
 		tonumber(rawget(profile.smartChat, "builtInSourceViewsSchema")) or 0
 	local migrateBuiltInSourceViews = storedBuiltInSourceViewsSchema < BUILT_IN_SOURCE_VIEWS_SCHEMA
+	local retireNewcomersView =
+		(tonumber(rawget(profile.smartChat, "retiredNewcomersViewSchema")) or 0)
+		< RETIRED_NEWCOMERS_VIEW_SCHEMA
 	local storedViewSourceMembershipSchema =
 		tonumber(rawget(profile.smartChat, "viewSourceMembershipSchema")) or 0
 	local migrateViewSourceMemberships =
@@ -4021,11 +3953,21 @@ function addon:GetSmartSettings()
 	end
 	if migrateBuiltInSourceViews then
 		if storedBuiltInSourceViewsSchema < 1 then
-			local migratedNewcomers = migrateExactNewcomersCustomView(profile.smartChat)
-			prepareBuiltInSourceViewRailMigration(profile.smartChat, migratedNewcomers)
+			prepareBuiltInSourceViewRailMigration(profile.smartChat)
 		end
 		preparePvpViewRailMigration(profile.smartChat)
 		profile.smartChat.builtInSourceViewsSchema = BUILT_IN_SOURCE_VIEWS_SCHEMA
+	end
+	if retireNewcomersView then
+		-- Retire only the old built-in ID. A player-created custom view may still
+		-- have any label/key they chose, including NC, and must remain untouched.
+		profile.smartChat.views.newcomers = nil
+		profile.smartChat.viewOptions.newcomers = nil
+		profile.smartChat.channelTargets.newcomers = nil
+		if profile.smartChat.dock.activeView == "newcomers" then
+			profile.smartChat.dock.activeView = "general"
+		end
+		profile.smartChat.retiredNewcomersViewSchema = RETIRED_NEWCOMERS_VIEW_SCHEMA
 	end
 	if migrateViewSourceMemberships then
 		migrateViewSourceMembership(profile.smartChat)

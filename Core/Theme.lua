@@ -1213,12 +1213,12 @@ function Theme:CreateButton(parent, text, width, height, emphasis)
 		end
 		if not title or title == "" then return end
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText(title, 1, 1, 1, true)
+		GameTooltip:SetText(title, 1, 1, 1, 1, true)
 		if body and body ~= "" then
-			GameTooltip:AddLine(body, 0.72, 0.76, 0.84, true)
+			GameTooltip:AddLine(body, 0.72, 0.76, 0.84, 1, true)
 		end
 		if self._themeLabelClipped and self._themeFullLabel ~= "" and title ~= self._themeFullLabel then
-			GameTooltip:AddLine("Label: " .. self._themeFullLabel, 0.82, 0.84, 0.90, true)
+			GameTooltip:AddLine("Label: " .. self._themeFullLabel, 0.82, 0.84, 0.90, 1, true)
 		end
 		GameTooltip:Show()
 	end
@@ -1434,9 +1434,9 @@ local function attachControlTooltip(control)
 			return
 		end
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText(self._themeTooltipTitle, 1, 1, 1, true)
+		GameTooltip:SetText(self._themeTooltipTitle, 1, 1, 1, 1, true)
 		if self._themeTooltipBody and self._themeTooltipBody ~= "" then
-			GameTooltip:AddLine(self._themeTooltipBody, 0.72, 0.76, 0.84, true)
+			GameTooltip:AddLine(self._themeTooltipBody, 0.72, 0.76, 0.84, 1, true)
 		end
 		GameTooltip:Show()
 	end

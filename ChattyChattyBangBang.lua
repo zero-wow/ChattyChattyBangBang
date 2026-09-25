@@ -213,7 +213,6 @@ local defaults = {
 			},
 			views = {
 				general = true,
-				newcomers = true,
 				sync = false,
 				conversations = true,
 				group = true,
@@ -226,7 +225,7 @@ local defaults = {
 				loot = true,
 			},
 			railOrder = {
-				"general", "newcomers", "sync", "conversations", "group", "groupFinder",
+				"general", "sync", "conversations", "group", "groupFinder",
 				"guildInvites", "pvp", "trade", "guild", "system", "loot",
 			},
 			builtInSourceViewsSchema = 2,

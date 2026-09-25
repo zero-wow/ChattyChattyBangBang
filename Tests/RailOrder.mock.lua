@@ -16,12 +16,12 @@ local settings = addon:GetSmartSettings()
 local views = addon:GetSmartViews()
 assert(views[1].id == "general")
 assert(views[1].label == "GENERAL")
-assert(views[2].id == "newcomers" and views[2].key == "NC")
-assert(views[5].id == "group")
-assert(views[5].label == "GROUP")
-assert(views[6].id == "groupFinder")
-assert(views[7].id == "guildInvites" and views[7].key == "GU INV")
-assert(views[8].id == "pvp" and views[8].key == "PVP" and views[8].enabled == true)
+assert(views[2].id == "sync")
+assert(views[4].id == "group")
+assert(views[4].label == "GROUP")
+assert(views[5].id == "groupFinder")
+assert(views[6].id == "guildInvites" and views[6].key == "GU INV")
+assert(views[7].id == "pvp" and views[7].key == "PVP" and views[7].enabled == true)
 assert(views[#views].id == "loot")
 
 assert(addon:MoveSmartView("loot", -99))
@@ -107,8 +107,8 @@ for index = 1, #destinations do
 	canRouteToSystem = canRouteToSystem or destinations[index].id == "system"
 	canRouteToLoot = canRouteToLoot or destinations[index].id == "loot"
 end
-assert(canRouteToNewcomers and canRouteToGuildInvites and canRouteToPvp and canRouteToSystem and canRouteToLoot,
-	"route destination menu omitted a built-in public destination")
+assert(not canRouteToNewcomers and canRouteToGuildInvites and canRouteToPvp and canRouteToSystem and canRouteToLoot,
+	"route destination menu kept retired NC or omitted a built-in public destination")
 assert(addon:SetMessageRouteOverride(publicRecord, "pvp"), "could not move a public notice to PVP")
 assert(addon:GetMessageRouteOverride(publicRecord) == "pvp" and reclassifications == 2 and rebuilds == 2,
 	"PVP route correction did not replace and refresh")
