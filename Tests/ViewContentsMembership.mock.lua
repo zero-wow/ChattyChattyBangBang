@@ -75,6 +75,9 @@ local expectedHomes = {
 	{ "channel:localdefence", "channels", "pvp" },
 	{ "channel:world-defence", "channels", "pvp" },
 	{ "channel:trade", "channels", "trade" },
+	{ "channel:trade-services", "channels", "trade" },
+	{ "channel:trade-services-city", "channels", "trade" },
+	{ "channel:traders", "channels", "general" },
 	{ "conversation:whisper", "conversations", "conversations" },
 	{ "group:party", "group", "group" },
 	{ "guild:guild", "guild", "guild" },
@@ -87,6 +90,21 @@ for index = 1, #expectedHomes do
 	assert(addon:GetDefaultViewForSource(fixture[1], fixture[2]) == fixture[3],
 		"wrong clean source home for " .. fixture[1])
 end
+
+local tradeServicesRecord = {
+	event = "CHAT_MSG_CHANNEL", sourceId = "channel:trade-services",
+	sourceGroup = "channels", sourceLabel = "Trade (Services)", view = "trade",
+	views = { trade = true }, text = "-WTS- raid carry",
+}
+assert(not addon:IsRecordIncludedBySource("general", tradeServicesRecord, settings)
+	and addon:IsRecordIncludedBySource("trade", tradeServicesRecord, settings),
+	"Trade (Services) leaked into General through its default source feed")
+assert(addon:SetViewSourceEnabled("general", "channel:trade-services", true)
+	and addon:IsRecordIncludedBySource("general", tradeServicesRecord, settings),
+	"an explicitly checked General source feed was not honored")
+assert(addon:ResetViewSources("general")
+	and not addon:IsRecordIncludedBySource("general", tradeServicesRecord, settings),
+	"reset did not restore Trade (Services) to its Trade-only source home")
 
 local engine = addon.MessageEngine
 engine:Initialize()
@@ -243,5 +261,14 @@ assert(addon:IsRecordAllowedInView("general", routed, settings) == false
 	and #engine:GetMessages("general") == 0,
 	"stale record.views membership leaked a Sync record into General")
 routed.views.general = nil
+
+engine:Capture("CHAT_MSG_CHANNEL", "-WTS- heroic run 325K", "RetailSeller", nil,
+	"4. Trade (Services) - City", nil, nil, nil, 4, "Trade (Services) - City")
+local tradeServicesAdvert = engine.historyTail
+assert(tradeServicesAdvert.view == "trade"
+	and tradeServicesAdvert.sourceId == "channel:trade-services"
+	and engine:GetMessages("trade")[1] == tradeServicesAdvert
+	and #engine:GetMessages("general") == 0,
+	"Trade (Services) WTS advert still appeared in General's visible history")
 
 print("View contents membership integration mock passed")

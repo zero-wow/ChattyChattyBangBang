@@ -300,7 +300,7 @@ local lfgContextTerms = {
 local lfgNeedTerms = { "need", "more" }
 local lfgKeystoneTerm = "keystone"
 local tradeShorthandTerms = { "wts", "wtb", "wtt" }
-local tradeBuySellTerms = { "selling", "buying" }
+local tradeBuySellTerms = { "selling", "buying", "sell", "buy", "for sale", "offering" }
 local tradeServiceTerms = { "boost", "service", "services", "crafting", "enchanting", "portal", "portals" }
 local pvpExplicitTerms = { "pvp", "battleground", "battlegrounds", "arena", "arenas", "world pvp", "wpvp", "honor farm" }
 local pvpNamedActivityTerms = {
@@ -453,6 +453,8 @@ local conversationalBuyingObjects = {
 local conversationalBuyingDeterminers = {
 	"a", "an", "that", "this", "the", "your", "his", "her", "their", "our",
 }
+local conversationalBuyingVerbs = { "buying", "buy" }
+local conversationalSellingVerbs = { "selling", "sell" }
 
 local conversationalSellingTargets = {
 	"me", "you", "him", "her", "us", "them", "people", "everyone",
@@ -487,25 +489,29 @@ local function hasTradeCurrencyAmount(text)
 end
 
 local function isConversationalBuySellUsage(text)
-	if string.find(text, "%f[%a]buying%s+into%f[^%a]")
-		or string.find(text, "%f[%a]buying%s+it%f[^%a]") then
-		return true
-	end
-	for objectIndex = 1, #conversationalBuyingObjects do
-		local object = conversationalBuyingObjects[objectIndex]
-		if string.find(text, "%f[%a]buying%s+" .. object .. "%f[^%a]") then
+	for _, buyVerb in ipairs(conversationalBuyingVerbs) do
+		if string.find(text, "%f[%a]" .. buyVerb .. "%s+into%f[^%a]")
+			or string.find(text, "%f[%a]" .. buyVerb .. "%s+it%f[^%a]") then
 			return true
 		end
-		for determinerIndex = 1, #conversationalBuyingDeterminers do
-			local determiner = conversationalBuyingDeterminers[determinerIndex]
-			if string.find(text, "%f[%a]buying%s+" .. determiner .. "%s+" .. object .. "%f[^%a]") then
+		for objectIndex = 1, #conversationalBuyingObjects do
+			local object = conversationalBuyingObjects[objectIndex]
+			if string.find(text, "%f[%a]" .. buyVerb .. "%s+" .. object .. "%f[^%a]") then
 				return true
+			end
+			for determinerIndex = 1, #conversationalBuyingDeterminers do
+				local determiner = conversationalBuyingDeterminers[determinerIndex]
+				if string.find(text, "%f[%a]" .. buyVerb .. "%s+" .. determiner .. "%s+" .. object .. "%f[^%a]") then
+					return true
+				end
 			end
 		end
 	end
-	for index = 1, #conversationalSellingTargets do
-		if string.find(text, "%f[%a]selling%s+" .. conversationalSellingTargets[index] .. "%s+on%f[^%a]") then
-			return true
+	for _, sellVerb in ipairs(conversationalSellingVerbs) do
+		for index = 1, #conversationalSellingTargets do
+			if string.find(text, "%f[%a]" .. sellVerb .. "%s+" .. conversationalSellingTargets[index] .. "%s+on%f[^%a]") then
+				return true
+			end
 		end
 	end
 	return string.find(text, "%f[%a]selling%s+point%f[^%a]") ~= nil
@@ -523,7 +529,11 @@ local function hasLeadingBuySellAdvertisement(text)
 		index = index + 1
 	end
 	local verb = words[index]
-	return (verb == "selling" or verb == "buying") and words[index + 1] ~= nil
+	if verb == "for" and words[index + 1] == "sale" then
+		return words[index + 2] ~= nil
+	end
+	return (verb == "selling" or verb == "buying" or verb == "sell" or verb == "buy")
+		and words[index + 1] ~= nil
 end
 
 local function hasBuySellTransactionContext(text)
@@ -551,12 +561,12 @@ local function getTradeEvidence(text)
 	end
 	local hasBuySell = hasAnyWord(text, tradeBuySellTerms)
 	if hasBuySell then
-		addEvidence(evidence, tradeEvidencePoints.buySell, "buying or selling")
+		addEvidence(evidence, tradeEvidencePoints.buySell, "buy/sell/offering language")
 	end
-	-- BUYING/SELLING is intentionally one point short by itself because those
-	-- words appear in ordinary conversation. An ad shape, market link, amount,
-	-- or transaction CTA supplies only the missing point instead of lowering the
-	-- global threshold or promoting ambiguous service words on their own.
+	-- A sale/purchase verb is intentionally one point short by itself because
+	-- such words also appear in ordinary conversation. An ad shape, market
+	-- link, amount, or transaction CTA supplies the missing point. OFFERING
+	-- alone is not a leading-ad shape; it needs that separate commercial clue.
 	if hasBuySell and hasBuySellTransactionContext(text) then
 		addEvidence(evidence, tradeEvidencePoints.transactionContext, "buy/sell transaction context")
 	end
@@ -1078,7 +1088,7 @@ local semanticRouteCatalogDefinitions = {
 		explanation = "Trade is the fallback home for its channel; stronger topic evidence may peel a line into Group Finder or PVP. Other public chat needs enough transaction evidence.",
 		categories = {
 			{ id = "trade-shorthand", label = "Transaction shorthand", points = tradeEvidencePoints.shorthand, terms = tradeShorthandTerms },
-			{ id = "buy-sell", label = "Buying or selling", points = tradeEvidencePoints.buySell, terms = tradeBuySellTerms },
+			{ id = "buy-sell", label = "Buying, selling, or offering", points = tradeEvidencePoints.buySell, terms = tradeBuySellTerms },
 			{
 				id = "transaction-context", label = "Transaction context", points = tradeEvidencePoints.transactionContext,
 				terms = tradeTransactionCatalogTerms,

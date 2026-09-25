@@ -12,6 +12,7 @@ local navigation = {
 	{ id = "spam", label = "Spam Firewall", group = "RULES & SAFETY" },
 	{ id = "blocks", label = "Message Blocks", group = "RULES & SAFETY" },
 	{ id = "semantic", label = "Semantic Routes", group = "RULES & SAFETY" },
+	{ id = "routeAudit", label = "Route Audit", group = "RULES & SAFETY" },
 	{ id = "alerts", label = "Alerts", group = "RULES & SAFETY" },
 	{ id = "colorways", label = "Themes", group = "APPEARANCE" },
 	{ id = "keywords", label = "Keyword Highlights", group = "APPEARANCE" },
@@ -7320,6 +7321,313 @@ function Config:BuildSemanticRoutesPage()
 	return page
 end
 
+-- Inspect the same retained, unblocked membership set the chat window reads.
+-- This is intentionally a snapshot on page open/Refresh: formatting history
+-- every frame would be expensive and could expose partially captured lines.
+local ROUTE_AUDIT_PAGE_SIZE = 12
+
+local function routeAuditViewLabel(views, viewId)
+	if type(viewId) ~= "string" or viewId == "" then return "UNKNOWN" end
+	for index = 1, #views do
+		local view = views[index]
+		if view.id == viewId then return view.label or view.key or view.id end
+	end
+	return semanticRouteLabel(viewId)
+end
+
+local function routeAuditVisibility(record, viewId, settings)
+	local sources = type(settings) == "table" and type(settings.viewOptions) == "table"
+		and type(settings.viewOptions[viewId]) == "table" and settings.viewOptions[viewId].sources
+	local explicitlyIncluded = type(sources) == "table" and sources[record.sourceId] == true
+	local sourceIncluded = false
+	if type(addon.IsRecordIncludedBySource) == "function" then
+		local ok, included = pcall(addon.IsRecordIncludedBySource, addon, viewId, record, settings)
+		sourceIncluded = ok and included == true
+	end
+	local primary = record.view == viewId
+	local custom = type(record.views) == "table" and record.views[viewId] == true and not primary
+	local path = primary and "PRIMARY" or (custom and "CUSTOM VIEW" or "SOURCE FEED")
+	if sourceIncluded and explicitlyIncluded then
+		path = primary and "PRIMARY + EXPLICIT FEED" or (custom and "CUSTOM + EXPLICIT FEED" or "EXPLICIT FEED")
+	elseif sourceIncluded and not primary and not custom then
+		local home
+		if type(addon.GetDefaultViewForSource) == "function" then
+			local ok, value = pcall(addon.GetDefaultViewForSource, addon, record.sourceId, record.sourceGroup)
+			if ok then home = value end
+		end
+		path = home == viewId and "SOURCE HOME" or "DEFAULT SOURCE FEED"
+	end
+	return path, explicitlyIncluded
+end
+
+function Config:RefreshRouteAuditDetail()
+	if not self.routeAuditDetailMessage then return end
+	local record = self.routeAuditSelectedRecord
+	if not record then
+		self.routeAuditDetailMessage:SetText("Select a line for its route details; hover any row to read the full message.")
+		self.routeAuditDetailSource:SetText("")
+		self.routeAuditDetailPath:SetText("")
+		self.routeAuditDetailReason:SetText("")
+		return
+	end
+	local viewId = self.routeAuditViewId
+	local views = self.routeAuditViews or {}
+	local text = type(record.text) == "string" and record.text or ""
+	self.routeAuditDetailMessage:SetText(string.gsub(text, "[\r\n]", " "))
+	local source = record.sourceLabel or record.sourceId or record.event or "Unknown source"
+	local home
+	if type(addon.GetDefaultViewForSource) == "function" then
+		local ok, value = pcall(addon.GetDefaultViewForSource, addon, record.sourceId, record.sourceGroup)
+		if ok then home = value end
+	end
+	self.routeAuditDetailSource:SetText("SOURCE  " .. tostring(source)
+		.. (record.sourceId and record.sourceId ~= source and (" (" .. record.sourceId .. ")") or "")
+		.. "  |  HOME  " .. routeAuditViewLabel(views, home))
+	local path, explicitlyIncluded = routeAuditVisibility(record, viewId, self.routeAuditSettings)
+	self.routeAuditDetailPath:SetText("PRIMARY  " .. routeAuditViewLabel(views, record.view)
+		.. "  |  IN " .. routeAuditViewLabel(views, viewId) .. " VIA  " .. path
+		.. (explicitlyIncluded and " (checked in Contents)" or ""))
+	local analysis
+	if type(addon.AnalyzeRecord) == "function" then
+		local ok, value = pcall(addon.AnalyzeRecord, addon, record)
+		if ok then analysis = value end
+	end
+	local reason = type(analysis) == "table" and type(analysis.reasons) == "table" and analysis.reasons[1]
+	self.routeAuditDetailReason:SetText("WHY  " .. tostring(reason or "No route explanation available."))
+end
+
+function Config:RefreshRouteAuditPage(keepPage)
+	if not self.routeAuditPage then return end
+	local views = {}
+	if type(addon.GetSmartViews) == "function" then
+		local ok, result = pcall(addon.GetSmartViews, addon)
+		if ok and type(result) == "table" then views = result end
+	end
+	self.routeAuditViews = views
+	local selectedIndex
+	for index = 1, #views do
+		if views[index].id == self.routeAuditViewId then selectedIndex = index break end
+	end
+	if not selectedIndex then
+		local activeView = addon.SmartDock and addon.SmartDock.activeView
+		for index = 1, #views do
+			if views[index].id == activeView then selectedIndex = index break end
+		end
+	end
+	selectedIndex = selectedIndex or 1
+	self.routeAuditViewId = views[selectedIndex] and views[selectedIndex].id or nil
+	if self.routeAuditTabName then
+		self.routeAuditTabName:SetText(self.routeAuditViewId
+			and ("TAB  " .. routeAuditViewLabel(views, self.routeAuditViewId)) or "NO CHAT TABS")
+	end
+	if self.routeAuditPreviousTab then
+		if selectedIndex > 1 then self.routeAuditPreviousTab:Enable() else self.routeAuditPreviousTab:Disable() end
+	end
+	if self.routeAuditNextTab then
+		if selectedIndex < #views then self.routeAuditNextTab:Enable() else self.routeAuditNextTab:Disable() end
+	end
+	local settings
+	if type(addon.GetSmartSettings) == "function" then
+		local ok, value = pcall(addon.GetSmartSettings, addon)
+		if ok then settings = value end
+	end
+	self.routeAuditSettings = settings
+	local messages = {}
+	local engine = addon.MessageEngine
+	if self.routeAuditViewId and engine and type(engine.GetMessages) == "function" then
+		local ok, result = pcall(engine.GetMessages, engine, self.routeAuditViewId)
+		if ok and type(result) == "table" then messages = result end
+	end
+	self.routeAuditMessages = messages
+	local pageCount = math.max(1, math.ceil(#messages / ROUTE_AUDIT_PAGE_SIZE))
+	self.routeAuditPageIndex = keepPage and math.min(pageCount, math.max(1, self.routeAuditPageIndex or 1)) or 1
+	local selectedStillVisible = false
+	if self.routeAuditSelectedRecord then
+		for index = 1, #messages do
+			if messages[index] == self.routeAuditSelectedRecord then selectedStillVisible = true break end
+		end
+	end
+	if not selectedStillVisible then self.routeAuditSelectedRecord = nil end
+	if self.routeAuditCount then
+		self.routeAuditCount:SetText(#messages .. " retained visible lines")
+	end
+	if self.routeAuditHint then
+		local limit = type(settings) == "table" and tonumber(settings.historyCapacity)
+		self.routeAuditHint:SetText("Retained history only"
+			.. (limit and (" (up to " .. math.floor(limit) .. "/source)") or "")
+			.. ". Click for route details; hover a row for full text.")
+	end
+	if self.routeAuditPager then
+		self.routeAuditPager:SetText("PAGE " .. self.routeAuditPageIndex .. " / " .. pageCount
+			.. "  |  NEWEST FIRST")
+	end
+	if self.routeAuditNewer then
+		if self.routeAuditPageIndex > 1 then self.routeAuditNewer:Enable() else self.routeAuditNewer:Disable() end
+	end
+	if self.routeAuditOlder then
+		if self.routeAuditPageIndex < pageCount then self.routeAuditOlder:Enable() else self.routeAuditOlder:Disable() end
+	end
+	for rowIndex, row in ipairs(self.routeAuditRows or {}) do
+		local messageIndex = #messages - ((self.routeAuditPageIndex - 1) * ROUTE_AUDIT_PAGE_SIZE) - rowIndex + 1
+		local record = messages[messageIndex]
+		row.record = record
+		if record then
+			row:Show()
+			local stamp = tonumber(record.epoch)
+			row.when:SetText(stamp and date("%H:%M", stamp) or "--:--")
+			row.message:SetText((record == self.routeAuditSelectedRecord and "> " or "  ")
+				.. string.gsub(type(record.text) == "string" and record.text or "", "[\r\n]", " "))
+			row.route:SetText(routeAuditViewLabel(views, record.view))
+			local path = routeAuditVisibility(record, self.routeAuditViewId, settings)
+			if path == "PRIMARY + EXPLICIT FEED" then path = "PRIMARY (+FEED)" end
+			if path == "CUSTOM + EXPLICIT FEED" then path = "CUSTOM (+FEED)" end
+			if path == "DEFAULT SOURCE FEED" then path = "SOURCE FEED" end
+			row.via:SetText(path)
+		else
+			row:Hide()
+		end
+	end
+	self:RefreshRouteAuditDetail()
+end
+
+function Config:BuildRouteAuditPage()
+	local page = self:CreatePage("routeAudit")
+	self.routeAuditPage = page
+	createHeading(page, "Route Audit", "Inspect retained output in one tab. Primary routing and source-feed visibility are separate decisions.")
+	local work = createQuietShellPanel(page, "surface")
+	work:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -PAGE_TOP)
+	work:SetSize(PAGE_WIDTH, 452)
+	self.routeAuditPreviousTab = Theme:CreateButton(work, "<", 22, 22, false)
+	self.routeAuditPreviousTab:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -8)
+	self.routeAuditPreviousTab:SetScript("OnClick", function()
+		local views = Config.routeAuditViews or {}
+		for index = 2, #views do
+			if views[index].id == Config.routeAuditViewId then
+				Config.routeAuditViewId = views[index - 1].id
+				Config.routeAuditSelectedRecord = nil
+				Config:RefreshRouteAuditPage()
+				break
+			end
+		end
+	end)
+	self.routeAuditNextTab = Theme:CreateButton(work, ">", 22, 22, false)
+	self.routeAuditNextTab:SetPoint("LEFT", self.routeAuditPreviousTab, "RIGHT", 4, 0)
+	self.routeAuditNextTab:SetScript("OnClick", function()
+		local views = Config.routeAuditViews or {}
+		for index = 1, #views - 1 do
+			if views[index].id == Config.routeAuditViewId then
+				Config.routeAuditViewId = views[index + 1].id
+				Config.routeAuditSelectedRecord = nil
+				Config:RefreshRouteAuditPage()
+				break
+			end
+		end
+	end)
+	self.routeAuditTabName = Theme:CreateText(work, "GameFontNormalSmall", "goldBright")
+	self.routeAuditTabName:SetPoint("LEFT", self.routeAuditNextTab, "RIGHT", 8, 0)
+	self.routeAuditTabName:SetSize(230, 15)
+	self.routeAuditCount = Theme:CreateText(work, "GameFontHighlightSmall", "textMuted")
+	self.routeAuditCount:SetPoint("TOPLEFT", work, "TOPLEFT", 330, -12)
+	self.routeAuditCount:SetSize(205, 15)
+	self.routeAuditCount:SetJustifyH("RIGHT")
+	local refresh = Theme:CreateButton(work, "REFRESH", 78, 22, false)
+	refresh:SetPoint("TOPRIGHT", work, "TOPRIGHT", -8, -8)
+	setActionStyle(refresh, "quiet", "Refresh route audit", "Rescan retained chat lines visible in this tab; no message is sent or moved.")
+	refresh:SetScript("OnClick", function() Config:RefreshRouteAuditPage(true) end)
+	local hint = Theme:CreateText(work, "GameFontHighlightSmall", "textMuted")
+	hint:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -36)
+	hint:SetSize(PAGE_WIDTH - 16, 15)
+	self.routeAuditHint = hint
+	local headers = {
+		{ label = "TIME", x = 8, width = 46 }, { label = "MESSAGE", x = 60, width = 337 },
+		{ label = "PRIMARY", x = 404, width = 98 }, { label = "VISIBLE VIA", x = 508, width = 120 },
+	}
+	for index = 1, #headers do
+		local column = headers[index]
+		local title = Theme:CreateText(work, "GameFontNormalSmall", "gold")
+		title:SetPoint("TOPLEFT", work, "TOPLEFT", column.x, -58)
+		title:SetWidth(column.width)
+		title:SetText(column.label)
+	end
+	self.routeAuditRows = {}
+	for index = 1, ROUTE_AUDIT_PAGE_SIZE do
+		local row = CreateFrame("Button", nil, work)
+		row:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -78 - ((index - 1) * 19))
+		row:SetSize(PAGE_WIDTH - 16, 18)
+		local function field(x, width, color)
+			local value = Theme:CreateText(row, "GameFontHighlightSmall", color)
+			value:SetPoint("TOPLEFT", row, "TOPLEFT", x, -2)
+			value:SetSize(width, 15)
+			value:SetJustifyH("LEFT")
+			if value.SetWordWrap then value:SetWordWrap(false) end
+			if value.SetMaxLines then value:SetMaxLines(1) end
+			return value
+		end
+		row.when = field(0, 46, "textMuted")
+		row.message = field(52, 337, "text")
+		row.route = field(396, 98, "goldBright")
+		row.via = field(500, 112, "textMuted")
+		row:SetScript("OnClick", function(self)
+			Config.routeAuditSelectedRecord = self.record
+			Config:RefreshRouteAuditPage(true)
+		end)
+		row:SetScript("OnEnter", function(self)
+			if not GameTooltip or not self.record then return end
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText(type(self.record.text) == "string" and self.record.text or "", 1, 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		row:SetScript("OnLeave", function(self)
+			if GameTooltip and (not GameTooltip.GetOwner or GameTooltip:GetOwner() == self) then GameTooltip:Hide() end
+		end)
+		self.routeAuditRows[index] = row
+	end
+	local detail = createQuietShellPanel(work, "surfaceRaised")
+	detail:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -312)
+	detail:SetSize(PAGE_WIDTH - 16, 104)
+	self.routeAuditDetailMessage = Theme:CreateText(detail, "GameFontHighlightSmall", "text")
+	self.routeAuditDetailMessage:SetPoint("TOPLEFT", detail, "TOPLEFT", 7, -5)
+	self.routeAuditDetailMessage:SetSize(PAGE_WIDTH - 30, 34)
+	self.routeAuditDetailMessage:SetJustifyH("LEFT")
+	self.routeAuditDetailSource = Theme:CreateText(detail, "GameFontHighlightSmall", "textMuted")
+	self.routeAuditDetailSource:SetPoint("TOPLEFT", detail, "TOPLEFT", 7, -41)
+	self.routeAuditDetailSource:SetSize(PAGE_WIDTH - 30, 15)
+	self.routeAuditDetailPath = Theme:CreateText(detail, "GameFontHighlightSmall", "goldBright")
+	self.routeAuditDetailPath:SetPoint("TOPLEFT", detail, "TOPLEFT", 7, -59)
+	self.routeAuditDetailPath:SetSize(PAGE_WIDTH - 30, 15)
+	self.routeAuditDetailReason = Theme:CreateText(detail, "GameFontHighlightSmall", "textMuted")
+	self.routeAuditDetailReason:SetPoint("TOPLEFT", detail, "TOPLEFT", 7, -77)
+	self.routeAuditDetailReason:SetSize(PAGE_WIDTH - 30, 15)
+	self.routeAuditNewer = Theme:CreateButton(work, "NEWER", 72, 22, false)
+	self.routeAuditNewer:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -423)
+	self.routeAuditNewer:SetScript("OnClick", function()
+		Config.routeAuditPageIndex = math.max(1, (Config.routeAuditPageIndex or 1) - 1)
+		Config:RefreshRouteAuditPage(true)
+	end)
+	self.routeAuditPager = Theme:CreateText(work, "GameFontHighlightSmall", "textMuted")
+	self.routeAuditPager:SetPoint("LEFT", self.routeAuditNewer, "RIGHT", 10, 0)
+	self.routeAuditPager:SetSize(200, 15)
+	local contents = Theme:CreateButton(work, "TAB CONTENTS", 122, 22, false)
+	contents:SetPoint("TOPLEFT", work, "TOPLEFT", 386, -423)
+	setActionStyle(contents, "quiet", "Open this tab's Contents", "Inspect or change the physical source feeds that can make a line appear in this tab.")
+	contents:SetScript("OnClick", function()
+		local viewId = Config.routeAuditViewId
+		if not viewId then return end
+		Config:ShowPage("views")
+		Config:SelectView(viewId)
+		Config:SetMessageViewsSection("sources")
+	end)
+	self.routeAuditContents = contents
+	self.routeAuditOlder = Theme:CreateButton(work, "OLDER", 72, 22, false)
+	self.routeAuditOlder:SetPoint("TOPRIGHT", work, "TOPRIGHT", -8, -423)
+	self.routeAuditOlder:SetScript("OnClick", function()
+		Config.routeAuditPageIndex = (Config.routeAuditPageIndex or 1) + 1
+		Config:RefreshRouteAuditPage(true)
+	end)
+	self:RefreshRouteAuditPage()
+	return page
+end
+
 function Config:BuildAlertsPage()
 	local page = self:CreatePage("alerts")
 	self.alertsPage = page
@@ -12405,6 +12713,7 @@ local builders = {
 	spam = Config.BuildSpamPage,
 	blocks = Config.BuildBlocksPage,
 	semantic = Config.BuildSemanticRoutesPage,
+	routeAudit = Config.BuildRouteAuditPage,
 	alerts = Config.BuildAlertsPage,
 	messenger = Config.BuildMessengerPage,
 	colorways = Config.BuildColorwaysPage,
@@ -12457,6 +12766,8 @@ function Config:ShowPage(id)
 		self:RefreshBlocksPage()
 	elseif id == "semantic" then
 		self:RefreshSemanticRoutesPage()
+	elseif id == "routeAudit" then
+		self:RefreshRouteAuditPage(true)
 	elseif id == "alerts" then
 		self:RefreshAlertsPage()
 	elseif id == "messenger" then
@@ -12747,6 +13058,27 @@ function Config:ReloadProfile()
 	self.semanticRoutesResult = nil
 	self.semanticRoutesEvidence = nil
 	self.semanticRoutesStatus = nil
+	self.routeAuditPage = nil
+	self.routeAuditViews = nil
+	self.routeAuditViewId = nil
+	self.routeAuditPageIndex = nil
+	self.routeAuditMessages = nil
+	self.routeAuditSettings = nil
+	self.routeAuditSelectedRecord = nil
+	self.routeAuditRows = nil
+	self.routeAuditPreviousTab = nil
+	self.routeAuditNextTab = nil
+	self.routeAuditTabName = nil
+	self.routeAuditCount = nil
+	self.routeAuditHint = nil
+	self.routeAuditContents = nil
+	self.routeAuditPager = nil
+	self.routeAuditNewer = nil
+	self.routeAuditOlder = nil
+	self.routeAuditDetailMessage = nil
+	self.routeAuditDetailSource = nil
+	self.routeAuditDetailPath = nil
+	self.routeAuditDetailReason = nil
 	self.colorwayCards = nil
 	self.colorwayPage = nil
 	self.colorwayPagerText = nil
@@ -13512,6 +13844,7 @@ function Config:BuildFrame()
 			Config:RefreshSpamStatus()
 			Config:RefreshBlocksPage(true)
 			Config:RefreshSemanticRoutesPage(true)
+			Config:RefreshRouteAuditPage(true)
 			Config:RefreshDockPage()
 			Config:RefreshSafetyPage()
 			Config:RefreshIntegrationsPage()

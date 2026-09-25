@@ -808,6 +808,12 @@ local function getDefaultSourceHome(settings, sourceId, sourceGroup)
 			end
 			return "general"
 		end
+		-- Retail's Trade (Services) and other Trade-family channels are Trade
+		-- sources, even when a message has no explicit WTS/WTB text. Keeping their
+		-- default source home in General mirrors every advertisement into G.
+		if sourceId == "channel:trade" or string.find(sourceId, "^channel:trade%-") then
+			return "trade"
+		end
 	end
 
 	return sourceHomeViewById[sourceId]

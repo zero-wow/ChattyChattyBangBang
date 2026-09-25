@@ -175,6 +175,12 @@ assert(channelRecord("WTS Keystone boost", "Newcomers").view == "trade",
 	"strong Trade intent in Newcomers did not peel into Trade")
 assert(channelRecord("selling [Arcane Crystal]", "Newcomers").view == "trade",
 	"transaction-shaped Trade intent in Newcomers did not peel into Trade")
+local retailTradeServices = channelRecord(
+	"-WTS- |cffffff00|Hachievement:123|h[A raid achievement]|h|r = 325K",
+	"Trade (Services) - City")
+assert(retailTradeServices.view == "trade"
+	and retailTradeServices.sourceId == "channel:trade-services",
+	"Retail Trade (Services) advertisement did not retain its Trade route and source")
 
 local guildInvite = channelRecord("Friendly social guild recruiting all players", "GuildRecruitment")
 assert(guildInvite.view == "guildInvites"
@@ -343,6 +349,10 @@ assert(ChattyChattyBangBang:AnalyzeSemanticRoute("WTS Keystone boost").category 
 -- without teaching conversational idioms or service-only prose to route Trade.
 local transactionTradeFixtures = {
 	"selling [Arcane Crystal]",
+	"SELL [Arcane Crystal]",
+	"Buy |Hitem:123|h[Ancient Sword]|h",
+	"For sale [Rare Mount]",
+	"Offering |Hitem:123|h[Ancient Sword]|h for 10g",
 	"  SELLING\n[Keystone: Uldaman (24)] tank spot  ",
 	"now buying |cffa335ee|Hitem:123|h[Ancient Sword]|h|r",
 	"I'm buying ore for 5g each, PST",
@@ -360,6 +370,9 @@ end
 
 local conversationalTradeFixtures = {
 	"I'm buying that idea",
+	"Buy into that idea",
+	"Sell me on this plan",
+	"Offering help with your quest",
 	"Buying that idea",
 	"I'm not buying this argument",
 	"Selling people on this tank build",
