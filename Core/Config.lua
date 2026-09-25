@@ -21,6 +21,44 @@ local navigation = {
 	{ id = "about", label = "About", group = "TOOLS" },
 }
 
+-- Simple mode is a new front door, not a second set of saved chat settings.
+-- Every switch on the desk calls the same runtime setter used by the detailed
+-- pages. The complete existing navigation remains available in Advanced mode.
+local deskNavigation = {
+	{ id = "desk", label = "Start Here", group = "CHATTY DESK" },
+	{ id = "deskTabs", label = "Choose Tabs", group = "CHATTY DESK" },
+	{ id = "deskRoutes", label = "Sort Messages", group = "CHATTY DESK" },
+	{ id = "deskSpam", label = "Stop Spam", group = "CHATTY DESK" },
+	{ id = "deskPrivate", label = "Private Messages", group = "CHATTY DESK" },
+	{ id = "deskAlerts", label = "Alerts", group = "CHATTY DESK" },
+	{ id = "deskLook", label = "Look & Feel", group = "CHATTY DESK" },
+}
+
+local deskTaskOrder = { "desk", "deskTabs", "deskRoutes", "deskSpam", "deskPrivate", "deskAlerts", "deskLook" }
+local deskTaskIds = {}
+for index = 1, #deskTaskOrder do deskTaskIds[deskTaskOrder[index]] = true end
+
+function Config:GetMode()
+	if type(addon.GetConfigMode) == "function" then
+		local ok, mode = pcall(addon.GetConfigMode, addon)
+		if ok and (mode == "simple" or mode == "advanced") then return mode end
+	end
+	return self.sessionConfigMode == "advanced" and "advanced" or "simple"
+end
+
+function Config:SetMode(mode)
+	mode = mode == "advanced" and "advanced" or "simple"
+	if type(addon.SetConfigMode) == "function" then
+		local ok, accepted = pcall(addon.SetConfigMode, addon, mode)
+		if not ok or accepted == false then return false end
+	end
+	self.sessionConfigMode = mode
+	if self.frame then
+		self:ShowPage(mode == "advanced" and "home" or (self.deskTask or "desk"))
+	end
+	return true
+end
+
 -- One spacing scale keeps the settings console compact without making it
 -- cramped.  Outer frames establish the workspace; controls only need the
 -- breathing room required to scan and click them.
@@ -327,8 +365,22 @@ function Config:CreatePage(id)
 end
 
 function Config:RefreshNavigation()
+	local simple = self:GetMode() ~= "advanced"
+	self.navigationOrder = simple and deskNavigation or navigation
+	local shown = {}
+	for _, item in ipairs(self.navigationOrder) do shown[item.id] = true end
 	for id, button in pairs(self.navigationButtons) do
-		local active = id == self.activePage
+		if shown[id] then button:Show() else button:Hide() end
+	end
+	for _, label in pairs(self.navigationSectionLabels or {}) do label:Hide() end
+	if self.modeButton then
+		self.modeButton:SetLabel(simple and "ADVANCED SETTINGS" or "SIMPLE SETUP")
+		setActionStyle(self.modeButton, simple and "primary" or "choice",
+			"Configuration mode", simple and "Show every detailed Chatty setting. Your current choices stay unchanged."
+				or "Return to the guided essentials. Detailed choices stay saved.")
+	end
+	for id, button in pairs(self.navigationButtons) do
+		local active = id == (simple and (self.deskTask or "desk") or self.activePage)
 		if id == "modules" and button.disclosure then
 			button.disclosure:SetText(self.modulesNavigationExpanded and "-" or "+")
 		end
@@ -342,6 +394,12 @@ function Config:RefreshNavigation()
 		end
 	end
 	self:RefreshModuleNavigation()
+	if simple then
+		for _, button in ipairs(self.moduleNavigationButtons or {}) do button:Hide() end
+		if self.moduleNavigationCount then self.moduleNavigationCount:Hide() end
+		if self.moduleNavigationPrevious then self.moduleNavigationPrevious:Hide() end
+		if self.moduleNavigationNext then self.moduleNavigationNext:Hide() end
+	end
 	self:LayoutNavigation()
 end
 
@@ -1543,7 +1601,7 @@ function Config:BuildDockPage()
 			or "Saved received-chat text erased; new history remains session-only.", value and "success" or "warning")
 	end
 	setControlTooltip(self.dockHistoryToggle, "Restore received chat after login",
-		"Saves a bounded history for each source, including whispers, in this character's local SavedVariables. Turning this off erases the saved text immediately.")
+		"Saves bounded received history, including allowed whispers, in this character's local SavedVariables. Older retained lines load in 400-record pages. Turning this off erases saved text immediately; held stranger whispers stay separate.")
 	local historyLinesLabel = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
 	historyLinesLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 232, -214)
 	historyLinesLabel:SetText("LINES / SOURCE")
@@ -3275,9 +3333,24 @@ function Config:RefreshRailSources()
 			row.sourceId = sourceId
 			local label = source.label or sourceId or "Source"
 			row.sourceLabel = label
+			local generalPublic = self.selectedRailId == "general" and type(sourceId) == "string"
+				and string.find(sourceId, "^channel:") ~= nil
+			row.generalPublic = generalPublic and true or false
+			row.sourceOverride = source.override
 			local hasOverride = source.overridden or source.override ~= nil
-			row.label:SetText((hasOverride and "* " or "") .. label)
-			row:SetValue(source.enabled ~= false, true)
+			if generalPublic then
+				-- General's default source membership is topic-aware: a sale sent
+				-- to Trade is excluded from G. Only an explicit true override
+				-- actually means "every message". Do not draw a checked X for AUTO.
+				local mode = source.override == true and "MIRROR ALL  "
+					or (source.override == false and "HIDDEN  "
+						or (source.defaultEnabled == false and "AUTO HOME  " or "AUTO TOPICS  "))
+				row.label:SetText(mode .. label)
+				row:SetValue(source.override == true, true)
+			else
+				row.label:SetText((hasOverride and "* " or "") .. label)
+				row:SetValue(source.enabled ~= false, true)
+			end
 			row.feedLocked = source.feedLocked and true or false
 			if row.feedLocked then
 				row:Disable()
@@ -3285,8 +3358,15 @@ function Config:RefreshRailSources()
 					"Use the adjacent AUTO / SYNC / NORMAL control to move this whole channel into or out of Sync.")
 			else
 				row:Enable()
-				setControlTooltip(row, "Full source feed",
-					"Checked keeps every message from this source here. Removing an expected feed also blocks its routed matches in this tab.")
+				if generalPublic then
+					setControlTooltip(row, "General channel feed",
+						source.defaultEnabled == false
+							and "AUTO HOME follows this source's normal tab. Check MIRROR ALL to duplicate every message in General. RESET EXPECTED returns to AUTO."
+							or "AUTO TOPICS keeps ordinary lines here but sends recognized sales to Trade. Check MIRROR ALL only if you also want those sales in General. RESET EXPECTED returns to AUTO.")
+				else
+					setControlTooltip(row, "Full source feed",
+						"Checked keeps every message from this source here. Removing an expected feed also blocks its routed matches in this tab.")
+				end
 			end
 			local syncButton = row.syncButton
 			if syncButton and self:CanManageSourceSync(source) then
@@ -3313,6 +3393,8 @@ function Config:RefreshRailSources()
 		else
 			row.sourceId = nil
 			row.sourceLabel = nil
+			row.generalPublic = nil
+			row.sourceOverride = nil
 			row.feedLocked = nil
 			row:Enable()
 			if row.syncButton then
@@ -3439,7 +3521,14 @@ function Config:SetRailSourceEnabled(sourceId, enabled, sourceLabel)
 		return false
 	end
 
-	local ok, result, err = pcall(addon.SetViewSourceEnabled, addon, viewId, sourceId, enabled)
+	-- General public channels have three semantic states. The compact X means
+	-- explicit MIRROR ALL; clearing it restores topic-aware AUTO, not HIDDEN.
+	-- RESET EXPECTED remains available for any older explicit HIDDEN override.
+	local generalPublic = viewId == "general" and type(sourceId) == "string"
+		and string.find(sourceId, "^channel:") ~= nil
+	local writeValue = enabled
+	if generalPublic and enabled == false then writeValue = nil end
+	local ok, result, err = pcall(addon.SetViewSourceEnabled, addon, viewId, sourceId, writeValue)
 	if not ok or result ~= true then
 		local message = (ok and err) or result or "The source could not be updated."
 		if message == "sync-quarantined" then
@@ -3461,6 +3550,9 @@ function Config:SetRailSourceEnabled(sourceId, enabled, sourceLabel)
 	if enabled then
 		self:SetRailsStatus("Keeping every " .. label .. " message in " .. railLabel
 			.. ". Routed matches can also appear elsewhere.", "success")
+	elseif generalPublic then
+		self:SetRailsStatus("AUTO restored for " .. label
+			.. ". This source follows its normal destination; recognized sales stay in Trade.", "success")
 	else
 		self:SetRailsStatus("Stopped the full " .. label .. " feed in " .. railLabel
 			.. ". Matching routes can still appear here.", "success")
@@ -5640,6 +5732,27 @@ local function createSpamNumberField(parent, label, x, y, target, key, minimum, 
 	return editBox
 end
 
+local function createSpamHoursField(parent, label, x, y, target, key, minimum, maximum, fallback)
+	local caption = Theme:CreateText(parent, "GameFontHighlightSmall", "textMuted")
+	caption:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
+	caption:SetText(label)
+	local editBox = Theme:CreateEditBox(parent, 58, 24, false)
+	editBox:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -(y + 14))
+	local hours = clampNumber((tonumber(target[key]) or fallback * 3600) / 3600,
+		minimum, maximum, fallback)
+	editBox:SetText(tostring(hours))
+	local function commit(self)
+		local value = clampNumber(self:GetText(), minimum, maximum, fallback)
+		target[key] = value * 3600
+		self:SetText(tostring(value))
+		applySpamRuntime()
+		Config:RefreshSpamStatus()
+	end
+	editBox:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
+	editBox:HookScript("OnEditFocusLost", commit)
+	return editBox
+end
+
 local function createSpamMinutesField(parent, label, x, y, target, key, fallbackMinutes)
 	local caption = Theme:CreateText(parent, "GameFontHighlightSmall", "textMuted")
 	caption:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
@@ -5897,7 +6010,9 @@ function Config:SetSpamSection(section)
 end
 
 function Config:SetSpamFilterPane(mode)
-	if mode ~= "matching" and mode ~= "chats" then mode = "protections" end
+	if mode ~= "matching" and mode ~= "chats" and mode ~= "ads" then
+		mode = "protections"
+	end
 	self.spamFilterMode = mode
 	for paneId, pane in pairs(self.spamFilterSubPanes or {}) do
 		if paneId == mode then pane:Show() else pane:Hide() end
@@ -6231,6 +6346,7 @@ function Config:BuildSpamPage()
 	local settings = addon:GetSmartSettings()
 	settings.spam = settings.spam or {}
 	settings.spam.duplicate = settings.spam.duplicate or {}
+	settings.spam.repeatAds = settings.spam.repeatAds or {}
 	settings.spam.burst = settings.spam.burst or {}
 	settings.spam.scopes = settings.spam.scopes or {}
 	settings.spam.escalation = settings.spam.escalation or {}
@@ -6281,6 +6397,12 @@ function Config:BuildSpamPage()
 	chatsButton:SetScript("OnClick", function() Config:SetSpamFilterPane("chats") end)
 	setActionStyle(chatsButton, "choice", "Protected chat types", "Choose which families of chat the firewall is allowed to filter.")
 	self.spamFilterSubButtons.chats = chatsButton
+	local adsButton = Theme:CreateTightButton(filters, "SALE ADS", 20, false)
+	adsButton:SetPoint("LEFT", chatsButton, "RIGHT", CONTROL_GAP, 0)
+	adsButton:SetScript("OnClick", function() Config:SetSpamFilterPane("ads") end)
+	setActionStyle(adsButton, "choice", "Repeated sale ads",
+		"Limit the same seller's public advertisement across a rolling day.")
+	self.spamFilterSubButtons.ads = adsButton
 
 	local protectionsPane = CreateFrame("Frame", nil, filters)
 	protectionsPane:SetPoint("TOPLEFT", filters, "TOPLEFT", 0, -32)
@@ -6294,6 +6416,10 @@ function Config:BuildSpamPage()
 	chatsPane:SetPoint("TOPLEFT", filters, "TOPLEFT", 0, -32)
 	chatsPane:SetSize(PAGE_WIDTH, 300)
 	self.spamFilterSubPanes.chats = chatsPane
+	local adsPane = CreateFrame("Frame", nil, filters)
+	adsPane:SetPoint("TOPLEFT", filters, "TOPLEFT", 0, -32)
+	adsPane:SetSize(PAGE_WIDTH, 300)
+	self.spamFilterSubPanes.ads = adsPane
 
 	local protectionsTitle = Theme:CreateText(protectionsPane, "GameFontNormalSmall", "gold")
 	protectionsTitle:SetPoint("TOPLEFT", protectionsPane, "TOPLEFT", 0, 0)
@@ -6377,6 +6503,39 @@ function Config:BuildSpamPage()
 	matchingHint:SetWidth(286)
 	matchingHint:SetJustifyH("LEFT")
 	matchingHint:SetText("A sender is muted after MESSAGE LIMIT posts inside BURST WINDOW.")
+
+	local adsTitle = Theme:CreateText(adsPane, "GameFontNormalSmall", "gold")
+	adsTitle:SetPoint("TOPLEFT", adsPane, "TOPLEFT", 0, 0)
+	adsTitle:SetText("ONE SELLER, ONE AD CAMPAIGN")
+	self.spamRepeatAdToggle = Theme:CreateCompactToggle(adsPane,
+		"QUIET REPEATED SALE ADS", 260)
+	self.spamRepeatAdToggle:SetPoint("TOPLEFT", adsPane, "TOPLEFT", 0, -30)
+	self.spamRepeatAdToggle:SetValue(spam.repeatAds.enabled ~= false, true)
+	self.spamRepeatAdToggle.OnValueChanged = function(_, value)
+		spam.repeatAds.enabled = value and true or false
+		applySpamRuntime()
+		Config:RefreshSpamStatus()
+	end
+	setControlTooltip(self.spamRepeatAdToggle, "Quiet repeated sale ads",
+		"After the daily copy limit, move matching visible copies to Blocked Messages. Posts inside the minimum gap are hidden without clearing earlier copies.")
+	local adsHint = Theme:CreateText(adsPane, "GameFontHighlightSmall", "textMuted")
+	adsHint:SetPoint("TOPLEFT", adsPane, "TOPLEFT", 0, -66)
+	adsHint:SetWidth(PAGE_WIDTH - 12)
+	adsHint:SetText("Applies to sale ads in public chat, not ordinary conversation or private whispers.")
+	self.spamRepeatAdNumberEdits = {
+		window = createSpamHoursField(adsPane, "ROLLING HOURS", 0, 108,
+			spam.repeatAds, "window", 1, 168, 24),
+		maxCopies = createSpamNumberField(adsPane, "VISIBLE COPIES", 160, 108,
+			spam.repeatAds, "maxCopies", 1, 24, 4),
+		minimumGap = createSpamHoursField(adsPane, "MIN GAP (HOURS)", 320, 108,
+			spam.repeatAds, "minimumGap", 0, 24, 1),
+		minimumLength = createSpamNumberField(adsPane, "MIN TEXT CHARS", 480, 108,
+			spam.repeatAds, "minimumLength", 12, 128, 18),
+	}
+	local adsDetail = Theme:CreateText(adsPane, "GameFontHighlightSmall", "textMuted")
+	adsDetail:SetPoint("TOPLEFT", adsPane, "TOPLEFT", 0, -170)
+	adsDetail:SetWidth(PAGE_WIDTH - 12)
+	adsDetail:SetText("Copy limit: when reached, all matching visible copies move to Blocked Messages. Minimum gap: only the new early post is hidden.")
 
 	local scopeTitle = Theme:CreateText(chatsPane, "GameFontNormalSmall", "gold")
 	scopeTitle:SetPoint("TOPLEFT", chatsPane, "TOPLEFT", 0, 0)
@@ -8118,7 +8277,7 @@ function Config:RefreshBlockedArchiveDetail(entries)
 	end
 	if not selected then
 		self.blockedArchiveDetailTitle:SetText("NO BLOCKED MESSAGE SELECTED")
-		self.blockedArchiveDetailMeta:SetText("Blocked messages collected by your own Message Block rules appear here.")
+		self.blockedArchiveDetailMeta:SetText("Messages hidden by Block Rules or the Spam Firewall appear here when the archive is on.")
 		self.blockedArchiveDetailText:SetText("")
 		self.blockedArchiveDetailRule:SetText("")
 		self.blockedArchiveDetailTiming:SetText("")
@@ -8132,7 +8291,8 @@ function Config:RefreshBlockedArchiveDetail(entries)
 	self.blockedArchiveDetailTitle:SetText(string.upper(sender) .. (occurrences > 1 and ("  x" .. occurrences) or ""))
 	self.blockedArchiveDetailMeta:SetText(source .. "  |  " .. (selected.event or "Unknown message type"))
 	self.blockedArchiveDetailText:SetText(selected.text or "")
-	self.blockedArchiveDetailRule:SetText("BLOCK RULE  " .. (trim(selected.ruleName) ~= "" and selected.ruleName or selected.ruleId or "Unknown rule"))
+	self.blockedArchiveDetailRule:SetText((selected.reason == "spam" and "SPAM FIREWALL  " or "BLOCK RULE  ")
+		.. (trim(selected.ruleName) ~= "" and selected.ruleName or selected.ruleId or "Unknown reason"))
 	self.blockedArchiveDetailTiming:SetText("FIRST  " .. blockedArchiveTimestamp(selected, "first")
 		.. "\nLAST   " .. blockedArchiveTimestamp(selected, "last"))
 end
@@ -8761,13 +8921,13 @@ end
 function Config:BuildBlocksPage()
 	local page = self:CreatePage("blocks")
 	self.blocksPage = page
-	local _, blocksSubtitle = createHeading(page, "Message Blocks", "Create rules or review the messages they quarantined.")
+	local _, blocksSubtitle = createHeading(page, "Message Blocks", "Create rules or review messages hidden by rules and the Spam Firewall.")
 	blocksSubtitle:SetWidth(350)
 	self.blockArchiveSectionButton = Theme:CreateTightButton(page, "BLOCKED MESSAGES (0)", 20, false)
 	self.blockArchiveSectionButton:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAGE_GUTTER, -8)
 	self.blockArchiveSectionButton:SetScript("OnClick", function() Config:SetBlocksSection("archive") end)
 	setActionStyle(self.blockArchiveSectionButton, "choice", "Blocked Messages",
-		"Review the bounded local quarantine created by your own Message Block rules. Spam Firewall evidence is kept separately.")
+		"Review the bounded local archive of messages hidden by your Block Rules or the Spam Firewall. Spam entries show SPAM FIREWALL as their reason.")
 	self.blockRulesSectionButton = Theme:CreateTightButton(page, "BLOCK RULES", 20, false)
 	self.blockRulesSectionButton:SetPoint("RIGHT", self.blockArchiveSectionButton, "LEFT", -CONTROL_GAP, 0)
 	self.blockRulesSectionButton:SetScript("OnClick", function() Config:SetBlocksSection("rules") end)
@@ -9131,7 +9291,7 @@ function Config:BuildBlocksPage()
 	self.blockedArchiveClearButton = Theme:CreateTightButton(archivePanel, "CLEAR ARCHIVE", 20, false)
 	self.blockedArchiveClearButton:SetPoint("TOPRIGHT", archivePanel, "TOPRIGHT", -8, -6)
 	setActionStyle(self.blockedArchiveClearButton, "danger", "Clear blocked-message history",
-		"Erases archived plaintext and occurrence times. Message Block rules, Spam Firewall evidence, and normal chat history are unchanged.")
+		"Erases archived rule and spam-drop text and occurrence times. Your Block Rules, separate spam statistics, and normal chat history are unchanged.")
 	self.blockedArchiveClearButton:SetScript("OnClick", function()
 		if not Config.pendingClearBlockedArchive then
 			Config.pendingClearBlockedArchive = true
@@ -9145,7 +9305,7 @@ function Config:BuildBlocksPage()
 		Config.blockedArchivePage = 1
 		setTightButtonLabel(Config.blockedArchiveClearButton, "CLEAR ARCHIVE")
 		Config:RefreshBlockedMessagesPage(true)
-		Config:SetBlockedArchiveStatus(ok and accepted == true and "Blocked-message archive cleared. Rules and Spam Firewall evidence were kept."
+		Config:SetBlockedArchiveStatus(ok and accepted == true and "Blocked-message archive cleared, including archived spam drops. Rules and separate spam statistics remain."
 			or "Blocked-message archive could not be cleared.", ok and accepted == true and "success" or "danger")
 	end)
 
@@ -9155,7 +9315,7 @@ function Config:BuildBlocksPage()
 	privacy:SetHeight(28)
 	privacy:SetJustifyH("LEFT")
 	if privacy.SetJustifyV then privacy:SetJustifyV("TOP") end
-	privacy:SetText("Only messages quarantined by your own Message Block rules appear here. Text is stored locally until it expires, is cleared, or KEEP ARCHIVE is turned off.")
+	privacy:SetText("Rule matches and Spam Firewall drops appear here. Text stays on this computer until it expires, is cleared, or KEEP ARCHIVE is turned off.")
 
 	local archiveDivider = archivePanel:CreateTexture(nil, "ARTWORK")
 	archiveDivider:SetTexture("Interface\\Buttons\\WHITE8x8")
@@ -9402,6 +9562,11 @@ local function setMessengerAppearanceColor(target, spec)
 end
 
 local messengerSectionDefinitions = {
+	safety = {
+		label = "SAFETY",
+		heading = "Whisper safety",
+		hint = "Hold new in-game whispers from strangers privately; review only when you choose.",
+	},
 	opening = {
 		label = "OPENING",
 		heading = "Opening",
@@ -9429,7 +9594,7 @@ local messengerSectionDefinitions = {
 	},
 }
 
-local messengerSectionOrder = { "opening", "tabs", "visibility", "actions", "appearance" }
+local messengerSectionOrder = { "opening", "tabs", "visibility", "actions", "appearance", "safety" }
 
 function Config:SetMessengerSection(section)
 	if not messengerSectionDefinitions[section] then
@@ -9464,12 +9629,48 @@ function Config:RefreshMessengerSections()
 	end
 end
 
+function Config:RefreshHeldWhisperReview()
+	if not self.messengerWhisperGuardToggle then return end
+	local guard = addon.WhisperGuard
+	local state = guard and type(guard.GetStatus) == "function" and guard:GetStatus() or nil
+	self.messengerWhisperGuardToggle:SetValue(state and state.enabled == true, true)
+	local summaries = guard and type(guard.GetSummaries) == "function" and guard:GetSummaries() or {}
+	local pageCount = math.max(1, math.ceil(#summaries / #self.messengerHeldRows))
+	self.messengerHeldPage = math.max(1, math.min(self.messengerHeldPage or 1, pageCount))
+	local first = (self.messengerHeldPage - 1) * #self.messengerHeldRows + 1
+	for index = 1, #self.messengerHeldRows do
+		local row = self.messengerHeldRows[index]
+		local summary = summaries[first + index - 1]
+		if summary then
+			row.heldId = summary.lastId
+			local sender = tostring(summary.sender or "Unknown player")
+			if #sender > 36 then sender = string.sub(sender, 1, 33) .. "..." end
+			row:SetLabel("REVIEW  " .. sender .. "  |  " .. tostring(summary.count) .. " held")
+			row:Show()
+		else
+			row.heldId = nil
+			row:Hide()
+		end
+	end
+	self.messengerHeldCount:SetText(state and (tostring(state.entries or 0) .. " held privately  |  "
+		.. (state.filterActive and "Blizzard whisper filter active" or "Blizzard filter unavailable; native chat may show whispers"))
+		or "Whisper safety is unavailable in this build.")
+	self.messengerHeldPager:SetText("PAGE  " .. self.messengerHeldPage .. " / " .. pageCount)
+	if self.messengerHeldPrevious then
+		if self.messengerHeldPage > 1 then self.messengerHeldPrevious:Show() else self.messengerHeldPrevious:Hide() end
+	end
+	if self.messengerHeldNext then
+		if self.messengerHeldPage < pageCount then self.messengerHeldNext:Show() else self.messengerHeldNext:Hide() end
+	end
+end
+
 function Config:RefreshMessengerPage()
 	if not self.messengerPage then
 		return
 	end
 
 	local settings = getMessengerSettings()
+	self:RefreshHeldWhisperReview()
 	if self.messengerWhispersToggle then
 		self.messengerWhispersToggle:SetValue(settings.autoOpenWhispers ~= false, true)
 	end
@@ -9568,7 +9769,7 @@ end
 function Config:BuildMessengerPage()
 	local page = self:CreatePage("messenger")
 	self.messengerPage = page
-	self.messengerHeading = createHeading(page, "Messenger", "Private conversations share one window, with a compact tab for each player.")
+	self.messengerHeading = createHeading(page, "Messenger", "Trusted conversations share one window; new in-game strangers can be held privately.")
 
 	self.messengerSectionButtons = {}
 	local previousSectionButton
@@ -9596,6 +9797,64 @@ function Config:BuildMessengerPage()
 	self.messengerSectionHint:SetWidth(PAGE_WIDTH)
 	self.messengerSectionHint:SetJustifyH("LEFT")
 
+	local safetyControls = {}
+	local function addSafety(control)
+		table.insert(safetyControls, control)
+		return control
+	end
+	local safetyTitle = addSafety(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	safetyTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	safetyTitle:SetText("FIRST-CONTACT PROTECTION")
+	self.messengerWhisperGuardToggle = addSafety(Theme:CreateCompactToggle(page, "HOLD STRANGER WHISPERS", PAGE_WIDTH))
+	self.messengerWhisperGuardToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -151)
+	self.messengerWhisperGuardToggle.OnValueChanged = function(_, value)
+		local guard = addon.WhisperGuard
+		if guard and type(guard.SetProtectionEnabled) == "function" then guard:SetProtectionEnabled(value) end
+		Config:RefreshHeldWhisperReview()
+	end
+	setControlTooltip(self.messengerWhisperGuardToggle, "Hold stranger in-game whispers",
+		"Friends, guildmates, and players you contacted or approved can reach Messenger. Other new in-game whispers are held privately when Retail makes their text readable to addons. Battle.net chat is separate.")
+	self.messengerHeldCount = addSafety(Theme:CreateText(page, "GameFontHighlightSmall", "warning"))
+	self.messengerHeldCount:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -184)
+	self.messengerHeldCount:SetWidth(PAGE_WIDTH)
+	local heldHint = addSafety(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	heldHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -205)
+	heldHint:SetSize(PAGE_WIDTH, 34)
+	heldHint:SetJustifyH("LEFT")
+	heldHint:SetText("Names and counts are shown below. Click REVIEW to reveal only that sender's latest held text in a private dialog; held bodies are never printed to regular chat.")
+	self.messengerHeldRows = {}
+	for index = 1, 4 do
+		local row = addSafety(Theme:CreateTightButton(page, "REVIEW", 24, false))
+		row:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -248 - ((index - 1) * 39))
+		row:SetWidth(PAGE_WIDTH)
+		row:SetScript("OnClick", function()
+			local guard = addon.WhisperGuard
+			if row.heldId and guard and type(guard.HandleCommand) == "function" then
+				guard:HandleCommand("show " .. tostring(row.heldId))
+			end
+		end)
+		self.messengerHeldRows[index] = row
+	end
+	self.messengerHeldPrevious = addSafety(Theme:CreateTightButton(page, "< PREVIOUS", 22, false))
+	self.messengerHeldPrevious:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -413)
+	self.messengerHeldPrevious:SetScript("OnClick", function()
+		Config.messengerHeldPage = math.max(1, (Config.messengerHeldPage or 1) - 1)
+		Config:RefreshHeldWhisperReview()
+	end)
+	self.messengerHeldPager = addSafety(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	self.messengerHeldPager:SetPoint("LEFT", self.messengerHeldPrevious, "RIGHT", 12, 0)
+	self.messengerHeldPager:SetWidth(85)
+	self.messengerHeldNext = addSafety(Theme:CreateTightButton(page, "NEXT >", 22, false))
+	self.messengerHeldNext:SetPoint("LEFT", self.messengerHeldPager, "RIGHT", 12, 0)
+	self.messengerHeldNext:SetScript("OnClick", function()
+		Config.messengerHeldPage = (Config.messengerHeldPage or 1) + 1
+		Config:RefreshHeldWhisperReview()
+	end)
+	local heldActions = addSafety(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	heldActions:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -446)
+	heldActions:SetWidth(PAGE_WIDTH)
+	heldActions:SetText("Use /ccbbw approve NAME or /ccbbw block NAME after review. Held text remains private.")
+
 	local openingControls = {}
 	local function addOpening(control)
 		table.insert(openingControls, control)
@@ -9605,12 +9864,12 @@ function Config:BuildMessengerPage()
 	behaviorTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
 	behaviorTitle:SetText("AUTOMATIC OPENING")
 
-	self.messengerWhispersToggle = addOpening(Theme:CreateCompactToggle(page, "AUTO-OPEN WHISPERS", PAGE_WIDTH))
+	self.messengerWhispersToggle = addOpening(Theme:CreateCompactToggle(page, "AUTO-OPEN TRUSTED WHISPERS", PAGE_WIDTH))
 	self.messengerWhispersToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -151)
 	self.messengerWhispersToggle.OnValueChanged = function(_, value)
 		setMessengerBoolean("SetMessengerPopupWhispersEnabled", "autoOpenWhispers", value)
 	end
-	setControlTooltip(self.messengerWhispersToggle, "Auto-open incoming whispers", "Opens Messenger when another player whispers you. A tab and unread count are retained either way.")
+	setControlTooltip(self.messengerWhispersToggle, "Auto-open approved whispers", "Opens Messenger for a trusted or approved player's incoming in-game whisper. Held strangers never open a Messenger tab or unread count.")
 
 	self.messengerCombatToggle = addOpening(Theme:CreateCompactToggle(page, "WAIT UNTIL COMBAT ENDS", PAGE_WIDTH))
 	self.messengerCombatToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -181)
@@ -9624,7 +9883,7 @@ function Config:BuildMessengerPage()
 	behaviorDetail:SetWidth(PAGE_WIDTH)
 	behaviorDetail:SetHeight(36)
 	behaviorDetail:SetJustifyH("LEFT")
-	behaviorDetail:SetText("New whispers join the existing Messenger shell. /r, Reply, and player-name actions can still open it when automatic opening is off.")
+	behaviorDetail:SetText("Trusted or approved whispers join Messenger. Held strangers stay out; /r, Reply, and player-name actions can still open a conversation when automatic opening is off.")
 
 	local shortcutsTitle = addOpening(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
 	shortcutsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -264)
@@ -10070,6 +10329,7 @@ function Config:BuildMessengerPage()
 	appearanceDetail:SetText("Semantic text colors and the slim thumb keep their Colorway meaning.")
 
 	self.messengerSectionGroups = {
+		safety = safetyControls,
 		opening = openingControls,
 		tabs = tabControls,
 		visibility = visibilityControls,
@@ -12701,7 +12961,459 @@ function Config:BuildAboutPage()
 	return page
 end
 
+-- Chatty's simple settings are a task-focused reading surface. The advanced
+-- pages below remain the complete editors; the desk never copies their data.
+local deskTasks = {
+	desk = {
+		title = "Start Here", hint = "Choose the chat window you want to use.",
+		advanced = "dock",
+		options = {
+			{
+				title = "Use Chatty as my chat window",
+				does = "Chatty collects received chat and sorts it into its own tabs.",
+				notices = "You see one organized chat window; turning this off returns to native chat.",
+				get = function(s) return s.enabled ~= false end,
+				set = function(value) addon:SetSmartChatEnabled(value) end,
+			},
+			{
+				title = "Hide Blizzard's chat window",
+				does = "Chatty hides the native chat frame while its own window is active.",
+				notices = "You see one transcript, not two overlapping chat windows.",
+				get = function(s) return s.dock.hideNativeChat == true end,
+				set = function(value, s) s.dock.hideNativeChat = value; applyDockRuntime("hideNativeChat", value) end,
+			},
+			{
+				title = "Show the minimap launcher",
+				does = "Chatty keeps a small button for opening chat or settings.",
+				notices = "You can left-click for chat or right-click for settings.",
+				get = function(s) return s.launcher.minimap.hide ~= true end,
+				set = function(value) addon:SetMinimapHidden(not value) end,
+			},
+		},
+	},
+	deskRoutes = {
+		title = "Sort Messages", hint = "Keep sales and group searches out of ordinary conversation.",
+		advanced = "semantic",
+		options = {
+			{
+				title = "Put recognized sales in Trade",
+				does = "Chatty checks public messages for buying, selling, and service clues.",
+				notices = "Matching offers go to T; Route Audit explains a line that missed.",
+				get = function(s) return s.semanticRoutes.trade ~= false end,
+				set = function(value) addon:SetSemanticRouteEnabled("trade", value) end,
+			},
+			{
+				title = "Put group searches in LFG",
+				does = "Chatty checks public messages for group-finding intent.",
+				notices = "Matching dungeon, raid, and role requests go to LFG.",
+				get = function(s) return s.semanticRoutes.groupFinder ~= false end,
+				set = function(value) addon:SetSemanticRouteEnabled("groupFinder", value) end,
+			},
+			{
+				title = "Put PvP talk in PVP",
+				does = "Chatty checks public messages for battleground and PvP clues.",
+				notices = "Matching PvP messages go to PVP; direct defense notices still route there.",
+				get = function(s) return s.semanticRoutes.pvp ~= false end,
+				set = function(value) addon:SetSemanticRouteEnabled("pvp", value) end,
+			},
+		},
+	},
+	deskSpam = {
+		title = "Stop Spam", hint = "Choose which repeated messages Chatty quiets.",
+		advanced = "spam",
+		options = {
+			{
+				title = "Use the spam firewall",
+				does = "Chatty runs its repeat, flood, and repeat-offender checks.",
+				notices = "Matching messages are hidden in protected chats; your rules stay saved if off.",
+				get = function(s) return s.spam.enabled ~= false end,
+				set = function(value, s) s.spam.enabled = value; applySpamRuntime() end,
+			},
+			{
+				title = "Quiet repeat sale advertisements",
+				does = "Chatty limits copies of one seller's same public sale ad within a rolling window.",
+				notices = "Over-posted ads disappear. Default: 4 per day, at least 1 hour apart.",
+				get = function(s) return not s.spam.repeatAds or s.spam.repeatAds.enabled ~= false end,
+				set = function(value, s)
+					s.spam.repeatAds = s.spam.repeatAds or {}
+					s.spam.repeatAds.enabled = value
+					applySpamRuntime()
+				end,
+			},
+			{
+				title = "Hide identical repeats",
+				does = "Chatty compares copies from one sender across protected chats.",
+				notices = "You see the first allowed copy; matching repeats disappear.",
+				get = function(s) return s.spam.duplicate.enabled ~= false end,
+				set = function(value, s) s.spam.duplicate.enabled = value; applySpamRuntime() end,
+			},
+			{
+				title = "Quiet rapid sender floods",
+				does = "Chatty temporarily mutes a sender who posts too fast.",
+				notices = "A burst of different messages stops filling your chat.",
+				get = function(s) return s.spam.burst.enabled ~= false end,
+				set = function(value, s) s.spam.burst.enabled = value; applySpamRuntime() end,
+			},
+		},
+	},
+	deskPrivate = {
+		title = "Private Messages", hint = "Hold unfamiliar in-game whispers before they enter your conversations.",
+		advanced = "messenger",
+		options = {
+			{
+				title = "Hold in-game whispers from strangers",
+				does = "Chatty holds new in-game whispers from non-friends and non-guildmates outside Messenger.",
+				notices = "Approve a sender to replay held lines once; future whispers then pass.",
+				get = function(s) return not s.whisperGuard or s.whisperGuard.enabled ~= false end,
+				set = function(value, s)
+					local guard = addon.WhisperGuard
+					if guard and type(guard.SetProtectionEnabled) == "function" then
+						guard:SetProtectionEnabled(value)
+					else
+						s.whisperGuard = s.whisperGuard or {}
+						s.whisperGuard.enabled = value
+					end
+				end,
+			},
+			{
+				title = "Open Messenger for trusted whispers",
+				does = "Chatty opens Messenger when a trusted or approved player whispers you.",
+				notices = "Turn this off to keep allowed conversations and unread counts without a popup.",
+				get = function(s) return s.conversations.autoOpenWhispers ~= false end,
+				set = function(value) addon:SetMessengerPopupWhispersEnabled(value) end,
+			},
+			{
+				title = "Wait until combat ends to pop up",
+				does = "Chatty delays automatic opening for allowed whispers during combat.",
+				notices = "Allowed chat stays recorded; Messenger opens when combat ends.",
+				get = function(s) return s.conversations.deferInCombat ~= false end,
+				set = function(value) addon:SetMessengerCombatDeferralEnabled(value) end,
+			},
+			{
+				title = "Check whispers for repeats and floods",
+				does = "Chatty checks allowed whispers for repeat and flood spam after stranger protection.",
+				notices = "Rapid or repeated allowed whispers can be hidden; stranger holds are a separate safeguard.",
+				get = function(s) return s.spam.scopes.whisper == true end,
+				set = function(value, s) s.spam.scopes.whisper = value; applySpamRuntime() end,
+			},
+		},
+	},
+	deskAlerts = {
+		title = "Alerts", hint = "Notice messages that actually need your attention.",
+		advanced = "alerts",
+		options = {
+			{
+				title = "Use message alerts",
+				does = "Chatty checks enabled alert rules, including your name.",
+				notices = "Matching messages can reveal chat or play a sound; saved rules remain if off.",
+				get = function(s) return s.alerts.enabled ~= false end,
+				set = function(value, s) s.alerts.enabled = value; applyAlertRuntime() end,
+			},
+			{
+				title = "Reveal chat for alerts",
+				does = "Chatty lets matching rules bring the chat window into view.",
+				notices = "You see important lines even if the dock was tucked away.",
+				get = function(s) return s.alerts.popout ~= false end,
+				set = function(value, s) s.alerts.popout = value; applyAlertRuntime() end,
+			},
+			{
+				title = "Play a sound for every alert",
+				does = "Chatty plays the alert sound regardless of a rule's own sound choice.",
+				notices = "Every matching alert makes a sound; leave off for rule-by-rule sounds.",
+				get = function(s) return s.alerts.sound == true end,
+				set = function(value, s) s.alerts.sound = value; applyAlertRuntime() end,
+			},
+		},
+	},
+	deskLook = {
+		title = "Look & Feel", hint = "Make the transcript easy to read without changing its routes.",
+		advanced = "colorways",
+		options = {
+			{
+				title = "Adapt labels to a narrow window",
+				does = "Chatty hides extra timestamp and label detail as the chat window narrows.",
+				notices = "Message text stays readable instead of being squeezed by metadata.",
+				get = function(s) return s.dock.responsiveMetadata ~= false end,
+				set = function(value) addon:SetResponsiveMetadata(value) end,
+			},
+			{
+				title = "Mark new lines while reading history",
+				does = "Chatty shows a NEW marker when a message arrives above your reading spot.",
+				notices = "You can jump back to the latest messages without losing your place.",
+				get = function(s) return s.dock.newMessages.enabled ~= false end,
+				set = function(value) addon:SetNewMessageIndicatorEnabled(value) end,
+			},
+			{
+				title = "Shade alternating messages",
+				does = "Chatty places a faint band behind every other logical message.",
+				notices = "Wrapped lines are easier to follow; message content stays the same.",
+				get = function(s) return s.dock.messageBands.enabled == true end,
+				set = function(value) addon:SetSmartChatMessageBandsEnabled(value) end,
+			},
+		},
+	},
+}
+
+local function getDeskTabOptions()
+	local result = {}
+	local definitions = addon.GetSmartViews and addon:GetSmartViews() or addon.SmartViews or {}
+	for index = 1, #definitions do
+		local view = definitions[index]
+		if view.id then
+			local viewId = view.id
+			local label = view.label or viewId
+			local key = view.key or label
+			result[#result + 1] = {
+				title = "Show " .. label .. " (" .. key .. ")",
+				does = "Chatty keeps this tab in the channel rail when enabled.",
+				notices = "Turning it off hides the tab, not the messages Chatty already captured.",
+				get = function(s) return s.views[viewId] ~= false end,
+				set = function(value) Config:SetViewVisibility(viewId, value) end,
+			}
+		end
+	end
+	return result
+end
+
+function Config:RefreshDeskPage()
+	if not self.deskPage then return end
+	local taskId = self.deskTask or "desk"
+	local task = deskTasks[taskId] or deskTasks.desk
+	local settings = addon:GetSmartSettings()
+	local options = taskId == "deskTabs" and getDeskTabOptions() or task.options
+	local pageCount = math.max(1, math.ceil(#options / #self.deskRows))
+	if taskId ~= "deskTabs" then self.deskTabPage = 1 end
+	self.deskTabPage = math.max(1, math.min(self.deskTabPage or 1, pageCount))
+	local first = (self.deskTabPage - 1) * #self.deskRows + 1
+	self.deskHeading:SetText(task.title)
+	self.deskHint:SetText(task.hint)
+	self.deskTaskCount:SetText(taskId == "deskTabs" and ("TABS  " .. self.deskTabPage .. " / " .. pageCount)
+		or ("STEP  " .. (function() for i = 1, #deskTaskOrder do if deskTaskOrder[i] == taskId then return i end end return 1 end)() .. " / " .. #deskTaskOrder))
+	for index = 1, #self.deskRows do
+		local row = self.deskRows[index]
+		local option = options[first + index - 1]
+		row.option = option
+		if option then
+			row.toggle.label:SetText(option.title)
+			row.toggle:SetValue(option.get(settings), true)
+			row.does:SetText("CHATTY DOES  " .. option.does)
+			row.notices:SetText("YOU'LL NOTICE  " .. option.notices)
+			row:Show()
+		else
+			row:Hide()
+		end
+	end
+	local spam = settings.spam or {}
+	local conversations = settings.conversations or {}
+	local strangerHold = not settings.whisperGuard or settings.whisperGuard.enabled ~= false
+	local heldState = addon.WhisperGuard and type(addon.WhisperGuard.GetStatus) == "function"
+		and addon.WhisperGuard:GetStatus() or nil
+	local preview = {
+		desk = {
+			"[G]  General, group, trade, and whispers each get their own place.",
+			settings.enabled and "[SYS]  Chatty is collecting messages in its own window." or "[SYS]  Native chat is active while Chatty is off.",
+		},
+		deskTabs = {
+			(settings.views.trade ~= false and "[T]  Trade tab is visible." or "[T]  Trade tab is hidden."),
+			"[G]  Hiding a tab does not erase retained messages.",
+		},
+		deskRoutes = {
+			(settings.semanticRoutes.trade ~= false and "[G]  WTS item  →  [T]  Trade" or "[G]  WTS item stays on its direct source route."),
+			"[ANALYZE]  Check a real line in Route Audit if its destination looks wrong.",
+		},
+		deskSpam = {
+			(spam.enabled == false and "[T]  Spam Firewall is off; reposted ads are not filtered."
+				or ((not spam.repeatAds or spam.repeatAds.enabled ~= false)
+					and "[T]  Reposted sale ads are limited by the sale-ad rule."
+					or "[T]  Sale-ad rule is off; other enabled spam rules still apply.")),
+			(spam.enabled == false and "[G]  Duplicate and flood protections are paused."
+				or ((not spam.duplicate or spam.duplicate.enabled ~= false)
+					and "[G]  Identical repeats can also be hidden by the duplicate rule."
+					or "[G]  Duplicate rule is off; other enabled spam rules still apply.")),
+		},
+		deskPrivate = {
+			strangerHold and ("[HELD]  Stranger whisper stays private: " .. tostring(heldState and heldState.entries or 0) .. " held.")
+				or "[C]  In-game stranger protection is off; new whispers may enter Messenger.",
+			conversations.autoOpenWhispers ~= false and "[C]  Trusted or approved whisper opens Messenger."
+				or "[C]  Allowed whisper stays in Messenger without a popup.",
+		},
+		deskAlerts = {
+			"[G]  Someone mentions your name.",
+			settings.alerts.enabled ~= false and "[ALERT]  Your saved name rule can notify you."
+				or "[ALERT]  Alerts are off; your rules remain saved.",
+		},
+		deskLook = {
+			"[G]  [PLAYER]  Chat remains in the same destination.",
+			settings.dock.messageBands.enabled and "[VIEW]  Alternating message bands are visible."
+				or "[VIEW]  A clean, unbanded transcript is visible.",
+		},
+	}
+	self.deskPreviewFirst:SetText(preview[taskId][1])
+	self.deskPreviewSecond:SetText(preview[taskId][2])
+	local deskNote = "Changes apply immediately. These examples show the effect of your current choices, not actual chat messages."
+	if taskId == "desk" then
+		deskNote = "For restricted lines, Chatty tries to reveal Blizzard chat briefly. Some lines can still be missed; saved history cannot recreate lines never received."
+		local recovery = addon.ChatRecovery
+		if recovery and type(recovery.GetStatus) == "function" then
+			local ok, status = pcall(recovery.GetStatus, recovery)
+			if ok and type(status) == "table" then
+				local failed = tonumber(status.fallbackFailed) or (status.fallbackFailed and 1 or 0)
+				deskNote = string.format("CATCH-UP  %d restored / %d waiting / %d unresolved / %d fallback failures\nBlizzard chat briefly appears for restricted lines; unseen lines cannot be restored.",
+					math.max(0, tonumber(status.recovered) or 0),
+					math.max(0, tonumber(status.pending) or 0),
+					math.max(0, tonumber(status.unresolved) or 0),
+					math.max(0, failed))
+			end
+		end
+	end
+	self.deskNote:SetText(deskNote)
+	self.deskAdvancedButton:SetLabel("MORE " .. (task.advanced == "colorways" and "THEMES" or "OPTIONS"))
+	if self.deskReviewButton then
+		if taskId == "deskPrivate" then
+			self.deskReviewButton:SetLabel("REVIEW HELD WHISPERS")
+			self.deskReviewButton:Show()
+		elseif taskId == "deskSpam" then
+			self.deskReviewButton:SetLabel("REVIEW BLOCKED")
+			self.deskReviewButton:Show()
+		else
+			self.deskReviewButton:Hide()
+		end
+	end
+	self.deskPrevious:SetLabel(taskId == "deskTabs" and self.deskTabPage > 1 and "< PREVIOUS TABS" or "< PREVIOUS")
+	local nextLabel = taskId == "deskTabs" and self.deskTabPage < pageCount and "MORE TABS >" or "NEXT >"
+	if taskId == deskTaskOrder[#deskTaskOrder] then
+		nextLabel = addon.IsConfigSetupCompleted and not addon:IsConfigSetupCompleted()
+			and "FINISH SETUP" or "BACK TO START"
+	end
+	self.deskNext:SetLabel(nextLabel)
+	self:RefreshNavigation()
+end
+
+function Config:BuildDeskPage()
+	local page = self:CreatePage("desk")
+	self.deskPage = page
+	local heading = Theme:CreateText(page, "GameFontNormal", "goldBright")
+	heading:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -8)
+	heading:SetWidth(400)
+	heading:SetText("Start Here")
+	self.deskHeading = heading
+	local count = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	count:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAGE_GUTTER, -11)
+	count:SetWidth(140)
+	count:SetJustifyH("RIGHT")
+	self.deskTaskCount = count
+	local hint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	hint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -29)
+	hint:SetWidth(PAGE_WIDTH)
+	self.deskHint = hint
+
+	local transcript = createQuietShellPanel(page, "inset")
+	transcript:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -PAGE_TOP)
+	transcript:SetSize(PAGE_WIDTH, 84)
+	local transcriptLabel = Theme:CreateText(transcript, "GameFontNormalSmall", "gold")
+	transcriptLabel:SetPoint("TOPLEFT", transcript, "TOPLEFT", 10, -8)
+	transcriptLabel:SetText("SETTING PREVIEW  /  EXAMPLE CHAT")
+	self.deskPreviewFirst = Theme:CreateText(transcript, "GameFontHighlightSmall", "text")
+	self.deskPreviewFirst:SetPoint("TOPLEFT", transcript, "TOPLEFT", 10, -29)
+	self.deskPreviewFirst:SetWidth(PAGE_WIDTH - 20)
+	self.deskPreviewSecond = Theme:CreateText(transcript, "GameFontHighlightSmall", "textMuted")
+	self.deskPreviewSecond:SetPoint("TOPLEFT", transcript, "TOPLEFT", 10, -49)
+	self.deskPreviewSecond:SetWidth(PAGE_WIDTH - 20)
+
+	local instruction = Theme:CreateText(page, "GameFontHighlightSmall", "warning")
+	instruction:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -140)
+	instruction:SetSize(PAGE_WIDTH, 30)
+	instruction:SetJustifyH("LEFT")
+	self.deskNote = instruction
+	self.deskRows = {}
+	for index = 1, 4 do
+		local row = CreateFrame("Frame", nil, page)
+		row:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -174 - ((index - 1) * 66))
+		row:SetSize(PAGE_WIDTH, 64)
+		local separator = row:CreateTexture(nil, "ARTWORK")
+		separator:SetTexture("Interface\\Buttons\\WHITE8x8")
+		separator:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+		separator:SetPoint("TOPRIGHT", row, "TOPRIGHT", 0, 0)
+		separator:SetHeight(1)
+		if Theme.RegisterTexture then Theme:RegisterTexture(separator, "borderMuted") end
+		row.toggle = Theme:CreateCompactToggle(row, "", PAGE_WIDTH - 12)
+		row.toggle:SetPoint("TOPLEFT", row, "TOPLEFT", 6, -8)
+		row.toggle:SetHeight(18)
+		row.toggle.OnValueChanged = function(_, value)
+			if row.option then row.option.set(value, addon:GetSmartSettings()) end
+			Config:RefreshDeskPage()
+		end
+		row.does = Theme:CreateText(row, "GameFontHighlightSmall", "textMuted")
+		row.does:SetPoint("TOPLEFT", row, "TOPLEFT", 26, -32)
+		row.does:SetWidth(PAGE_WIDTH - 36)
+		row.notices = Theme:CreateText(row, "GameFontHighlightSmall", "text")
+		row.notices:SetPoint("TOPLEFT", row, "TOPLEFT", 26, -47)
+		row.notices:SetWidth(PAGE_WIDTH - 36)
+		self.deskRows[index] = row
+	end
+	self.deskPrevious = Theme:CreateTightButton(page, "< PREVIOUS", 22, false)
+	self.deskPrevious:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", PAGE_GUTTER, 8)
+	self.deskPrevious:SetScript("OnClick", function()
+		local taskId = Config.deskTask or "desk"
+		if taskId == "deskTabs" and (Config.deskTabPage or 1) > 1 then
+			Config.deskTabPage = Config.deskTabPage - 1
+			Config:RefreshDeskPage()
+			return
+		end
+		for index = 2, #deskTaskOrder do
+			if deskTaskOrder[index] == taskId then Config:ShowPage(deskTaskOrder[index - 1]); return end
+		end
+	end)
+	self.deskNext = Theme:CreateTightButton(page, "NEXT >", 22, true)
+	self.deskNext:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", -PAGE_GUTTER, 8)
+	self.deskNext:SetScript("OnClick", function()
+		local taskId = Config.deskTask or "desk"
+		if taskId == "deskTabs" then
+			local pages = math.max(1, math.ceil(#getDeskTabOptions() / #Config.deskRows))
+			if (Config.deskTabPage or 1) < pages then
+				Config.deskTabPage = Config.deskTabPage + 1
+				Config:RefreshDeskPage()
+				return
+			end
+		end
+		for index = 1, #deskTaskOrder - 1 do
+			if deskTaskOrder[index] == taskId then Config:ShowPage(deskTaskOrder[index + 1]); return end
+		end
+		if taskId == deskTaskOrder[#deskTaskOrder] then
+			if type(addon.SetConfigSetupCompleted) == "function" then
+				addon:SetConfigSetupCompleted(true)
+			end
+			Config:ShowPage("desk")
+		end
+	end)
+	self.deskAdvancedButton = Theme:CreateTightButton(page, "MORE OPTIONS", 22, false)
+	self.deskAdvancedButton:SetPoint("RIGHT", self.deskNext, "LEFT", -10, 0)
+	self.deskAdvancedButton:SetScript("OnClick", function()
+		local task = deskTasks[Config.deskTask or "desk"] or deskTasks.desk
+		Config:SetMode("advanced")
+		Config:ShowPage(task.advanced)
+	end)
+	self.deskReviewButton = Theme:CreateTightButton(page, "REVIEW HELD WHISPERS", 22, false)
+	self.deskReviewButton:SetPoint("RIGHT", self.deskAdvancedButton, "LEFT", -10, 0)
+	self.deskReviewButton:SetScript("OnClick", function()
+		local taskId = Config.deskTask
+		Config:SetMode("advanced")
+		if taskId == "deskPrivate" then
+			Config:ShowPage("messenger")
+			Config:SetMessengerSection("safety")
+		elseif taskId == "deskSpam" then
+			Config:ShowPage("blocks")
+			Config:SetBlocksSection("archive")
+		end
+	end)
+	setControlTooltip(self.deskReviewButton, "Private review",
+		"Held strangers are reviewed privately. The blocked-message archive holds Block Rule and Spam Firewall drops; held whispers are separate.")
+	self:RefreshDeskPage()
+	return page
+end
+
 local builders = {
+	desk = Config.BuildDeskPage,
 	home = Config.BuildHomePage,
 	dock = Config.BuildDockPage,
 	views = Config.BuildViewsPage,
@@ -12724,6 +13436,19 @@ local builders = {
 }
 
 function Config:ShowPage(id)
+	if deskTaskIds[id] then
+		self.deskTask = id
+		if self:GetMode() ~= "simple" then
+			self.sessionConfigMode = "simple"
+			if type(addon.SetConfigMode) == "function" then pcall(addon.SetConfigMode, addon, "simple") end
+		end
+		id = "desk"
+	elseif self:GetMode() == "simple" then
+		-- Direct links from the preserved detailed editors remain valid. An
+		-- explicit visit to one also exposes its navigation until Simple is chosen.
+		self.sessionConfigMode = "advanced"
+		if type(addon.SetConfigMode) == "function" then pcall(addon.SetConfigMode, addon, "advanced") end
+	end
 	-- Retain the old internal page key for any external opener created before
 	-- Messenger was given its own dedicated configuration section.
 	if id == "conversations" then
@@ -12749,7 +13474,9 @@ function Config:ShowPage(id)
 	self.activePage = id
 	self.pages[id]:Show()
 	self:RefreshNavigation()
-	if id == "home" then
+	if id == "desk" then
+		self:RefreshDeskPage()
+	elseif id == "home" then
 		self:RefreshHomeState()
 	elseif id == "dock" then
 		self:RefreshDockPage()
@@ -12893,6 +13620,18 @@ function Config:ReloadProfile()
 		page:Hide()
 	end
 	self.pages = {}
+	self.deskPage = nil
+	self.deskRows = nil
+	self.deskHeading = nil
+	self.deskHint = nil
+	self.deskTaskCount = nil
+	self.deskPreviewFirst = nil
+	self.deskPreviewSecond = nil
+	self.deskNote = nil
+	self.deskPrevious = nil
+	self.deskNext = nil
+	self.deskAdvancedButton = nil
+	self.deskReviewButton = nil
 	self.smartToggle = nil
 	self.minimapToggle = nil
 	self.homeStatus = nil
@@ -13408,7 +14147,8 @@ function Config:ReloadProfile()
 	self.pendingDeleteAlertId = nil
 	self.alertRulePage = nil
 	self.alertSourcePage = nil
-	self:ShowPage(self.activePage or "home")
+	self:ShowPage(self:GetMode() == "advanced" and (self.activePage ~= "desk" and self.activePage or "home")
+		or (self.deskTask or "desk"))
 end
 
 function Config:Shutdown()
@@ -13471,6 +14211,7 @@ function Config:LayoutNavigation()
 		return
 	end
 	local content = self.navContent
+	for _, label in pairs(self.navigationSectionLabels or {}) do label:Hide() end
 	local y = NAV_TOP
 	self.navTitle:ClearAllPoints()
 	self.navTitle:SetPoint("TOPLEFT", content, "TOPLEFT", NAV_LEFT, -y)
@@ -13650,7 +14391,8 @@ function Config:BuildFrame()
 	title:SetText("ChattyChattyBangBang")
 	local subtitle = Theme:CreateText(header, "GameFontHighlightSmall", "textMuted")
 	subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -1)
-	subtitle:SetText("WRATH / ASCENSION CHAT  v" .. getAddonVersion())
+	subtitle:SetText((addon.ClientAPI and addon.ClientAPI.IsRetail and addon.ClientAPI:IsRetail()
+		and "RETAIL CHAT  v" or "WRATH / ASCENSION CHAT  v") .. getAddonVersion())
 
 	local close = CreateFrame("Button", nil, header)
 	close:SetSize(18, 18)
@@ -13742,9 +14484,12 @@ function Config:BuildFrame()
 	local navTitle = Theme:CreateText(navContent, "GameFontNormalSmall", "gold")
 	navTitle:SetText("SETTINGS")
 	self.navTitle = navTitle
-	self.navigationOrder = navigation
+	self.navigationOrder = self:GetMode() == "advanced" and navigation or deskNavigation
 	self.navigationSectionLabels = {}
-	for _, item in ipairs(navigation) do
+	local allNavigation = {}
+	for _, item in ipairs(deskNavigation) do allNavigation[#allNavigation + 1] = item end
+	for _, item in ipairs(navigation) do allNavigation[#allNavigation + 1] = item end
+	for _, item in ipairs(allNavigation) do
 		if item.group and not self.navigationSectionLabels[item.group] then
 			local section = Theme:CreateText(navContent, "GameFontHighlightSmall", "textMuted")
 			section:SetWidth(154)
@@ -13754,8 +14499,8 @@ function Config:BuildFrame()
 		end
 	end
 
-	for index = 1, #navigation do
-		local item = navigation[index]
+	for index = 1, #allNavigation do
+		local item = allNavigation[index]
 		local pageId = item.id
 		local help = {
 			modules = "Review Chatty features and choose which built-in behavior you want to use.",
@@ -13774,7 +14519,9 @@ function Config:BuildFrame()
 			button.label:SetPoint("RIGHT", button.disclosure, "LEFT", -4, 0)
 		end
 		button:SetScript("OnClick", function()
-			if pageId == "modules" then
+			if deskTaskIds[pageId] then
+				Config:ShowPage(pageId)
+			elseif pageId == "modules" then
 				-- Opening Modules should never unexpectedly collapse the nested
 				-- choices. Once the page is already active, the same button becomes
 				-- its compact expand/collapse control.
@@ -13826,6 +14573,11 @@ function Config:BuildFrame()
 	navFooter:SetJustifyH("LEFT")
 	navFooter:SetText("/chattychattybangbang")
 	self.navFooter = navFooter
+	self.modeButton = Theme:CreateTightButton(header, "ADVANCED SETTINGS", 20, false)
+	self.modeButton:SetPoint("RIGHT", close, "LEFT", -10, 0)
+	self.modeButton:SetScript("OnClick", function()
+		Config:SetMode(Config:GetMode() == "advanced" and "simple" or "advanced")
+	end)
 	self.modulesNavigationExpanded = self.modulesNavigationExpanded and true or false
 	self:RefreshNavigation()
 
@@ -13861,6 +14613,13 @@ function Config:Open()
 	self:BuildFrame()
 	self:FitFrameToViewport()
 	self.frame:Show()
-	self:ShowPage(self.activePage or "home")
+	self:ShowPage(self:GetMode() == "advanced" and (self.activePage ~= "desk" and self.activePage or "home")
+		or (self.deskTask or "desk"))
 	self.frame:Raise()
+end
+
+function Config:OpenSetup()
+	self.deskTask = "desk"
+	self:SetMode("simple")
+	self:Open()
 end

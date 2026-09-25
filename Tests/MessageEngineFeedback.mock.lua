@@ -72,12 +72,21 @@ end)
 
 local secretMarker = {}
 local restrictedStage
+local queuedRestricted
 ChattyChattyBangBang.Diagnostics = {
 	Mark = function(_, stage) restrictedStage = stage end,
 }
+ChattyChattyBangBang.ChatRecovery = {
+	Queue = function(_, event, ...)
+		queuedRestricted = { event = event, lineId = select(11, ...) }
+	end,
+}
 canaccessvalue = function(value) return value ~= secretMarker end
-engine:Capture("CHAT_MSG_PARTY", secretMarker, "RestrictedSender")
-assert(#received == 0 and restrictedStage == "chat-messaging-lockdown",
+engine:Capture("CHAT_MSG_PARTY", secretMarker, "RestrictedSender",
+	nil, nil, nil, nil, nil, nil, nil, nil, 77)
+assert(#received == 0 and restrictedStage == "chat-messaging-lockdown"
+	and queuedRestricted and queuedRestricted.event == "CHAT_MSG_PARTY"
+	and queuedRestricted.lineId == 77,
 	"secret Retail chat must be left to visible native chat")
 canaccessvalue = nil
 
@@ -537,6 +546,10 @@ assert(#received == 10 and received[10].view == "guild"
 	and received[10].sourceId == "guild:item-looted"
 	and received[10].sender == "Guildmate",
 	"guild-item announcement was not captured with its formatting argument")
+
+engine:CaptureAccessible("CHAT_MSG_SYSTEM", 1699999999, "Recovered after lockdown")
+assert(received[#received].recovered == true and received[#received].epoch == 1699999999,
+	"recovered chat did not preserve its original wall-clock time")
 
 settings.enabled = false
 local fallback, reason = ChattyChattyBangBang:DebugMessage("Clique invite: native fallback")

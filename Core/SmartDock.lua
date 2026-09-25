@@ -99,6 +99,11 @@ local MESSAGE_SCROLL_TO_BOTTOM_GAP = 4
 local MESSAGE_SCROLLBAR_DISPLAY_INSET = MESSAGE_SCROLLBAR_RIGHT_INSET
 	+ math.max(MESSAGE_SCROLLBAR_WIDTH, MESSAGE_SCROLL_TO_BOTTOM_WIDTH)
 	+ MESSAGE_SCROLLBAR_TEXT_GUTTER
+-- The native chat frame holds at most 500 AddMessage entries. Show one bounded
+-- history page at a time, leaving room for new arrivals on the latest page.
+local HISTORY_PAGE_SIZE = 400
+local HISTORY_PAGER_HEIGHT = 20
+local HISTORY_PAGER_GUTTER = 4
 -- Full-width row shading may paint through the otherwise transparent scrollbar
 -- lane, but stops at the backdrop's one-pixel inner inset so the panel border
 -- remains crisp. The message viewport and scrollbar hit geometry never move.
@@ -953,7 +958,8 @@ function Dock:SetMessageScrollbarOffset(value)
 			end
 		end
 	end
-	if scrollOffset == 0 or (display.AtBottom and display:AtBottom()) then
+	if (not self.historyPageOffset or self.historyPageOffset == 0)
+		and (scrollOffset == 0 or (display.AtBottom and display:AtBottom())) then
 		self:ClearPendingMessages()
 	end
 	self:HandleDisplayViewportChanged()
@@ -963,6 +969,10 @@ end
 
 function Dock:ScrollMessageDisplayToBottom()
 	if not self.display then return false end
+	if (self.historyPageOffset or 0) > 0 then
+		self.historyPageOffset = 0
+		self:RebuildActiveView()
+	end
 	if self.display.ScrollToBottom then self.display:ScrollToBottom() end
 	self:ClearPendingMessages()
 	self:HandleDisplayViewportChanged()
@@ -1021,7 +1031,8 @@ function Dock:RefreshMessageScrollbar()
 
 	local atBottom = scrollOffset == 0 or (display.AtBottom and display:AtBottom())
 	if self.scrollToBottomButton then
-		if overflow and not atBottom then self.scrollToBottomButton:Show()
+		if (self.historyPageOffset or 0) > 0 or (overflow and not atBottom) then
+			self.scrollToBottomButton:Show()
 		else self.scrollToBottomButton:Hide() end
 	end
 	return overflow
@@ -1473,6 +1484,16 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 		topInset = topInset + math.max(0, tonumber(self.alertBar:GetHeight()) or ALERT_PANEL_HEIGHT)
 			+ TRANSIENT_PANEL_RESERVATION
 	end
+	if self.historyPager then
+		if self.historyPagerAvailable then self.historyPager:Show()
+		else self.historyPager:Hide() end
+	end
+	if frameIsShown(self.historyPager) then
+		self.historyPager:ClearAllPoints()
+		self.historyPager:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -topInset)
+		self.historyPager:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_DISPLAY_INSET, -topInset)
+		topInset = topInset + HISTORY_PAGER_HEIGHT + HISTORY_PAGER_GUTTER
+	end
 	if frameIsShown(self.playerActions) then
 		bottomInset = bottomInset
 			+ math.max(0, tonumber(self.playerActions:GetHeight()) or PLAYER_ACTION_PANEL_WIDE_HEIGHT)
@@ -1487,6 +1508,14 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 		if ok and tonumber(measured) then
 			minimumLineHeight = math.max(1, tonumber(measured))
 		end
+	end
+	if frameIsShown(self.historyPager) and availableHeight ~= nil
+		and availableHeight < minimumLineHeight then
+		-- Alerts and player actions can share the minimum-size dock. Release the
+		-- history strip before it can overlap either transient panel or chat.
+		self.historyPager:Hide()
+		topInset = topInset - HISTORY_PAGER_HEIGHT - HISTORY_PAGER_GUTTER
+		availableHeight = math.max(0, contentHeight - topInset - bottomInset)
 	end
 	local suppressDisplay = availableHeight ~= nil and availableHeight < minimumLineHeight
 	local minimumScrollbarHeight = MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP
@@ -4658,6 +4687,62 @@ function Dock:ResetActiveMetadataMetrics(records)
 		and math.max(RESPONSIVE_TIMESTAMP_CHARACTER_FALLBACK, timestampWidth) or 0
 end
 
+function Dock:RefreshHistoryPager(total)
+	local pager = self.historyPager
+	if not pager then return end
+	total = math.max(0, math.floor(tonumber(total) or 0))
+	self.historyEligibleCount = total
+	local offset = math.max(0, math.floor(tonumber(self.historyPageOffset) or 0))
+	local rendered = #(self.displayRecords or {})
+	local hasOlder = offset + rendered < total
+	local shouldShow = hasOlder or offset > 0
+	local wasShown = frameIsShown(pager)
+	self.historyPagerAvailable = shouldShow
+	if shouldShow then pager:Show() else pager:Hide() end
+	if self.historyOlderButton then
+		if hasOlder then self.historyOlderButton:Show()
+		else self.historyOlderButton:Hide() end
+	end
+	if self.historyNewerButton then
+		if offset > 0 then self.historyNewerButton:Show()
+		else self.historyNewerButton:Hide() end
+	end
+	if self.historyLatestButton then
+		if offset > 0 then self.historyLatestButton:Show()
+		else self.historyLatestButton:Hide() end
+	end
+	if wasShown ~= shouldShow then self:RefreshTransientMessageLayout(true) end
+end
+
+function Dock:StepHistoryPage(direction)
+	local total = math.max(0, math.floor(tonumber(self.historyEligibleCount) or 0))
+	local offset = math.max(0, math.floor(tonumber(self.historyPageOffset) or 0))
+	local nextOffset
+	if direction > 0 then
+		local step = offset == 0 and math.max(HISTORY_PAGE_SIZE, #(self.displayRecords or {}))
+			or HISTORY_PAGE_SIZE
+		nextOffset = math.min(math.max(0, total - 1), offset + step)
+	else
+		nextOffset = math.max(0, offset - HISTORY_PAGE_SIZE)
+	end
+	if nextOffset == offset then return false end
+	local pending = math.max(0, math.floor(tonumber(self.pendingVisible) or 0))
+	self.historyPageOffset = nextOffset
+	self:RebuildActiveView()
+	if direction < 0 then
+		-- Land at the oldest visible lines of the newer page, adjacent to the
+		-- page the reader just left. SetScrollOffset uses native visual rows.
+		local _, geometry = self:GetVisibleDisplayRecordEntries()
+		local maximum = geometry and math.max(0, geometry.totalLines - geometry.capacity) or 0
+		if self.display.SetScrollOffset then self.display:SetScrollOffset(maximum) end
+		self.pendingVisible = pending
+		self:RefreshNewMessageIndicator()
+		self:HandleDisplayViewportChanged()
+	end
+	self:ScheduleMessageBlockActionRefresh()
+	return true
+end
+
 function Dock:RebuildActiveView(alignmentRecords, skipVisibleAlignmentRefresh)
 	if not self.display or not addon.MessageEngine then
 		return
@@ -4677,13 +4762,20 @@ function Dock:RebuildActiveView(alignmentRecords, skipVisibleAlignmentRefresh)
 	self:ClearDisplayRecordCache()
 	local messages = addon.MessageEngine:GetMessages(self.activeView)
 	local settings = addon:GetSmartSettings()
-	local startIndex = math.max(1, #messages - 399)
-	local visibleRecords = {}
-	for index = startIndex, #messages do
+	local eligibleRecords = {}
+	for index = 1, #messages do
 		local record = messages[index]
 		if not self:IsLocallyIgnored(record, settings) and self:IsRecordAllowedInView(self.activeView, record, settings) then
-			table.insert(visibleRecords, record)
+			table.insert(eligibleRecords, record)
 		end
+	end
+	self.historyPageOffset = math.min(math.max(0, math.floor(tonumber(self.historyPageOffset) or 0)),
+		math.max(0, #eligibleRecords - 1))
+	local pageLast = #eligibleRecords - self.historyPageOffset
+	local pageFirst = math.max(1, pageLast - HISTORY_PAGE_SIZE + 1)
+	local visibleRecords = {}
+	for index = pageFirst, pageLast do
+		table.insert(visibleRecords, eligibleRecords[index])
 	end
 	local metricRecords = visibleRecords
 	if visibleOnly and type(alignmentRecords) == "table" and #alignmentRecords > 0 then
@@ -4706,11 +4798,12 @@ function Dock:RebuildActiveView(alignmentRecords, skipVisibleAlignmentRefresh)
 		self:AppendDisplayRecord(record)
 	end
 	self.rebuildingDisplay = false
+	self:RefreshHistoryPager(#eligibleRecords)
 	self.displayRecordViewId = self.activeView
 	self.display:ScrollToBottom()
 	self:RefreshMessageBands()
 	self:RefreshMessageScrollbar()
-	self:ClearPendingMessages()
+	if self.historyPageOffset == 0 then self:ClearPendingMessages() end
 	self:UpdateEmptyState(#visibleRecords)
 	if visibleOnly and not skipVisibleAlignmentRefresh then
 		self:RefreshVisibleAlignment()
@@ -4736,6 +4829,7 @@ function Dock:SelectView(viewId)
 		self:HideComposerRouteMenu()
 	end
 	self.activeView = viewId
+	self.historyPageOffset = 0
 	settings.dock.activeView = viewId
 	self.unread[viewId] = 0
 	local definition = self:GetActiveDefinition()
@@ -4764,55 +4858,67 @@ function Dock:OnMessage(record)
 	end
 
 	if self:RecordBelongsToView(self.activeView, record, settings) then
-		local wasAtBottom = self.display:AtBottom()
-		local visibleOnly = self:IsAlignmentVisibleOnly()
-			and (self:IsSourceColumnAlignmentEnabled() or self:IsSenderColumnAlignmentEnabled())
-		local requiresColumnRebuild = false
-		if visibleOnly then
-			-- Append first using the current viewport metrics. An offscreen incoming
-			-- record must not widen a scrolled-up reader's visible columns; an at-
-			-- bottom record becomes visible and is recomputed from exact line spans.
-			self:AppendDisplayRecord(record)
-		else
-			local sourceLabel = (self:IsResponsiveMetadataEnabled()
-				or self:IsSourceColumnAlignmentEnabled()
-				or self:IsSenderColumnAlignmentEnabled()) and Presentation:GetSource(record) or nil
-			local sourceWidthChanged = false
-			if sourceLabel then
-				sourceWidthChanged = self:TrackActiveSourceColumnLabel(sourceLabel)
-			end
-			if record.timestamp and record.timestamp ~= "" then
-				self.activeHasTimestamp = true
-				self.activeTimestampColumnWidth = math.max(
-					tonumber(self.activeTimestampColumnWidth) or RESPONSIVE_TIMESTAMP_CHARACTER_FALLBACK,
-					#tostring(record.timestamp), RESPONSIVE_TIMESTAMP_CHARACTER_FALLBACK)
-			end
-			if record.event ~= nil and tostring(Presentation:GetSource(record) or "") ~= "" then
-				self.activeHasSource = true
-			end
-			if record.sender and record.sender ~= "" then
-				self.activeHasSender = true
-				self.activeSenderColumnLongest = math.max(tonumber(self.activeSenderColumnLongest) or 0,
-					presentationColumnCount(record.sender) + 2)
-			end
-			local responsiveLayoutChanged = self:ResolveActiveResponsiveMetadata()
-			requiresColumnRebuild = sourceWidthChanged or responsiveLayoutChanged
-			if requiresColumnRebuild then
-				-- Initialize or grow the current tab's lane before a live message is
-				-- appended. Rebuilding moves existing lines together, so the divider
-				-- remains stable within the tab from the first visible line onward.
-				self:RebuildActiveView()
-			else
-				self:AppendDisplayRecord(record)
-			end
-		end
-		self.emptyState:Hide()
-		if wasAtBottom or requiresColumnRebuild then
-			self.display:ScrollToBottom()
-			self:HandleDisplayViewportChanged()
-		else
+		self.historyEligibleCount = math.max(0,
+			math.floor(tonumber(self.historyEligibleCount) or 0)) + 1
+		if (self.historyPageOffset or 0) > 0 then
+			-- New chat must not be appended out of order to an older history page.
+			-- Advancing the offset anchors that page to the same logical records.
+			self.historyPageOffset = self.historyPageOffset + 1
+			self:RefreshHistoryPager(self.historyEligibleCount)
 			self.pendingVisible = (self.pendingVisible or 0) + 1
 			self:RefreshNewMessageIndicator()
+		else
+			local wasAtBottom = self.display:AtBottom()
+			local visibleOnly = self:IsAlignmentVisibleOnly()
+				and (self:IsSourceColumnAlignmentEnabled() or self:IsSenderColumnAlignmentEnabled())
+			local requiresColumnRebuild = false
+			if visibleOnly then
+				-- Append first using the current viewport metrics. An offscreen incoming
+				-- record must not widen a scrolled-up reader's visible columns; an at-
+				-- bottom record becomes visible and is recomputed from exact line spans.
+				self:AppendDisplayRecord(record)
+			else
+				local sourceLabel = (self:IsResponsiveMetadataEnabled()
+					or self:IsSourceColumnAlignmentEnabled()
+					or self:IsSenderColumnAlignmentEnabled()) and Presentation:GetSource(record) or nil
+				local sourceWidthChanged = false
+				if sourceLabel then
+					sourceWidthChanged = self:TrackActiveSourceColumnLabel(sourceLabel)
+				end
+				if record.timestamp and record.timestamp ~= "" then
+					self.activeHasTimestamp = true
+					self.activeTimestampColumnWidth = math.max(
+						tonumber(self.activeTimestampColumnWidth) or RESPONSIVE_TIMESTAMP_CHARACTER_FALLBACK,
+						#tostring(record.timestamp), RESPONSIVE_TIMESTAMP_CHARACTER_FALLBACK)
+				end
+				if record.event ~= nil and tostring(Presentation:GetSource(record) or "") ~= "" then
+					self.activeHasSource = true
+				end
+				if record.sender and record.sender ~= "" then
+					self.activeHasSender = true
+					self.activeSenderColumnLongest = math.max(tonumber(self.activeSenderColumnLongest) or 0,
+						presentationColumnCount(record.sender) + 2)
+				end
+				local responsiveLayoutChanged = self:ResolveActiveResponsiveMetadata()
+				requiresColumnRebuild = sourceWidthChanged or responsiveLayoutChanged
+				if requiresColumnRebuild then
+					-- Initialize or grow the current tab's lane before a live message is
+					-- appended. Rebuilding moves existing lines together, so the divider
+					-- remains stable within the tab from the first visible line onward.
+					self:RebuildActiveView()
+				else
+					self:AppendDisplayRecord(record)
+				end
+			end
+			self.emptyState:Hide()
+			if wasAtBottom or requiresColumnRebuild then
+				self.display:ScrollToBottom()
+				self:HandleDisplayViewportChanged()
+			else
+				self.pendingVisible = (self.pendingVisible or 0) + 1
+				self:RefreshNewMessageIndicator()
+			end
+			self:RefreshHistoryPager(self.historyEligibleCount)
 		end
 	end
 
@@ -5869,7 +5975,7 @@ function Dock:TrackAndSuppressNativeFrame(frame)
 		self.nativeFrameHooks = self.nativeFrameHooks or {}
 		if not self.nativeFrameHooks[frame] and frame.HookScript then
 			frame:HookScript("OnShow", function(shownFrame)
-				if Dock.active and Dock.nativeSnapshot then
+				if Dock.active and Dock.nativeSnapshot and not Dock.nativeRestoring then
 					local tracked = Dock.nativeSnapshotByFrame and Dock.nativeSnapshotByFrame[shownFrame]
 					if tracked then
 						tracked.shown = true
@@ -5878,7 +5984,8 @@ function Dock:TrackAndSuppressNativeFrame(frame)
 				end
 			end)
 			frame:HookScript("OnHide", function(hiddenFrame)
-				if Dock.active and Dock.nativeSnapshot and Dock.suppressingNativeFrame ~= hiddenFrame then
+				if Dock.active and Dock.nativeSnapshot and not Dock.nativeRestoring
+					and Dock.suppressingNativeFrame ~= hiddenFrame then
 					local tracked = Dock.nativeSnapshotByFrame and Dock.nativeSnapshotByFrame[hiddenFrame]
 					if tracked then
 						tracked.shown = false
@@ -5895,7 +6002,7 @@ function Dock:HideNativeChat()
 	-- Never leave the player without a chat surface. In particular, a hidden
 	-- Smart Dock must restore Blizzard chat even when this preference is on.
 	if not self.active or not self.frame or not self.frame:IsShown()
-		or self.visibleState == false then
+		or self.visibleState == false or self.nativeSafetyFallback then
 		return
 	end
 	if self.nativeSnapshot or not addon:GetSmartSettings().dock.hideNativeChat then
@@ -5920,11 +6027,53 @@ end
 function Dock:SyncNativeChatVisibility()
 	local settings = addon:GetSmartSettings()
 	if self.active and self.frame and self.frame:IsShown()
-		and self.visibleState ~= false and settings.dock.hideNativeChat then
-		self:HideNativeChat()
+		and self.visibleState ~= false and settings.dock.hideNativeChat
+		and not self.nativeSafetyFallback then
+		return self:HideNativeChat()
 	else
-		self:RestoreNativeChat()
+		return self:RestoreNativeChat()
 	end
+end
+
+-- Retail can temporarily withhold message contents from addons. Keep the
+-- player's hide-native preference intact, but reveal Blizzard chat while
+-- Chatty cannot verify that it has captured every line.
+function Dock:SetNativeSafetyFallback(active)
+	active = active and true or false
+	if self.nativeSafetyFallback == active
+		and (not active or not self.nativeFallbackActivationFailed) then
+		return self.nativeFallbackActivationFailed ~= true
+	end
+	self.nativeSafetyFallback = active
+	-- Showing protected Blizzard frames may itself be refused in combat. Keep
+	-- the failure visible to recovery diagnostics instead of claiming safety.
+	local ok, restored = pcall(self.SyncNativeChatVisibility, self)
+	local succeeded = ok and restored ~= false
+	if active then
+		-- Smart Dock normally sits above Blizzard's chat frames. Raise only the
+		-- native transcript while it is the safety surface, then restore its
+		-- original layering when ordinary capture resumes.
+		self.nativeFallbackStrata = {}
+		for index = 1, (tonumber(NUM_CHAT_WINDOWS) or 0) do
+			local frame = _G["ChatFrame" .. index]
+			if frame and frame.IsShown and frame:IsShown()
+				and frame.GetFrameStrata and frame.SetFrameStrata then
+				self.nativeFallbackStrata[#self.nativeFallbackStrata + 1] = {
+					frame = frame, strata = frame:GetFrameStrata(),
+				}
+				if not pcall(frame.SetFrameStrata, frame, "HIGH") then
+					succeeded = false
+				end
+			end
+		end
+	else
+		for _, entry in ipairs(self.nativeFallbackStrata or {}) do
+			pcall(entry.frame.SetFrameStrata, entry.frame, entry.strata)
+		end
+		self.nativeFallbackStrata = nil
+	end
+	self.nativeFallbackActivationFailed = active and not succeeded or false
+	return succeeded
 end
 
 -- The Social/Friends micro button is not part of the native chat frame, so it
@@ -5987,7 +6136,8 @@ end
 
 function Dock:SuppressTemporaryChatFrame(frame)
 	if not self.active or not frame or not self.frame or not self.frame:IsShown()
-		or self.visibleState == false or not addon:GetSmartSettings().dock.hideNativeChat then
+		or self.visibleState == false or self.nativeSafetyFallback
+		or not addon:GetSmartSettings().dock.hideNativeChat then
 		return
 	end
 	if not self.nativeSnapshot then
@@ -6023,26 +6173,36 @@ end
 
 function Dock:RestoreNativeChat()
 	if not self.nativeSnapshot then
-		return
+		return true
 	end
-	-- Clear suppression state before showing anything. The permanent OnShow
-	-- hooks consult nativeSnapshot; leaving it set during this loop would make
-	-- an active Dock immediately hide every frame we are trying to restore.
+	-- Keep the snapshot until every protected frame is restored. Retail may
+	-- refuse Show/Hide during lockdown; a partial restore must be retryable.
+	-- The hooks ignore our own restore pass so they cannot immediately suppress
+	-- a frame we are bringing back.
 	local snapshot = self.nativeSnapshot
-	self.nativeSnapshot = nil
-	self.nativeSnapshotByFrame = nil
+	local succeeded = true
+	self.nativeRestoring = true
 	for index = 1, #snapshot do
 		local data = snapshot[index]
-		data.frame:SetAlpha(data.alpha)
-		if data.mouseEnabled ~= nil and data.frame.EnableMouse then
-			data.frame:EnableMouse(data.mouseEnabled)
-		end
-		if data.shown then
-			data.frame:Show()
-		else
-			data.frame:Hide()
-		end
+		local ok = pcall(function()
+			data.frame:SetAlpha(data.alpha)
+			if data.mouseEnabled ~= nil and data.frame.EnableMouse then
+				data.frame:EnableMouse(data.mouseEnabled)
+			end
+			if data.shown then
+				data.frame:Show()
+			else
+				data.frame:Hide()
+			end
+		end)
+		if not ok then succeeded = false end
 	end
+	self.nativeRestoring = nil
+	if succeeded then
+		self.nativeSnapshot = nil
+		self.nativeSnapshotByFrame = nil
+	end
+	return succeeded
 end
 
 function Dock:IsVisible()
@@ -6844,6 +7004,13 @@ function Dock:DiscardPartialBuild()
 	self.messageScrollbar = nil
 	self.scrollToBottomButton = nil
 	self.scrollToBottomGlyph = nil
+	self.historyPager = nil
+	self.historyOlderButton = nil
+	self.historyNewerButton = nil
+	self.historyLatestButton = nil
+	self.historyPagerAvailable = nil
+	self.historyPageOffset = nil
+	self.historyEligibleCount = nil
 	self.transientMessageTopInset = nil
 	self.transientMessageBottomInset = nil
 	self.transientMessageRightInset = nil
@@ -8494,7 +8661,7 @@ function Dock:Build()
 			display:ScrollDown()
 		end
 		Dock:HandleDisplayViewportChanged()
-		if display:AtBottom() then
+		if (Dock.historyPageOffset or 0) == 0 and display:AtBottom() then
 			Dock:ClearPendingMessages()
 		end
 		Dock:ScheduleMessageBlockActionRefresh()
@@ -8522,6 +8689,32 @@ function Dock:Build()
 	empty:SetText("No messages yet.")
 	self.emptyState = empty
 
+	-- This reserved strip appears only when a tab has more retained history
+	-- than the native message frame should render in one bounded page.
+	local historyPager = CreateFrame("Frame", nil, content)
+	historyPager:SetHeight(HISTORY_PAGER_HEIGHT)
+	historyPager:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -4)
+	historyPager:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_DISPLAY_INSET, -4)
+	historyPager:SetFrameLevel(content:GetFrameLevel() + 17)
+	local olderButton = Theme:CreateButton(historyPager, "Older messages", 98, 18, false)
+	olderButton:SetPoint("LEFT", historyPager, "LEFT", 0, 0)
+	olderButton:SetScript("OnClick", function() Dock:StepHistoryPage(1) end)
+	local newerButton = Theme:CreateButton(historyPager, "Newer messages", 100, 18, false)
+	newerButton:SetPoint("LEFT", olderButton, "RIGHT", 4, 0)
+	newerButton:SetScript("OnClick", function() Dock:StepHistoryPage(-1) end)
+	local latestButton = Theme:CreateButton(historyPager, "Latest", 52, 18, false)
+	latestButton:SetPoint("RIGHT", historyPager, "RIGHT", 0, 0)
+	latestButton:SetScript("OnClick", function() Dock:ScrollMessageDisplayToBottom() end)
+	historyPager:Hide()
+	olderButton:Hide()
+	newerButton:Hide()
+	latestButton:Hide()
+	self.historyPager = historyPager
+	self.historyOlderButton = olderButton
+	self.historyNewerButton = newerButton
+	self.historyLatestButton = latestButton
+	self:BindHeaderHover(historyPager)
+
 	local messageScrollbar = Theme:CreateSlimScrollbar(content)
 	messageScrollbar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
 		-MESSAGE_SCROLLBAR_VERTICAL_INSET)
@@ -8534,7 +8727,9 @@ function Dock:Build()
 	messageScrollbar:SetScript("OnMouseWheel", function(_, delta)
 		if delta > 0 then display:ScrollUp() else display:ScrollDown() end
 		Dock:HandleDisplayViewportChanged()
-		if display:AtBottom() then Dock:ClearPendingMessages() end
+		if (Dock.historyPageOffset or 0) == 0 and display:AtBottom() then
+			Dock:ClearPendingMessages()
+		end
 		Dock:ScheduleMessageBlockActionRefresh()
 	end)
 	self.messageScrollbar = messageScrollbar

@@ -189,12 +189,19 @@ assert(addon:SetMessageRouteOverride(routed, "trade"),
 assert(routed.view == "trade" and routed.views.trade == true
 	and routed.views.groupFinder == nil and routed.views.general == nil,
 	"manual correction did not replace classifier-owned membership")
-assert(engine:GetMessages("general")[1] == routed
+assert(#engine:GetMessages("general") == 0
 	and engine:GetMessages("trade")[1] == routed
 	and engine:GetMessages(sourceFeed.id)[1] == routed
 	and engine.count == 1
 	and settings.history.sources["channel:ascension"].count == 1,
-	"manual route did not preserve additive source views around one record")
+	"Trade route remained in General without an explicit source mirror")
+assert(addon:SetViewSourceEnabled("general", "channel:ascension", true)
+	and settings.viewOptions.general.sources["channel:ascension"] == true
+	and engine:GetMessages("general")[1] == routed,
+	"explicit General Contents check did not mirror the Trade-routed message")
+assert(addon:ResetViewSources("general")
+	and #engine:GetMessages("general") == 0,
+	"reset did not restore Trade-only routing in General")
 
 before = rebuilds
 assert(addon:ResetViewSources(sourceFeed.id),
@@ -215,7 +222,7 @@ local syncRecord = engine.historyTail
 assert(syncRecord and syncRecord.isSync and syncRecord.view == "sync"
 	and engine:GetMessages("sync")[1] == syncRecord,
 	"known protocol record did not enter its Sync home")
-assert(#engine:GetMessages("general") == 1
+assert(#engine:GetMessages("general") == 0
 	and #engine:GetMessages(sourceFeed.id) == 0
 	and addon:IsRecordIncludedBySource("general", syncRecord, settings) == false
 	and addon:IsRecordIncludedBySource(sourceFeed.id, syncRecord, settings) == false,

@@ -39,7 +39,7 @@ assert(box.chatType == "WHISPER" and box.tellTarget == "RetailFriend"
 	"Retail composer did not use current edit-box methods")
 assert(dock:CaptureComposerRouteFromEditBox(), "Retail route could not be read back")
 
-local native = { shown = true, alpha = 1, mouse = true }
+local native = { shown = true, alpha = 1, mouse = true, strata = "LOW" }
 function native:IsShown() return self.shown end
 function native:GetAlpha() return self.alpha end
 function native:IsMouseEnabled() return self.mouse end
@@ -48,6 +48,8 @@ function native:EnableMouse(value) self.mouse = value end
 function native:Hide() self.shown = false end
 function native:Show() self.shown = true end
 function native:HookScript() end
+function native:GetFrameStrata() return self.strata end
+function native:SetFrameStrata(value) self.strata = value end
 ChatFrame1 = native
 NUM_CHAT_WINDOWS = 1
 local settings = { dock = { hideNativeChat = true } }
@@ -70,10 +72,32 @@ assert(native.shown, "turning off native-chat hiding did not keep Blizzard chat 
 settings.dock.hideNativeChat = true
 dock:SyncNativeChatVisibility()
 assert(not native.shown, "turning native-chat hiding back on did not apply")
+dock:SetNativeSafetyFallback(true)
+assert(native.shown and native.strata == "HIGH" and dock.nativeSnapshot == nil,
+	"restricted Retail chat did not reveal Blizzard's safety fallback")
+dock:SyncNativeChatVisibility()
+assert(native.shown, "ordinary visibility sync hid the active safety fallback")
+dock:SetNativeSafetyFallback(false)
+assert(not native.shown and native.strata == "LOW" and dock.nativeSnapshot,
+	"successful catch-up did not restore the player's hide-native preference")
 shown = false
 dock:SyncNativeChatVisibility()
 assert(native.shown, "a hidden Smart Dock left Blizzard chat hidden")
 dock:SuppressTemporaryChatFrame({})
 assert(dock.nativeSnapshot == nil, "hidden Smart Dock suppressed temporary chat")
+
+shown = true
+dock:SyncNativeChatVisibility()
+assert(dock.nativeSnapshot and not native.shown, "retry setup did not hide native chat")
+local normalShow = native.Show
+native.Show = function() error("protected while locked down") end
+assert(dock:SetNativeSafetyFallback(true) == false
+	and dock.nativeFallbackActivationFailed and dock.nativeSnapshot,
+	"a protected-frame failure must retain a retryable snapshot")
+native.Show = normalShow
+assert(dock:SetNativeSafetyFallback(true) == true and native.shown
+	and dock.nativeSnapshot == nil and not dock.nativeFallbackActivationFailed,
+	"native safety fallback did not retry after the protected-frame failure")
+dock:SetNativeSafetyFallback(false)
 
 print("Retail chat safety mock tests passed")

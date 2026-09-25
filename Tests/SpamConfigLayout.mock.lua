@@ -98,6 +98,8 @@ local settings = {
 			enabled = true, window = 12, allowedCopies = 1, minimumLength = 4, muteAfter = 3,
 			caseInsensitive = true, collapseWhitespace = true, stripFormatting = true, ignorePunctuation = false,
 		},
+		repeatAds = { enabled = true, window = 86400, maxCopies = 4,
+			minimumGap = 3600, minimumLength = 18 },
 		burst = { enabled = true, window = 6, limit = 6, muteDuration = 15 },
 		scopes = { channel = true, ["local"] = true, guild = true, group = true, whisper = true, bnet = true },
 		escalation = { enabled = true, mutesBeforeBan = 3, strikeWindow = 1800 },
@@ -163,7 +165,8 @@ assert(config.spamSection == "filters" and config.spamFiltersPane:IsShown()
 	and not config.spamBansPane:IsShown(),
 	"Spam Firewall did not open on FILTERS")
 assert(config.spamFilterMode == "protections" and config.spamFilterSubPanes.protections:IsShown()
-	and not config.spamFilterSubPanes.matching:IsShown() and not config.spamFilterSubPanes.chats:IsShown(),
+	and not config.spamFilterSubPanes.matching:IsShown() and not config.spamFilterSubPanes.chats:IsShown()
+	and not config.spamFilterSubPanes.ads:IsShown(),
 	"FILTERS did not open on the two core protections")
 for _, pane in pairs(config.spamFilterSubPanes) do
 	assert(pane.point[4] == 0 and pane.point[5] == -32 and pane.width == 636 and pane.height == 300,
@@ -199,6 +202,23 @@ end
 config.spamScopeToggles.channel:SetValue(false)
 assert(settings.spam.scopes.channel == false,
 	"PROTECTED CHATS did not persist through the existing scope setting path")
+
+config.spamFilterSubButtons.ads.scripts.OnClick()
+assert(config.spamFilterMode == "ads" and config.spamFilterSubPanes.ads:IsShown()
+	and not config.spamFilterSubPanes.chats:IsShown(),
+	"SALE ADS did not replace the previous filter pane")
+assert(config.spamRepeatAdToggle.parent == config.spamFilterSubPanes.ads,
+	"sale-ad protection toggle leaked outside its pane")
+for _, edit in pairs(config.spamRepeatAdNumberEdits) do
+	assert(edit.parent == config.spamFilterSubPanes.ads,
+		"sale-ad limit leaked outside its pane")
+end
+config.spamRepeatAdNumberEdits.maxCopies:SetText("6")
+config.spamRepeatAdNumberEdits.maxCopies.scripts.OnEditFocusLost(config.spamRepeatAdNumberEdits.maxCopies)
+config.spamRepeatAdNumberEdits.minimumGap:SetText("2")
+config.spamRepeatAdNumberEdits.minimumGap.scripts.OnEditFocusLost(config.spamRepeatAdNumberEdits.minimumGap)
+assert(settings.spam.repeatAds.maxCopies == 6 and settings.spam.repeatAds.minimumGap == 7200,
+	"sale-ad controls did not persist numeric settings in clear units")
 
 config.spamBansButton.scripts.OnClick()
 assert(config.spamSection == "bans" and config.spamBansPane:IsShown()

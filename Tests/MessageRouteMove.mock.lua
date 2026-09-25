@@ -2,8 +2,8 @@
 -- the addon root with: lua Tests/MessageRouteMove.mock.lua
 --
 -- The real Settings and MessageEngine modules are loaded together here. A
--- manual correction changes the primary route, while the record remains in its
--- factual source home and any explicitly checked source feeds. Membership is
+-- manual correction changes the primary route. Trade leaves General by
+-- default, while an explicitly checked source feed may still mirror it. Membership is
 -- a read-time union: all visible copies must still be one stored record.
 
 local now = 100
@@ -95,8 +95,8 @@ local function assertSameStoredRecord(record, detail)
 	local general = engine:GetMessages("general")
 	local trade = engine:GetMessages("trade")
 	local source = engine:GetMessages(sourceView.id)
-	assert(general[#general] == record and trade[#trade] == record and source[#source] == record,
-		detail .. " was copied instead of shared across additive view membership")
+	assert(#general == 0 and trade[#trade] == record and source[#source] == record,
+		detail .. " leaked into General or was copied across additive view membership")
 end
 
 capture("Saffron memo")
@@ -106,7 +106,7 @@ assert(original and original.views[sourceView.id] and original.views[bodyView.id
 
 assert(addon:SetMessageRouteOverride(original, "trade"),
 	"manual Trade correction was rejected")
-assert(rebuilds == 1 and lastRebuild.general == 1 and lastRebuild.trade == 1
+assert(rebuilds == 1 and lastRebuild.general == 0 and lastRebuild.trade == 1
 	and lastRebuild.source == 1 and lastRebuild.body == 0 and engine.count == 1,
 	"manual move did not synchronously rebuild the primary route plus additive feeds")
 assertPrimaryTrade(original, "original message")
@@ -117,9 +117,9 @@ assertSameStoredRecord(original, "original message")
 capture("  SAFFRON   MEMO  ")
 local tradeMessages = engine:GetMessages("trade")
 assert(#tradeMessages == 2, "normalized future copy did not inherit the saved Trade correction")
-assert(#engine:GetMessages("general") == 2 and #engine:GetMessages(sourceView.id) == 2
+assert(#engine:GetMessages("general") == 0 and #engine:GetMessages(sourceView.id) == 2
 	and #engine:GetMessages(bodyView.id) == 0 and engine.count == 2,
-	"future corrected message lost its source home/feed or duplicated storage")
+	"future corrected message leaked into General or lost its explicit source feed")
 assertPrimaryTrade(tradeMessages[2], "normalized future copy")
 assertSameStoredRecord(tradeMessages[2], "normalized future copy")
 
@@ -127,9 +127,9 @@ assertSameStoredRecord(tradeMessages[2], "normalized future copy")
 -- source-owned history must consult the separately saved exact correction.
 engine:ResetForProfile()
 tradeMessages = engine:GetMessages("trade")
-assert(#tradeMessages == 2 and #engine:GetMessages("general") == 2
+assert(#tradeMessages == 2 and #engine:GetMessages("general") == 0
 	and #engine:GetMessages(sourceView.id) == 2 and engine.count == 2,
-	"persisted history did not restore the primary route and additive source views")
+	"persisted history did not restore exclusive Trade routing and source feeds")
 for index = 1, #tradeMessages do
 	assertPrimaryTrade(tradeMessages[index], "restored message " .. tostring(index))
 end
@@ -159,10 +159,14 @@ assert(automatic.views[sourceView.id] == nil,
 	"source-name custom match mirrored an automatic Trade message")
 assert(automatic.views[bodyView.id] == true,
 	"deliberate body-text custom match was lost during automatic Trade routing")
-assert(engine:GetMessages("general")[3] == automatic
+assert(#engine:GetMessages("general") == 2
 	and engine:GetMessages(sourceView.id)[3] == automatic
 	and engine:GetMessages(bodyView.id)[3] == automatic
 	and engine.count == 3,
-	"semantic route did not union source home, checked feed, and body match around one record")
+	"semantic Trade route leaked into General or lost explicit custom feeds")
+assert(addon:SetViewSourceEnabled("general", "channel:ascension", true)
+	and addon:GetSmartSettings().viewOptions.general.sources["channel:ascension"] == true
+	and engine:GetMessages("general")[3] == automatic,
+	"explicit General Contents choice failed to mirror a Trade advertisement")
 
 print("Message route move integration mock passed")

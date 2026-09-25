@@ -41,8 +41,10 @@ Core\ChatColors.lua
 Core\Compatibility.lua
 Providers\Ascension.lua
 Core\SpamControl.lua
+Core\WhisperGuard.lua
 Core\BlockControl.lua
 Core\MessageEngine.lua
+Core\ChatRecovery.lua
 Core\KeywordSuggestions.lua
 Core\Alerts.lua
 Core\Presentation.lua

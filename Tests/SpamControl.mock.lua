@@ -395,4 +395,21 @@ assert(select(1, control:OnChatFilter(
 	nil, nil, nil, nil, nil, nil, nil, nil, 55
 )) == true, "positive Battle.net identity did not remain a valid local ban")
 
+-- Retail may hand native filters inaccessible chat values during messaging
+-- lockdown. The firewall must pass that line through without reading it or
+-- adding a misleading block/allow decision to its statistics.
+local inaccessible = {}
+local previousCanAccess = _G.canaccessvalue
+_G.canaccessvalue = function(value)
+	return value ~= inaccessible
+end
+local processedBeforeRestricted = control:GetStats().processed
+assert(select(1, control:OnChatFilter(
+	primaryFrame, "CHAT_MSG_CHANNEL", inaccessible, "AnotherPlayer", nil,
+	"General", nil, nil, nil, 1, "General"
+)) == false, "inaccessible Retail payload was not passed through safely")
+assert(control:GetStats().processed == processedBeforeRestricted,
+	"inaccessible Retail payload was evaluated by the firewall")
+_G.canaccessvalue = previousCanAccess
+
 print("SpamControl mock tests passed")

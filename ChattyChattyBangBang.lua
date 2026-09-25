@@ -418,6 +418,9 @@ local ACD3 = LibStub("AceConfigDialog-3.0")
 function ChattyChattyBangBang:OnInitialize()
 	self.Diagnostics = _G.ChattyChattyBangBangDiagnostics
 	if self.Diagnostics then self.Diagnostics:Mark("core-initialize", "loading") end
+	-- AceDB fills defaults before Settings can inspect the profile. Remember
+	-- whether this was a genuinely new install for the one-time guided setup.
+	self._freshInstall = type(_G.ChattyChattyBangBangDB) ~= "table"
 	self.db = LibStub("AceDB-3.0"):New("ChattyChattyBangBangDB", defaults, "Default")
 	if self.GetSmartSettings then
 		self:GetSmartSettings()
@@ -498,6 +501,7 @@ function ChattyChattyBangBang:OnInitialize()
 	end
 	
 	self:RegisterChatCommand("ChattyChattyBangBang", "OpenConfig")
+	self:RegisterChatCommand("ccbbw", "WhisperGuardCommand")
 	
 	self.db.RegisterCallback(self, "OnProfileChanged", "SetUpdateConfig")
 	self.db.RegisterCallback(self, "OnProfileCopied", "SetUpdateConfig")
@@ -596,6 +600,10 @@ function ChattyChattyBangBang:OpenConfig(input)
 	if self.IsEnabled and not self:IsEnabled() then
 		return
 	end
+	local firstWord = type(input) == "string" and string.match(string.lower(input), "^%s*(%S+)") or nil
+	if firstWord == "whisper" or firstWord == "whispers" then
+		return self:WhisperGuardCommand(string.gsub(input, "^%s*%S+%s*", "", 1))
+	end
 	if self.CustomConfig then
 		self.CustomConfig:Open()
 		return
@@ -610,6 +618,14 @@ function ChattyChattyBangBang:OpenConfig(input)
 		options.args.defaultArgs.guiHidden = false
 		InterfaceOptionsFrame_OpenToCategory(optFrame)
 	end
+end
+
+function ChattyChattyBangBang:WhisperGuardCommand(input)
+	if self.WhisperGuard then
+		return self.WhisperGuard:HandleCommand(input)
+	end
+	self:Print("Whisper quarantine is unavailable in this build.")
+	return false
 end
 
 do
@@ -648,6 +664,9 @@ function ChattyChattyBangBang:UpdateConfig()
 	end
 	if self.ConversationWindows and self.ConversationWindows.ResetForProfile then
 		self.ConversationWindows:ResetForProfile()
+	end
+	if self.WhisperGuard and self.WhisperGuard.ResetForProfile then
+		self.WhisperGuard:ResetForProfile()
 	end
 	if self.SpamControl and self.SpamControl.ResetForProfile then
 		self.SpamControl:ResetForProfile()
@@ -705,6 +724,9 @@ function ChattyChattyBangBang:OnEnable()
 		self.SpamControl:Initialize()
 		self.SpamControl:SetEnabled(self:GetSmartSettings().spam.enabled)
 	end
+	if self.WhisperGuard then
+		self.WhisperGuard:Initialize()
+	end
 	if self.BlockControl then
 		self.BlockControl:Initialize()
 		self.BlockControl:SetEnabled(self:GetSmartSettings().blocks.enabled)
@@ -742,10 +764,30 @@ function ChattyChattyBangBang:OnEnable()
 			self.lastConfig = ACD3:AddToBlizOptions("ChattyChattyBangBang", L["Profiles"], "ChattyChattyBangBang", "Profiles")
 		end
 	end
+	if self.ClientAPI:IsRetail() and self.IsConfigSetupCompleted
+		and not self:IsConfigSetupCompleted() and not self._setupOpenedThisSession
+		and self.CustomConfig and self.CustomConfig.OpenSetup then
+		self._setupOpenedThisSession = true
+		local function openSetup()
+			if not self:IsEnabled() or self:IsConfigSetupCompleted() then return end
+			local ok, problem = pcall(self.CustomConfig.OpenSetup, self.CustomConfig)
+			if not ok and self.Diagnostics then
+				self.Diagnostics:Record("setup", problem)
+			end
+		end
+		if _G.C_Timer and type(_G.C_Timer.After) == "function" then
+			_G.C_Timer.After(0.5, openSetup)
+		else
+			openSetup()
+		end
+	end
 end
 
 function ChattyChattyBangBang:OnDisable()
 	self:CancelUpdateConfig()
+	if self.WhisperGuard then
+		self.WhisperGuard:SetEnabled(false)
+	end
 	if self.SpamControl then
 		self.SpamControl:SetEnabled(false)
 	end

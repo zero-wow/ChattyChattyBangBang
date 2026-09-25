@@ -67,6 +67,10 @@ end
 local defaults = {
 	enabled = true,
 	colorway = "Obsidian Dawn",
+	-- The setup desk is intentionally simple on every profile. Existing
+	-- installs are considered set up unless startup explicitly marks a fresh
+	-- SavedVariables database before AceDB fills its defaults.
+	configUI = { mode = "simple", setupCompleted = true },
 	-- Received chat is retained once per physical source (never once per view),
 	-- then restored in its original cross-source order after login or /reload.
 	-- The upper bound is intentionally generous and lazy: a source consumes no
@@ -349,6 +353,17 @@ local defaults = {
 			limit = 6,
 			muteDuration = 15,
 		},
+		-- Only public sale/buy/trade adverts are eligible. Four visible copies
+		-- per rolling day must be at least an hour apart; the bounded ledger
+		-- survives /reload without storing whispers or ordinary conversation.
+		repeatAds = {
+			enabled = true,
+			window = 86400,
+			maxCopies = 4,
+			minimumGap = 3600,
+			minimumLength = 18,
+			seen = {},
+		},
 		escalation = {
 			enabled = true,
 			mutesBeforeBan = 3,
@@ -367,6 +382,15 @@ local defaults = {
 			whisper = false,
 			bnet = false,
 		},
+	},
+	-- First-contact private messages are held outside normal chat history and
+	-- Messenger until the player explicitly approves that correspondent.
+	whisperGuard = {
+		enabled = true,
+		trusted = {},
+		blocked = {},
+		entries = {},
+		nextId = 1,
 	},
 	alerts = {
 		enabled = true,
@@ -2728,6 +2752,14 @@ function addon:IsRecordIncludedBySource(viewId, record, settings)
 		override = options.sources[sourceId]
 	end
 	if override ~= nil then return override == true end
+	-- A sale classified to Trade leaves General by default, even if it was
+	-- posted in a broad public channel whose ordinary conversation lives in G.
+	-- A deliberate positive CONTENTS override above still mirrors the entire
+	-- source, preserving the player's explicit choice.
+	if viewId == "general" and record.event == "CHAT_MSG_CHANNEL"
+		and record.view == "trade" then
+		return false
+	end
 	return isDefaultSourceEnabled(settings, viewId, sourceId, record.sourceGroup)
 end
 
@@ -2755,7 +2787,10 @@ function addon:SetViewSourceEnabled(viewId, sourceId, value)
 	local defaultEnabled = isDefaultSourceEnabled(settings, viewId, sourceId)
 	-- Store only deviations from the clean factual home. A checked non-default
 	-- source is a real positive feed and therefore must persist as true.
-	if value == nil or (value == true) == defaultEnabled then
+	local generalPublicFeed = viewId == "general"
+		and string.find(sourceId, "^channel:") ~= nil
+	if value == nil or ((value == true) == defaultEnabled
+		and not (generalPublicFeed and value == true)) then
 		options.sources[sourceId] = nil
 	else
 		options.sources[sourceId] = value == true
@@ -3634,6 +3669,13 @@ local function normalizeLocalCommandOutput(settings)
 end
 
 local function migrateSmartSettings(settings)
+	local configUI = settings.configUI
+	if type(configUI) ~= "table" then
+		configUI = copy(defaults.configUI)
+		settings.configUI = configUI
+	end
+	if configUI.mode ~= "advanced" then configUI.mode = "simple" end
+	configUI.setupCompleted = configUI.setupCompleted ~= false
 	-- 2.11 renamed the original blue-and-gold palette to describe what it
 	-- actually is.  This is deliberately a migration rather than a reset, so a
 	-- player who chose the old name keeps the exact same colors.
@@ -3815,6 +3857,31 @@ local function migrateSmartSettings(settings)
 	-- the saved key for old profiles, but do not allow a stale false value to
 	-- weaken the current behavior.
 	duplicate.crossChannels = true
+	local repeatAds = spam.repeatAds
+	if type(repeatAds) ~= "table" then
+		repeatAds = copy(defaults.spam.repeatAds)
+		spam.repeatAds = repeatAds
+	end
+	repeatAds.enabled = repeatAds.enabled ~= false
+	repeatAds.window = math.max(3600, math.min(604800,
+		math.floor((tonumber(repeatAds.window) or 86400) + 0.5)))
+	repeatAds.maxCopies = math.max(1, math.min(24,
+		math.floor((tonumber(repeatAds.maxCopies) or 4) + 0.5)))
+	repeatAds.minimumGap = math.max(0, math.min(86400,
+		math.floor((tonumber(repeatAds.minimumGap) or 3600) + 0.5)))
+	repeatAds.minimumLength = math.max(12, math.min(128,
+		math.floor((tonumber(repeatAds.minimumLength) or 18) + 0.5)))
+	if type(repeatAds.seen) ~= "table" then repeatAds.seen = {} end
+	local whisperGuard = settings.whisperGuard
+	if type(whisperGuard) ~= "table" then
+		whisperGuard = copy(defaults.whisperGuard)
+		settings.whisperGuard = whisperGuard
+	end
+	whisperGuard.enabled = whisperGuard.enabled ~= false
+	if type(whisperGuard.trusted) ~= "table" then whisperGuard.trusted = {} end
+	if type(whisperGuard.blocked) ~= "table" then whisperGuard.blocked = {} end
+	if type(whisperGuard.entries) ~= "table" then whisperGuard.entries = {} end
+	whisperGuard.nextId = math.max(1, math.floor(tonumber(whisperGuard.nextId) or 1))
 
 	normalizeBlockSettings(settings)
 	normalizeMessageRouteOverrides(settings)
@@ -3979,8 +4046,40 @@ function addon:GetSmartSettings()
 		migrateViewSourceMembership(profile.smartChat)
 	end
 	migrateSmartSettings(profile.smartChat)
+	-- AceDB has already filled every declared default by this point. Startup
+	-- supplies this one-shot signal from the pre-AceDB SavedVariables global so
+	-- old profiles never get mistaken for a new installation.
+	if self._freshInstall == true then
+		profile.smartChat.configUI.setupCompleted = false
+		self._freshInstall = nil
+	end
 	refreshSyncRoutingCache(self, profile.smartChat)
 	return profile.smartChat
+end
+
+function addon:GetConfigMode()
+	local configUI = self:GetSmartSettings().configUI
+	return type(configUI) == "table" and configUI.mode or "simple"
+end
+
+function addon:SetConfigMode(mode)
+	if mode ~= "simple" and mode ~= "advanced" then
+		return false, "invalid-mode"
+	end
+	if not (self.db and self.db.profile) then return false, "unavailable" end
+	self:GetSmartSettings().configUI.mode = mode
+	return true, mode
+end
+
+function addon:IsConfigSetupCompleted()
+	return self:GetSmartSettings().configUI.setupCompleted == true
+end
+
+function addon:SetConfigSetupCompleted(completed)
+	if type(completed) ~= "boolean" then return false, "boolean-required" end
+	if not (self.db and self.db.profile) then return false, "unavailable" end
+	self:GetSmartSettings().configUI.setupCompleted = completed
+	return true, completed
 end
 
 function addon:GetLocalCommandOutputSettings()

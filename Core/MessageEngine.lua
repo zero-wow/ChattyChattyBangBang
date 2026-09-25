@@ -2575,6 +2575,9 @@ function Engine:ResetForProfile()
 	end
 	self:ReclassifyAll()
 	self:ReapplyBlockRules()
+	-- A profile/history reload may restore a different transcript. Let the next
+	-- over-cap ad reconsider it instead of trusting a prior session-only purge.
+	if addon.SpamControl then addon.SpamControl.repeatAdPurged = {} end
 end
 
 function Engine:ReclassifyAll()
@@ -2645,6 +2648,95 @@ function Engine:GetMessages(viewId)
 		record = record._historyNext
 	end
 	return messages
+end
+
+-- The rolling-day advert ceiling is a threshold, not just a prospective
+-- filter: once reached, older visible copies of this sender's same advert
+-- leave every normal view and the persisted transcript. The firewall supplies
+-- its canonical sender/signature; it never calls this for a gap-only block.
+function Engine:PurgeRepeatAdvertisement(senderKey, signature)
+	local firewall = addon.SpamControl
+	if type(senderKey) ~= "string" or type(signature) ~= "string"
+		or not firewall or type(firewall.MatchesRepeatAdvertisement) ~= "function" then
+		return 0
+	end
+	local selected = {}
+	local count = 0
+	local record = self.historyHead
+	while record do
+		local ok, matches = pcall(firewall.MatchesRepeatAdvertisement,
+			firewall, record, senderKey, signature)
+		if ok and matches then
+			selected[record] = true
+			count = count + 1
+		end
+		record = record._historyNext
+	end
+	if count == 0 then return 0 end
+
+	local dock = addon.SmartDock
+	local unreadRemoved = {}
+	local pendingRemoved = 0
+	if dock then
+		local settings = addon:GetSmartSettings()
+		local function countSelectedTail(viewId, pending)
+			pending = math.max(0, math.floor(tonumber(pending) or 0))
+			if pending == 0 then return 0 end
+			local visible = {}
+			local messages = self:GetMessages(viewId)
+			for index = 1, #messages do
+				local item = messages[index]
+				if not dock.IsLocallyIgnored or not dock:IsLocallyIgnored(item, settings) then
+					visible[#visible + 1] = item
+				end
+			end
+			local removed = 0
+			for index = math.max(1, #visible - pending + 1), #visible do
+				if selected[visible[index]] then removed = removed + 1 end
+			end
+			return removed
+		end
+		for viewId, unread in pairs(dock.unread or {}) do
+			local unreadCount = tonumber(unread)
+			if type(viewId) == "string" and unreadCount and unreadCount > 0 then
+				unreadRemoved[viewId] = countSelectedTail(viewId, unreadCount)
+			end
+		end
+		if type(dock.activeView) == "string" then
+			pendingRemoved = countSelectedTail(dock.activeView, dock.pendingVisible)
+		end
+	end
+
+	local blocks = addon.BlockControl
+	record = self.historyHead
+	while record do
+		if selected[record] and blocks and type(blocks.ArchiveSpamRecord) == "function" then
+			-- Archive first so an unexpected archive error cannot leave a partly
+			-- unlinked normal transcript. OnChatFilter protects this whole call.
+			blocks:ArchiveSpamRecord(record, "repeatAd", signature, senderKey)
+		end
+		record = record._historyNext
+	end
+	record = self.historyHead
+	while record do
+		local nextRecord = record._historyNext
+		if selected[record] then unlinkRuntimeRecord(self, record) end
+		record = nextRecord
+	end
+	if addon:GetSmartSettings().persistHistory then self:RebuildPersistence() end
+	if dock then
+		for viewId, removed in pairs(unreadRemoved) do
+			dock.unread[viewId] = math.max(0, (tonumber(dock.unread[viewId]) or 0) - removed)
+		end
+		dock.pendingVisible = math.max(0, (tonumber(dock.pendingVisible) or 0) - pendingRemoved)
+		if dock.active and type(dock.RebuildActiveViewPreservingScroll) == "function" then
+			dock:RebuildActiveViewPreservingScroll()
+		elseif dock.active and type(dock.RebuildActiveView) == "function" then
+			dock:RebuildActiveView()
+		end
+		if type(dock.RefreshRailState) == "function" then dock:RefreshRailState() end
+	end
+	return count
 end
 
 function Engine:RegisterListener(name, callback)
@@ -2817,6 +2909,13 @@ function Engine:Capture(event, ...)
 		for index = 1, select("#", ...) do
 			local value = select(index, ...)
 			if (canAccess and not canAccess(value)) or (isSecret and isSecret(value)) then
+				if addon.ChatRecovery and addon.ChatRecovery.Queue then
+					addon.ChatRecovery:Queue(event, ...)
+				end
+				if event == "CHAT_MSG_WHISPER" and addon.WhisperGuard
+					and addon.WhisperGuard.MarkUnreadable then
+					addon.WhisperGuard:MarkUnreadable()
+				end
 				if not self.restrictedPayloadSeen then
 					self.restrictedPayloadSeen = true
 					if addon.Diagnostics then
@@ -2827,6 +2926,13 @@ function Engine:Capture(event, ...)
 			end
 		end
 	end
+	return self:CaptureAccessible(event, nil, ...)
+end
+
+-- The recovery path passes only strings and metadata verified accessible
+-- after Retail messaging lockdown. It shares the normal guard, firewall,
+-- classification, and persistence pipeline rather than bypassing policy.
+function Engine:CaptureAccessible(event, recoveredEpoch, ...)
 	local record
 	if event == "CHAT_MSG_ADDON" then
 		-- Add-on traffic has a distinct argument layout, so do not feed it through
@@ -2839,6 +2945,15 @@ function Engine:Capture(event, ...)
 		-- a chat filter incorrectly suppress an important local failure.
 		record = self:NormalizeUIError(...)
 	else
+		-- Quarantine is independent of flood filtering: the first unsolicited
+		-- whisper must not enter normal history, alerts, or Messenger even when
+		-- the Spam Firewall's whisper scope is deliberately turned off.
+		local guard = addon.WhisperGuard
+		if guard and type(guard.ShouldBlockEngineEvent) == "function"
+			and guard:ShouldBlockEngineEvent(event, ...)
+		then
+			return
+		end
 		-- Never replay every global ChatFrame filter here. Several established
 		-- addons use stateful filters (for example ElvUI's throttle): native chat
 		-- has already shown the event once, and a second call makes those filters
@@ -2856,6 +2971,11 @@ function Engine:Capture(event, ...)
 	end
 	if not record then
 		return
+	end
+	if type(recoveredEpoch) == "number" and recoveredEpoch > 0 then
+		record.epoch = recoveredEpoch
+		record.timestamp = date and date("%H:%M", recoveredEpoch) or record.timestamp
+		record.recovered = true
 	end
 	self:TryDeliver(record)
 end
@@ -2895,6 +3015,11 @@ function Engine:SetEnabled(enabled)
 		return
 	end
 	self.enabled = shouldEnable
+	if addon.WhisperGuard and addon.WhisperGuard.SetEnabled then
+		-- Do not hide native whispers when Smart Chat capture is inactive: a
+		-- native-only fallback would have no quarantine review record.
+		addon.WhisperGuard:SetEnabled(shouldEnable)
+	end
 
 	if shouldEnable then
 		self:RefreshLocalCommandCapture()
@@ -2905,6 +3030,9 @@ function Engine:SetEnabled(enabled)
 			pcall(self.frame.RegisterEvent, self.frame, localCommandRefreshEvents[index])
 		end
 	else
+		if addon.ChatRecovery and addon.ChatRecovery.Stop then
+			addon.ChatRecovery:Stop()
+		end
 		self.localCommandCaptureViews = {}
 		self.frame:UnregisterAllEvents()
 	end

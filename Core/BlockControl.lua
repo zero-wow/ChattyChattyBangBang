@@ -547,12 +547,14 @@ local function archiveSenderIdentity(record)
 	return "", label
 end
 
-local function archiveFingerprint(record, rule, senderKey)
+local function archiveFingerprint(record, rule, senderKey, repeatSignature)
 	local text = type(record.normalized) == "string" and record.normalized
 		or string.lower(type(record.text) == "string" and record.text or "")
+	local repeatAd = rule and rule.id == "spam-repeatAd" and type(repeatSignature) == "string"
+	if repeatAd then text = repeatSignature end
 	local parts = {
 		trim(rule and rule.id, 32),
-		normalizeSourceId(record and record.sourceId),
+		repeatAd and "" or normalizeSourceId(record and record.sourceId),
 		normalizeEvent(record and record.event) or "",
 		senderKey or "",
 		trim(text, MAX_ARCHIVE_TEXT_LENGTH),
@@ -1424,15 +1426,17 @@ function addon:ResetBlockStats()
 end
 
 -- The blocked-message archive is deliberately independent from normal chat
--- history.  A player may keep ordinary history disabled while retaining a
--- small, explicitly disclosed review trail for messages hidden by their own
--- manual rules.
-function BlockControl:ArchiveRecord(record, reason, rule)
-	if reason ~= "rule" or type(record) ~= "table" or type(rule) ~= "table" then
-		return nil, "not-manual-rule"
+-- history. A player may keep ordinary history disabled while retaining a
+-- bounded review trail for their rules and the automatic Spam Firewall.
+function BlockControl:ArchiveRecord(record, reason, rule, repeatSignature, repeatSenderKey)
+	if (reason ~= "rule" and reason ~= "spam")
+		or type(record) ~= "table" or type(rule) ~= "table" then
+		return nil, "invalid-archive-request"
 	end
 	local settings = getBlockSettings()
-	local archive = ensureArchive(settings)
+	-- getBlockSettings already normalizes/prunes the archive once. A spam
+	-- burst can block many lines per second, so avoid repeated full passes.
+	local archive = settings.archive
 	if archive.enabled == false then
 		return nil, "archive-disabled"
 	end
@@ -1447,8 +1451,11 @@ function BlockControl:ArchiveRecord(record, reason, rule)
 	local occurrenceEpoch = normalizeArchiveEpoch(record.epoch)
 	local timestamp = trim(record.timestamp, 16)
 	local senderKey, sender = archiveSenderIdentity(record)
-	local fingerprint = archiveFingerprint(record, rule, senderKey)
-	local entries = pruneArchive(archive, nowEpoch)
+	if reason == "spam" and rule.id == "spam-repeatAd" then
+		senderKey = normalizeSenderKey(repeatSenderKey) or senderKey
+	end
+	local fingerprint = archiveFingerprint(record, rule, senderKey, repeatSignature)
+	local entries = archive.entries
 	if nowEpoch > 0 and occurrenceEpoch > 0
 		and occurrenceEpoch < nowEpoch - (archive.retentionDays * 86400)
 	then
@@ -1461,6 +1468,11 @@ function BlockControl:ArchiveRecord(record, reason, rule)
 		local entry = entries[index]
 		if entry.fingerprint == fingerprint then
 			entry.occurrences = normalizeArchiveOccurrences(entry.occurrences + 1)
+			if rule.id == "spam-repeatAd" and entry.sourceId ~= normalizeSourceId(record.sourceId) then
+				entry.sourceId = ""
+				entry.sourceLabel = "Multiple public channels"
+				entry.channel = ""
+			end
 			local previousLastEpoch = normalizeArchiveEpoch(entry.lastEpoch)
 			if occurrenceEpoch >= previousLastEpoch then
 				entry.lastEpoch = occurrenceEpoch
@@ -1488,7 +1500,7 @@ function BlockControl:ArchiveRecord(record, reason, rule)
 		sourceGroup = trim(record.sourceGroup, 32),
 		event = normalizeEvent(record.event) or "UNKNOWN",
 		channel = trim(record.channel, MAX_SOURCE_ID_LENGTH),
-		reason = "rule",
+		reason = reason,
 		ruleId = trim(rule.id, 32),
 		ruleName = trim(rule.name, MAX_NAME_LENGTH),
 		occurrences = 1,
@@ -1498,8 +1510,30 @@ function BlockControl:ArchiveRecord(record, reason, rule)
 		lastTimestamp = timestamp,
 	}
 	table.insert(entries, entry)
-	pruneArchive(archive, nowEpoch)
+	if #entries > archive.maxEntries then table.remove(entries, 1) end
 	return copyArchiveEntry(entry)
+end
+
+local spamArchiveLabels = {
+	duplicate = "Repeated message",
+	duplicateMute = "Repeated-message mute",
+	duplicateMuted = "Muted repeat sender",
+	burst = "Rapid sender flood",
+	muted = "Muted sender",
+	localBan = "Locally banned sender",
+	repeatAd = "Reposted advertisement",
+}
+
+-- One physical spam decision may fan out to several native ChatFrames and
+-- MessageEngine. SpamControl calls this only for its fresh decision; archive
+-- aggregation then counts actual blocked deliveries, not filter callbacks.
+function BlockControl:ArchiveSpamRecord(record, spamReason, repeatSignature, repeatSenderKey)
+	local label = spamArchiveLabels[spamReason]
+	if not label then return nil, "unknown-spam-reason" end
+	return self:ArchiveRecord(record, "spam", {
+		id = "spam-" .. spamReason,
+		name = "Spam Firewall: " .. label,
+	}, repeatSignature, repeatSenderKey)
 end
 
 function BlockControl:GetArchive()

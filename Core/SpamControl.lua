@@ -63,6 +63,16 @@ local DEFAULTS = {
 		limit = 6,
 		muteDuration = 15,
 	},
+	-- A slow seller can evade the twelve-second duplicate window indefinitely.
+	-- Show the same public advert at most four times in a rolling day, with at
+	-- least an hour between visible copies. This never applies to whispers.
+	repeatAds = {
+		enabled = true,
+		window = 86400,
+		maxCopies = 4,
+		minimumGap = 3600,
+		minimumLength = 18,
+	},
 	escalation = {
 		enabled = true,
 		mutesBeforeBan = 3,
@@ -86,6 +96,8 @@ local BURST_CAPACITY = 2048
 local DECISION_CAPACITY = 1024
 local OFFENDER_CAPACITY = 256
 local BAN_CAPACITY = 256
+local REPEAT_AD_CAPACITY = 512
+local REPEAT_AD_MAX_TEXT = 512
 -- Evidence is intentionally captured only when a timed mute earns a strike,
 -- never for ordinary chat.  A tiny retained trail explains an automatic ban
 -- without turning the spam firewall into a chat logger.
@@ -134,6 +146,7 @@ local function compileSettings()
 	local spam = smart and type(smart.spam) == "table" and smart.spam or {}
 	local duplicate = type(spam.duplicate) == "table" and spam.duplicate or {}
 	local burst = type(spam.burst) == "table" and spam.burst or {}
+	local repeatAds = type(spam.repeatAds) == "table" and spam.repeatAds or {}
 	local escalation = type(spam.escalation) == "table" and spam.escalation or {}
 	local scopes = type(spam.scopes) == "table" and spam.scopes or {}
 
@@ -161,6 +174,13 @@ local function compileSettings()
 			window = numberSetting(burst.window, DEFAULTS.burst.window, 0.1, 300, false),
 			limit = numberSetting(burst.limit, DEFAULTS.burst.limit, 1, 1000, true),
 			muteDuration = numberSetting(burst.muteDuration, DEFAULTS.burst.muteDuration, 0, 3600, false),
+		},
+		repeatAds = {
+			enabled = booleanSetting(repeatAds.enabled, DEFAULTS.repeatAds.enabled),
+			window = numberSetting(repeatAds.window, DEFAULTS.repeatAds.window, 3600, 604800, true),
+			maxCopies = numberSetting(repeatAds.maxCopies, DEFAULTS.repeatAds.maxCopies, 1, 24, true),
+			minimumGap = numberSetting(repeatAds.minimumGap, DEFAULTS.repeatAds.minimumGap, 0, 86400, true),
+			minimumLength = numberSetting(repeatAds.minimumLength, DEFAULTS.repeatAds.minimumLength, 12, 128, true),
 		},
 		escalation = {
 			enabled = booleanSetting(escalation.enabled, DEFAULTS.escalation.enabled),
@@ -365,6 +385,129 @@ local function normalizeMessage(message, config)
 		text = string.gsub(text, "%s+$", "")
 	end
 	return text
+end
+
+-- Store only public advert fingerprints, never private correspondence. The
+-- visible wording is the identity: item-link transport codes and cosmetic
+-- punctuation do not let a seller republish the same advert as a new one.
+local function repeatAdText(message)
+	local text = normalizeMessage(message, {
+		stripFormatting = true, caseInsensitive = true,
+		ignorePunctuation = false, collapseWhitespace = true,
+	})
+	text = string.gsub(text, "[%p%c]+", " ")
+	text = string.gsub(text, "%s+", " ")
+	text = string.gsub(text, "^%s+", "")
+	text = string.gsub(text, "%s+$", "")
+	if #text > REPEAT_AD_MAX_TEXT then return nil end
+	return text
+end
+
+local function isRepeatAdvertisement(text, minimumLength)
+	if type(text) ~= "string" or #text < minimumLength then return false end
+	-- Demand an opening market call, not a long ordinary sentence which merely
+	-- mentions what "WTS" means or says "buying time" conversationally.
+	if string.find(text, "^wts%s+%S") or string.find(text, "^wtb%s+%S")
+		or string.find(text, "^wtt%s+%S")
+		or string.find(text, "^%S+%s+wts%s+%S")
+		or string.find(text, "^%S+%s+wtb%s+%S")
+		or string.find(text, "^%S+%s+wtt%s+%S") then
+		return true
+	end
+	if string.find(text, "^selling%s+%S")
+		and not string.find(text, "^selling%s+points?%s") then
+		return true
+	end
+	if string.find(text, "^buying%s+%S")
+		and not string.find(text, "^buying%s+into%s")
+		and not string.find(text, "^buying%s+time%s") then
+		return true
+	end
+	return string.find(text, "^for%s+sale%s+%S") ~= nil
+		or string.find(text, "^now%s+selling%s+%S") ~= nil
+end
+
+local function rebuildRepeatAdState(self)
+	local smart = addon.GetSmartSettings and addon:GetSmartSettings() or nil
+	local spam = type(smart) == "table" and smart.spam or nil
+	local config = type(spam) == "table" and spam.repeatAds or nil
+	if type(config) ~= "table" then
+		config = {}
+		if type(spam) == "table" then spam.repeatAds = config end
+	end
+	if type(config.seen) ~= "table" then config.seen = {} end
+	local seen = config.seen
+	local now = wallTime()
+	local ordered = {}
+	for key, entry in pairs(seen) do
+		local start = type(entry) == "table" and tonumber(entry.windowStart) or nil
+		local last = type(entry) == "table" and tonumber(entry.lastShown) or nil
+		local shown = type(entry) == "table" and tonumber(entry.shown) or nil
+		if type(key) ~= "string" or #key > REPEAT_AD_MAX_TEXT + 160
+			or not start or not last or not shown or start <= 0
+			or last < start or last > now + 300 or shown < 1 or shown > 24
+			or now <= 0 or start > now + 300
+			or now - start >= self.config.repeatAds.window then
+			seen[key] = nil
+		else
+			entry.windowStart = math.floor(start)
+			entry.lastShown = math.floor(last)
+			entry.shown = math.floor(shown)
+			ordered[#ordered + 1] = { key = key, lastShown = last }
+		end
+	end
+	if #ordered > REPEAT_AD_CAPACITY then
+		table.sort(ordered, function(left, right)
+			if left.lastShown ~= right.lastShown then return left.lastShown < right.lastShown end
+			return left.key < right.key
+		end)
+		for index = 1, #ordered - REPEAT_AD_CAPACITY do seen[ordered[index].key] = nil end
+	end
+	self.repeatAdState = seen
+	self.repeatAdCount = math.min(#ordered, REPEAT_AD_CAPACITY)
+	-- The persistent ledger remembers shown-copy frequency. This session-only
+	-- marker avoids rescanning history for every suppressed flood copy; each
+	-- newly allowed copy clears it so a later block can purge that copy too.
+	self.repeatAdPurged = {}
+end
+
+local function checkRepeatAd(self, senderKey, text, now, config)
+	if not senderKey or not text or now <= 0 then return false end
+	local seen = self.repeatAdState
+	if type(seen) ~= "table" then return false end
+	local key = senderKey .. SEPARATOR .. text
+	local entry = seen[key]
+	if not entry then
+		if self.repeatAdCount >= REPEAT_AD_CAPACITY then
+			local oldestKey, oldestAt
+			for candidate, record in pairs(seen) do
+				local at = tonumber(record.lastShown) or 0
+				if not oldestAt or at < oldestAt then oldestKey, oldestAt = candidate, at end
+			end
+			if oldestKey then
+				seen[oldestKey] = nil
+				self.repeatAdCount = self.repeatAdCount - 1
+			else
+				self.repeatAdCount = 0
+			end
+		end
+		seen[key] = { windowStart = now, lastShown = now, shown = 1 }
+		self.repeatAdCount = self.repeatAdCount + 1
+		self.repeatAdPurged[key] = nil
+		return false
+	end
+	if now < entry.windowStart or now - entry.windowStart >= config.window then
+		entry.windowStart, entry.lastShown, entry.shown = now, now, 1
+		self.repeatAdPurged[key] = nil
+		return false
+	end
+	if entry.shown >= config.maxCopies or now - entry.lastShown < config.minimumGap then
+		return true, key, entry.shown >= config.maxCopies
+	end
+	entry.lastShown = now
+	entry.shown = entry.shown + 1
+	self.repeatAdPurged[key] = nil
+	return false
 end
 
 local function resetDecisionState(self)
@@ -622,6 +765,29 @@ local function floodIdentity(descriptor)
 		return "name:" .. normalized
 	end
 	return descriptor.id
+end
+
+function SpamControl:MatchesRepeatAdvertisement(record, senderKey, signature)
+	if type(record) ~= "table" or type(senderKey) ~= "string"
+		or type(signature) ~= "string" then
+		return false
+	end
+	local canAccess = _G.canaccessvalue
+	local isSecret = not canAccess and _G.issecretvalue or nil
+	-- Do not use ipairs here: a nil sender/GUID would end iteration before
+	-- later fields were checked for Retail secret values.
+	local values = { record.event, record.text, record.sender, record.guid }
+	for index = 1, 4 do
+		local value = values[index]
+		if (canAccess and not canAccess(value)) or (isSecret and isSecret(value)) then
+			return false
+		end
+	end
+	if record.event ~= "CHAT_MSG_CHANNEL" or type(record.text) ~= "string" then return false end
+	local descriptor = senderDescriptor(self, definitionByEvent.CHAT_MSG_CHANNEL,
+		record.sender, record.guid, nil)
+	return descriptor and floodIdentity(descriptor) == senderKey
+		and repeatAdText(record.text) == signature or false
 end
 
 local function descriptorFromRecord(record)
@@ -1246,27 +1412,41 @@ local function evaluate(self, definition, event, message, sender, channelName, c
 		end
 	end
 
+	local duplicateShort = false
 	if config.duplicate.enabled then
 		local normalized = normalizeMessage(message, config.duplicate)
 		if string.len(normalized) < config.duplicate.minimumLength then
-			return false, "short"
-		end
-		-- Do not put event, channel, or source into this key.  A person pasting
-		-- the same advert into different channels is still one duplicate episode.
-		local key = senderKey .. SEPARATOR .. normalized
-		local blocked, shouldMute = checkDuplicate(self, key, now, config.duplicate)
-		if blocked then
-			if shouldMute and beginSenderMute(self, senderFloodKey, now, config.burst.muteDuration, "duplicate") then
-				if not selfMessage then
-					recordMuteStrike(self, descriptor, "duplicate", definition, event, channelName, message)
+			duplicateShort = true
+		else
+			-- Do not put event, channel, or source into this key. A person pasting
+			-- the same advert into different channels is still one episode.
+			local key = senderKey .. SEPARATOR .. normalized
+			local blocked, shouldMute = checkDuplicate(self, key, now, config.duplicate)
+			if blocked then
+				if shouldMute and beginSenderMute(self, senderFloodKey, now, config.burst.muteDuration, "duplicate") then
+					if not selfMessage then
+						recordMuteStrike(self, descriptor, "duplicate", definition, event, channelName, message)
+					end
+					return true, "duplicateMute"
 				end
-				return true, "duplicateMute"
+				return true, "duplicate"
 			end
-			return true, "duplicate"
 		end
 	end
 
-	return false, "allowed"
+	-- This is deliberately presentation-only: slow, repetitive sellers lose
+	-- copies of the same public advert, not every message they send, and the
+	-- rule never creates a mute strike or an automatic ban.
+	if definition.scope == "channel" and config.repeatAds.enabled then
+		local visibleText = repeatAdText(message)
+		if isRepeatAdvertisement(visibleText, config.repeatAds.minimumLength) then
+			local blocked, adKey, capReached = checkRepeatAd(self, senderKey, visibleText,
+				wallTime(), config.repeatAds)
+			if blocked then return true, "repeatAd", senderKey, visibleText, adKey, capReached end
+		end
+	end
+
+	return false, duplicateShort and "short" or "allowed"
 end
 
 local function prepare(self)
@@ -1278,6 +1458,7 @@ local function prepare(self)
 	self.registeredEvents = {}
 	self.config = compileSettings()
 	resetBoundedState(self)
+	rebuildRepeatAdState(self)
 	refreshPlayerIdentity(self)
 	rebuildPersistentIndexes(self)
 	pruneExpiredOffenders(self, wallTime())
@@ -1287,10 +1468,88 @@ local function prepare(self)
 	self:ResetStats()
 end
 
+local archiveSourceByEvent = {
+	CHAT_MSG_SAY = { "local:say", "Say" },
+	CHAT_MSG_YELL = { "local:yell", "Yell" },
+	CHAT_MSG_EMOTE = { "local:emote", "Emotes" },
+	CHAT_MSG_TEXT_EMOTE = { "local:text-emote", "Text emotes" },
+	CHAT_MSG_WHISPER = { "conversation:whisper", "Whispers" },
+	CHAT_MSG_BN_WHISPER = { "conversation:bnet-whisper", "Battle.net whispers" },
+	CHAT_MSG_BN_CONVERSATION = { "conversation:bnet-conversation", "Battle.net conversations" },
+	CHAT_MSG_GUILD = { "guild:guild", "Guild chat" },
+	CHAT_MSG_OFFICER = { "guild:officer", "Officer chat" },
+	CHAT_MSG_PARTY = { "group:party", "Party chat" },
+	CHAT_MSG_PARTY_LEADER = { "group:party", "Party chat" },
+	CHAT_MSG_RAID = { "group:raid", "Raid chat" },
+	CHAT_MSG_RAID_LEADER = { "group:raid", "Raid chat" },
+	CHAT_MSG_RAID_WARNING = { "group:raid-warning", "Raid warnings" },
+	CHAT_MSG_BATTLEGROUND = { "group:battleground", "Battleground chat" },
+	CHAT_MSG_BATTLEGROUND_LEADER = { "group:battleground", "Battleground chat" },
+	CHAT_MSG_INSTANCE_CHAT = { "group:instance", "Instance chat" },
+	CHAT_MSG_INSTANCE_CHAT_LEADER = { "group:instance", "Instance chat" },
+}
+
+local function archiveChannelSource(channelName, channelBaseName)
+	local label = trimText(channelBaseName or channelName, 80)
+	label = string.gsub(label, "^%d+%.%s*", "")
+	local base = string.match(label, "^(.-)%s+%-%s+.+$")
+	if base then label = trimText(base, 80) end
+	if label == "" then label = "Channel" end
+	local token = string.lower(label)
+	token = string.gsub(token, "[^%w]+", "-")
+	token = string.gsub(token, "%-+", "-")
+	token = string.gsub(token, "^%-+", "")
+	token = string.gsub(token, "%-+$", "")
+	if token == "" then token = "unknown" end
+	return "channel:" .. string.sub(token, 1, 64), label
+end
+
+local function archiveBlockedLine(definition, event, message, sender, channelName,
+	channelBaseName, guid, bnetAccountId, reason, now, repeatSenderKey, repeatSignature)
+	local blocks = addon.BlockControl
+	if not blocks or type(blocks.ArchiveSpamRecord) ~= "function" then return end
+	local sourceId, sourceLabel
+	if definition.scope == "channel" then
+		sourceId, sourceLabel = archiveChannelSource(channelName, channelBaseName)
+	else
+		local source = archiveSourceByEvent[event]
+		if source then sourceId, sourceLabel = source[1], source[2] end
+	end
+	local channel = definition.scope == "channel" and trimText(channelBaseName or channelName, 96) or ""
+	local record = {
+		epoch = wallTime(),
+		time = now,
+		timestamp = date and date("%H:%M") or "",
+		event = event,
+		text = message,
+		sender = sender,
+		guid = guid,
+		bnetAccountId = bnetAccountId,
+		sourceGroup = definition.scope == "channel" and "channels" or definition.scope,
+		sourceId = sourceId,
+		sourceLabel = sourceLabel,
+		channel = channel,
+	}
+	blocks:ArchiveSpamRecord(record, reason, repeatSignature, repeatSenderKey)
+end
+
 function SpamControl:OnChatFilter(frame, event, ...)
 	local definition = definitionByEvent[event]
 	if not self.enabled or not definition then
 		return false, ...
+	end
+	-- Retail may make chat payloads secret during messaging lockdown. A native
+	-- ChatFrame filter must not inspect or normalize those values; failing open
+	-- lets Blizzard handle the line instead of throwing or tainting this path.
+	local canAccess = _G.canaccessvalue
+	local isSecret = not canAccess and _G.issecretvalue or nil
+	if canAccess or isSecret then
+		for index = 1, select("#", ...) do
+			local value = select(index, ...)
+			if (canAccess and not canAccess(value)) or (isSecret and isSecret(value)) then
+				return false, ...
+			end
+		end
 	end
 
 	local message, sender, _, channelName, target, _, _, channelNumber, channelBaseName, _, lineId, guid, bnSenderId, extendedBnetId = ...
@@ -1338,7 +1597,7 @@ function SpamControl:OnChatFilter(frame, event, ...)
 	-- Cached fan-out should be almost free; only a new decision pays cleanup.
 	sweepExpired(self, now)
 
-	local blocked, reason = evaluate(
+	local blocked, reason, repeatSenderKey, repeatSignature, repeatAdKey, repeatCapReached = evaluate(
 		self,
 		definition,
 		event,
@@ -1356,9 +1615,23 @@ function SpamControl:OnChatFilter(frame, event, ...)
 	local stats = self.stats
 	stats.processed = stats.processed + 1
 	if blocked then
+		if reason == "repeatAd" and repeatCapReached and repeatAdKey
+			and not self.repeatAdPurged[repeatAdKey] then
+			local engine = addon.MessageEngine
+			if engine and type(engine.PurgeRepeatAdvertisement) == "function" then
+				local ok = pcall(engine.PurgeRepeatAdvertisement, engine, repeatSenderKey, repeatSignature)
+				if ok then self.repeatAdPurged[repeatAdKey] = true end
+			end
+		end
+		-- Archive failures must never turn a blocked line into a chat error or
+		-- unhide it. This call runs only after a fresh physical spam decision.
+		pcall(archiveBlockedLine, definition, event, message, sender, channelName,
+			channelBaseName, guid, bnetAccountId, reason, now, repeatSenderKey, repeatSignature)
 		stats.blocked = stats.blocked + 1
 		if reason == "duplicate" then
 			stats.duplicateBlocked = stats.duplicateBlocked + 1
+		elseif reason == "repeatAd" then
+			stats.repeatAdsBlocked = stats.repeatAdsBlocked + 1
 		elseif reason == "duplicateMute" then
 			stats.duplicateBlocked = stats.duplicateBlocked + 1
 			stats.duplicateMuteBlocked = stats.duplicateMuteBlocked + 1
@@ -1418,6 +1691,7 @@ function SpamControl:Initialize()
 	prepare(self)
 	self.config = compileSettings()
 	rebuildPersistentIndexes(self)
+	rebuildRepeatAdState(self)
 	pruneExpiredOffenders(self, wallTime())
 	return self:SetEnabled(self.config.enabled)
 end
@@ -1466,6 +1740,7 @@ function SpamControl:ResetForProfile()
 	prepare(self)
 	self.config = compileSettings()
 	resetBoundedState(self)
+	rebuildRepeatAdState(self)
 	refreshPlayerIdentity(self)
 	rebuildPersistentIndexes(self)
 	pruneExpiredOffenders(self, wallTime())
@@ -1479,6 +1754,7 @@ function SpamControl:RefreshSettings()
 	-- normalization rules. Drop it so every control takes effect immediately;
 	-- session statistics intentionally remain intact.
 	resetBoundedState(self)
+	rebuildRepeatAdState(self)
 	rebuildPersistentIndexes(self)
 	pruneExpiredOffenders(self, wallTime())
 	return self:SetEnabled(self.config.enabled)
@@ -1498,11 +1774,13 @@ function SpamControl:GetStats()
 	result.registeredEvents = registered
 	result.trackedDuplicates = self.duplicateCount
 	result.trackedBursts = self.burstCount
+	result.trackedRepeatAds = self.repeatAdCount or 0
 	result.cachedDecisions = self.decisionCount
 	result.bans = self.banCount or 0
 	result.offenders = self.offenderCount or 0
 	-- Concise aliases are the stable surface consumed by the configuration UI.
 	result.duplicates = result.duplicateBlocked
+	result.repeatAds = result.repeatAdsBlocked
 	result.bursts = result.burstBlocked + result.mutedBlocked
 	result.duplicateMutes = result.duplicateMuteBlocked + result.duplicateMutedBlocked
 	return result
@@ -1514,6 +1792,7 @@ function SpamControl:ResetStats()
 		allowed = 0,
 		blocked = 0,
 		duplicateBlocked = 0,
+		repeatAdsBlocked = 0,
 		duplicateMuteBlocked = 0,
 		duplicateMutedBlocked = 0,
 		burstBlocked = 0,
