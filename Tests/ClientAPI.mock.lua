@@ -6,13 +6,16 @@ _G.WOW_PROJECT_ID = 1
 _G.WOW_PROJECT_MAINLINE = 1
 
 local disabled, saved = nil, false
+local resize = {}
 _G.C_AddOns = {
 	IsAddOnLoaded = function(name) return name == "Loaded" end,
 	GetNumAddOns = function() return 2 end,
+	GetAddOnName = function(index) return index == 1 and "Loaded" or "Other" end,
 	GetAddOnInfo = function(index)
-		if index == 1 then return { name = "Loaded", title = "Loaded title", notes = "notes", enabled = true } end
-		return { name = "Other", title = "Other title", enabled = false }
+		if index == "Loaded" then return "Loaded", "Loaded title", "notes", true, nil, "secure" end
+		return "Other", "Other title", nil, true, nil, "secure"
 	end,
+	GetAddOnEnableState = function(name) return name == "Loaded" and 2 or 0 end,
 	DisableAddOn = function(name) disabled = name end,
 	SaveAddOns = function() saved = true end,
 }
@@ -24,8 +27,15 @@ assert(api:IsAddOnLoaded("Loaded") and not api:IsAddOnLoaded("Other"), "C_AddOns
 assert(not api:IsAddOnLoaded(nil), "missing addon names must not reach Retail C_AddOns")
 assert(api:GetNumAddOns() == 2, "C_AddOns count was not used")
 local name, title, notes, enabled = api:GetAddOnInfo(1)
-assert(name == "Loaded" and title == "Loaded title" and notes == "notes" and enabled == true,
-	"C_AddOns info table was not normalized")
+assert(name == "Loaded" and title == "Loaded title" and notes == "notes" and enabled == 2,
+	"C_AddOns return values were not normalized")
+local retailFrame = {
+	SetResizeBounds = function(_, minWidth, minHeight, maxWidth, maxHeight)
+		resize = { minWidth, minHeight, maxWidth, maxHeight }
+	end,
+}
+assert(api:SetFrameResizeBounds(retailFrame, 300, 160, 620, 500), "Retail resize method not used")
+assert(resize[1] == 300 and resize[4] == 500, "Retail resize bounds incorrect")
 api:DisableAddOn("Loaded")
 api:SaveAddOns()
 assert(disabled == "Loaded" and saved, "C_AddOns mutation facade did not run")
@@ -58,5 +68,11 @@ api:DisableAddOn("Legacy")
 api:SaveAddOns()
 assert(disabled == "legacy:Legacy" and saved == "legacy", "legacy addon mutations were not retained")
 assert(api:GetGroupChatType() == "PARTY", "Wrath party route was not retained")
+local legacyFrame = {
+	SetMinResize = function(_, width, height) resize[1], resize[2] = width, height end,
+	SetMaxResize = function(_, width, height) resize[3], resize[4] = width, height end,
+}
+assert(api:SetFrameResizeBounds(legacyFrame, 300, 160, 620, 500), "legacy resize method not used")
+assert(resize[2] == 160 and resize[3] == 620, "legacy resize bounds incorrect")
 
 print("ClientAPI mock tests passed")

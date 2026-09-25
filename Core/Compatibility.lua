@@ -28,6 +28,7 @@ Compatibility.ChatAddons = {
 	["ChatMOD"] = true,
 	["sChat"] = true,
 	["Glass"] = true,
+	["EllesmereUIChat"] = true,
 }
 
 function Compatibility:RegisterProvider(id, provider)

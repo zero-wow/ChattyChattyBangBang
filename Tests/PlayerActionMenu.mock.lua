@@ -95,7 +95,7 @@ ChatFrame_OnHyperlinkShow = function(_, link) delegated = link end
 dock:HandleHyperlink("item:123", "[Item]", "LeftButton")
 assert(delegated == "item:123", "non-player hyperlink no longer delegates to Blizzard")
 
-local source = assert(io.open("Core/SmartDock.lua", "rb")):read("*a")
+local source = assert(io.open("Core/SmartDock.lua", "rb")):read("*a"):gsub("\r\n", "\n")
 for _, label in ipairs({ "WHISPER", "INVITE", "ADD FRIEND", "CHATTY MUTE", "WOW IGNORE" }) do
 	assert(string.find(source, 'label = "' .. label .. '"', 1, true), "missing explicit action label: " .. label)
 end

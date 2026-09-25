@@ -70,6 +70,17 @@ engine:RegisterListener("feedback-test", function(record)
 	table.insert(received, record)
 end)
 
+local secretMarker = {}
+local restrictedStage
+ChattyChattyBangBang.Diagnostics = {
+	Mark = function(_, stage) restrictedStage = stage end,
+}
+canaccessvalue = function(value) return value ~= secretMarker end
+engine:Capture("CHAT_MSG_PARTY", secretMarker, "RestrictedSender")
+assert(#received == 0 and restrictedStage == "chat-messaging-lockdown",
+	"secret Retail chat must be left to visible native chat")
+canaccessvalue = nil
+
 local routed, localRecord = ChattyChattyBangBang:DebugMessage("Clique invite: no mouseover or target")
 assert(routed == true, "explicit local feedback did not enter Smart Chat")
 assert(localRecord.event == "CCBB_LOCAL_MESSAGE" and localRecord.view == "system",

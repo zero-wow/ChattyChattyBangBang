@@ -37,15 +37,31 @@ end
 
 function ClientAPI:GetAddOnInfo(index)
 	if _G.C_AddOns and type(_G.C_AddOns.GetAddOnInfo) == "function" then
-		local info = _G.C_AddOns.GetAddOnInfo(index)
-		if type(info) == "table" then
-			return info.name, info.title, info.notes, info.enabled
+		local addonName = _G.C_AddOns.GetAddOnName and _G.C_AddOns.GetAddOnName(index) or index
+		local name, title, notes = _G.C_AddOns.GetAddOnInfo(addonName)
+		if name then
+			local enabled = _G.C_AddOns.GetAddOnEnableState
+				and _G.C_AddOns.GetAddOnEnableState(name)
+			return name, title, notes, enabled
 		end
 	end
 	if _G.GetAddOnInfo then
 		return _G.GetAddOnInfo(index)
 	end
 	return nil
+end
+
+function ClientAPI:SetFrameResizeBounds(frame, minWidth, minHeight, maxWidth, maxHeight)
+	if type(frame.SetResizeBounds) == "function" then
+		frame:SetResizeBounds(minWidth, minHeight, maxWidth, maxHeight)
+		return true
+	end
+	if type(frame.SetMinResize) == "function" and type(frame.SetMaxResize) == "function" then
+		frame:SetMinResize(minWidth, minHeight)
+		frame:SetMaxResize(maxWidth, maxHeight)
+		return true
+	end
+	return false
 end
 
 function ClientAPI:DisableAddOn(name)

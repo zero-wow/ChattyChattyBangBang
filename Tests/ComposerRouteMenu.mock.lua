@@ -40,6 +40,9 @@ end
 ChattyChattyBangBang = {
 	Theme = {},
 	Presentation = {},
+	ClientAPI = { GetGroupChatType = function()
+		return activeInstanceType == "pvp" and "BATTLEGROUND" or "PARTY"
+	end },
 	GetSmartSettings = function()
 		return settings
 	end,

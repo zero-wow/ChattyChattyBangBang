@@ -416,6 +416,8 @@ local optionFrames = {}
 local ACD3 = LibStub("AceConfigDialog-3.0")
 
 function ChattyChattyBangBang:OnInitialize()
+	self.Diagnostics = _G.ChattyChattyBangBangDiagnostics
+	if self.Diagnostics then self.Diagnostics:Mark("core-initialize", "loading") end
 	self.db = LibStub("AceDB-3.0"):New("ChattyChattyBangBangDB", defaults, "Default")
 	if self.GetSmartSettings then
 		self:GetSmartSettings()
@@ -513,6 +515,7 @@ function ChattyChattyBangBang:OnInitialize()
 	if self.Launcher then
 		self.Launcher:Initialize()
 	end
+	if self.Diagnostics then self.Diagnostics:Mark("core-initialized", "loading") end
 end
 
 do
@@ -689,6 +692,7 @@ function ChattyChattyBangBang:UpdateConfig()
 end
 
 function ChattyChattyBangBang:OnEnable()
+	if self.Diagnostics then self.Diagnostics:Mark("core-enable", "loading") end
 	self:InstallRootHooks()
 	if self.Launcher then
 		self.Launcher:Initialize()
@@ -721,7 +725,16 @@ function ChattyChattyBangBang:OnEnable()
 	if self.SmartDock then
 		self.SmartDock:Initialize()
 	end
-	self:SetSmartChatEnabled(self:GetSmartSettings().enabled)
+	local requested = self:GetSmartSettings().enabled
+	local enabled, reason = self:SetSmartChatEnabled(requested)
+	if self.Diagnostics then
+		if requested and not enabled then
+			self.Diagnostics:Record("activation", "Smart Chat stopped: " .. tostring(reason))
+		else
+			self.Diagnostics:Mark(requested and "smart-chat-active" or "smart-chat-disabled",
+				requested and "ready" or "disabled-by-setting")
+		end
+	end
 	
 	if not options.args.Profiles then
  		options.args.Profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db)

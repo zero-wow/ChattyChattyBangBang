@@ -2810,6 +2810,24 @@ function Engine:ReapplyBlockRules()
 end
 
 function Engine:Capture(event, ...)
+	-- Current Retail marks some chat event arguments secret during messaging
+	-- lockdown. Never feed an inaccessible value into spam or routing code.
+	local canAccess = _G.canaccessvalue
+	local isSecret = not canAccess and _G.issecretvalue or nil
+	if canAccess or isSecret then
+		for index = 1, select("#", ...) do
+			local value = select(index, ...)
+			if (canAccess and not canAccess(value)) or (isSecret and isSecret(value)) then
+				if not self.restrictedPayloadSeen then
+					self.restrictedPayloadSeen = true
+					if addon.Diagnostics then
+						addon.Diagnostics:Mark("chat-messaging-lockdown", "native-chat-fallback")
+					end
+				end
+				return
+			end
+		end
+	end
 	local record
 	if event == "CHAT_MSG_ADDON" then
 		-- Add-on traffic has a distinct argument layout, so do not feed it through

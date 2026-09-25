@@ -5578,7 +5578,9 @@ function Dock:ApplyComposerRoute()
 	elseif route == "CHANNEL" then
 		self.editBox:SetAttribute("channelTarget", target)
 	end
-	if ChatEdit_UpdateHeader then
+	if type(self.editBox.UpdateHeader) == "function" then
+		self.editBox:UpdateHeader()
+	elseif ChatEdit_UpdateHeader then
 		ChatEdit_UpdateHeader(self.editBox)
 	end
 	self:HideNativeComposerChrome()
@@ -5594,7 +5596,9 @@ function Dock:ActivateComposer()
 		self.routingComposer = false
 		return
 	end
-	if ChatEdit_ActivateChat then
+	if _G.ChatFrameUtil and type(_G.ChatFrameUtil.ActivateChat) == "function" then
+		_G.ChatFrameUtil.ActivateChat(self.editBox)
+	elseif ChatEdit_ActivateChat then
 		ChatEdit_ActivateChat(self.editBox)
 	else
 		self.editBox:Show()
@@ -5697,7 +5701,10 @@ function Dock:AttachEditBox()
 		-- When an ancestor is hidden, showing its child may not emit OnShow.
 		-- Secure post-hooks cover Enter, slash, and reply activation paths and
 		-- reveal the runtime dock only after Blizzard has established chat state.
-		local hooked = pcall(hooksecurefunc, "ChatEdit_ActivateChat", function(activeEditBox)
+		local activationTarget = _G.ChatFrameUtil and type(_G.ChatFrameUtil.ActivateChat) == "function"
+			and _G.ChatFrameUtil or "ChatEdit_ActivateChat"
+		local activationName = type(activationTarget) == "table" and "ActivateChat" or nil
+		local onActivated = function(activeEditBox)
 			if Dock.active and (not activeEditBox or activeEditBox == Dock.editBox) then
 				Dock:BeginComposerInput()
 				if not Dock.routingComposer then
@@ -5705,8 +5712,24 @@ function Dock:AttachEditBox()
 					Dock:UpdateComposerState()
 				end
 			end
-		end)
-		if ChatFrame_OpenChat then
+		end
+		local hooked
+		if activationName then
+			hooked = pcall(hooksecurefunc, activationTarget, activationName, onActivated)
+		elseif ChatEdit_ActivateChat then
+			hooked = pcall(hooksecurefunc, activationTarget, onActivated)
+		end
+		if _G.ChatFrameUtil and type(_G.ChatFrameUtil.OpenChat) == "function" then
+			pcall(hooksecurefunc, _G.ChatFrameUtil, "OpenChat", function()
+				if Dock.active then
+					Dock:BeginComposerInput()
+					if not Dock.routingComposer then
+						Dock:CaptureComposerRouteFromEditBox()
+						Dock:UpdateComposerState()
+					end
+				end
+			end)
+		elseif ChatFrame_OpenChat then
 			pcall(hooksecurefunc, "ChatFrame_OpenChat", function()
 				if Dock.active then
 					Dock:BeginComposerInput()
@@ -5719,24 +5742,38 @@ function Dock:AttachEditBox()
 		end
 		self.chatActivationHooked = hooked and true or false
 	end
-	if not self.chatHeaderHooked and hooksecurefunc and ChatEdit_UpdateHeader then
-		local hooked = pcall(hooksecurefunc, "ChatEdit_UpdateHeader", function(activeEditBox)
+	if not self.chatHeaderHooked and hooksecurefunc then
+		local onHeaderUpdated = function(activeEditBox)
 			if Dock.active and activeEditBox == Dock.editBox then
 				Dock:HideNativeComposerChrome()
 			end
-		end)
+		end
+		local hooked
+		if type(editBox.UpdateHeader) == "function" then
+			hooked = pcall(hooksecurefunc, editBox, "UpdateHeader", function()
+				onHeaderUpdated(editBox)
+			end)
+		elseif ChatEdit_UpdateHeader then
+			hooked = pcall(hooksecurefunc, "ChatEdit_UpdateHeader", onHeaderUpdated)
+		end
 		self.chatHeaderHooked = hooked and true or false
 	end
 	return true
+end
+
+local function deactivateChatEditBox(editBox)
+	if _G.ChatFrameUtil and type(_G.ChatFrameUtil.DeactivateChat) == "function" then
+		_G.ChatFrameUtil.DeactivateChat(editBox)
+	elseif ChatEdit_DeactivateChat then
+		ChatEdit_DeactivateChat(editBox)
+	end
 end
 
 function Dock:RestoreEditBox()
 	if not self.editBoxSnapshot or not self.editBox then
 		return
 	end
-	if ChatEdit_DeactivateChat then
-		ChatEdit_DeactivateChat(self.editBox)
-	end
+	deactivateChatEditBox(self.editBox)
 	self.editBox:SetParent(self.editBoxSnapshot.parent)
 	restorePoints(self.editBox, self.editBoxSnapshot.points)
 	self.editBox:SetWidth(self.editBoxSnapshot.width)
@@ -5837,6 +5874,9 @@ function Dock:TrackAndSuppressNativeFrame(frame)
 end
 
 function Dock:HideNativeChat()
+	-- Retail can deliver secret chat payloads during chat-messaging lockdown.
+	-- Smart Chat cannot classify those payloads, so preserve Blizzard's renderer.
+	if addon.ClientAPI and addon.ClientAPI:IsRetail() then return end
 	if self.nativeSnapshot or not addon:GetSmartSettings().dock.hideNativeChat then
 		return
 	end
@@ -5915,6 +5955,7 @@ function Dock:RestoreSocialButtonVisibility()
 end
 
 function Dock:SuppressTemporaryChatFrame(frame)
+	if addon.ClientAPI and addon.ClientAPI:IsRetail() then return end
 	if not self.active or not frame or not addon:GetSmartSettings().dock.hideNativeChat then
 		return
 	end
@@ -6016,8 +6057,8 @@ end
 function Dock:SetVisible(visible, persist)
 	visible = visible and true or false
 	self:MarkManualLayoutChange(persist)
-	if not visible and self.editBox and self.editBox:IsShown() and ChatEdit_DeactivateChat then
-		ChatEdit_DeactivateChat(self.editBox)
+	if not visible and self.editBox and self.editBox:IsShown() then
+		deactivateChatEditBox(self.editBox)
 	end
 	self.visibleState = visible
 	local settings = addon:GetSmartSettings()
@@ -6057,8 +6098,8 @@ end
 function Dock:SetCollapsed(collapsed, persist)
 	collapsed = collapsed and true or false
 	self:MarkManualLayoutChange(persist)
-	if collapsed and self.editBox and self.editBox:IsShown() and ChatEdit_DeactivateChat then
-		ChatEdit_DeactivateChat(self.editBox)
+	if collapsed and self.editBox and self.editBox:IsShown() then
+		deactivateChatEditBox(self.editBox)
 	end
 	self.collapsedState = collapsed
 	if collapsed then
@@ -8057,8 +8098,8 @@ function Dock:Build()
 	frame:Hide()
 	frame:SetSize(width, height)
 	applyGeometry(frame)
-	frame:SetMinResize(EXPANDED_MIN_WIDTH, EXPANDED_MIN_HEIGHT)
-	frame:SetMaxResize(EXPANDED_MAX_WIDTH, EXPANDED_MAX_HEIGHT)
+	addon.ClientAPI:SetFrameResizeBounds(frame, EXPANDED_MIN_WIDTH, EXPANDED_MIN_HEIGHT,
+		EXPANDED_MAX_WIDTH, EXPANDED_MAX_HEIGHT)
 	frame:SetResizable(true)
 	frame:SetMovable(true)
 	frame:SetClampedToScreen(true)
@@ -8656,6 +8697,9 @@ function Dock:Activate()
 		self:ApplySocialButtonVisibility()
 	end)
 	if not ok then
+		if addon.Diagnostics then
+			addon.Diagnostics:Record("activation", err, debugstack and debugstack(2, 20, 20) or "")
+		end
 		self.active = false
 		self:UnregisterSmartChatTextMediaCallback()
 		self:RestoreEditBox()

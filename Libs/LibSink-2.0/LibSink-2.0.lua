@@ -258,23 +258,32 @@ local function blizzard(addon, text, r, g, b, font, size, outline, sticky, _, ic
 	if icon then text = "|T"..icon..":20:20:-5|t"..text end
 	if tostring(SHOW_COMBAT_TEXT) ~= "0" then
 		local s = getSticky(addon) or sticky
-		CombatText_AddMessage(text, CombatText_StandardScroll, r, g, b, s and "crit" or nil, false)
+		if CombatText_AddMessage then
+			CombatText_AddMessage(text, CombatText_StandardScroll, r, g, b, s and "crit" or nil, false)
+		elseif CombatText and CombatText.AddMessage then
+			CombatText:AddMessage(text, CombatTextUtil.StandardScroll, r, g, b, s and "crit" or nil, false)
+		end
 	else
 		UIErrorsFrame:AddMessage(text, r, g, b, 1.0)
 	end
 end
 
-sink.channelMapping = sink.channelMapping or {
-	[SAY] = "SAY",
-	[PARTY] = "PARTY",
-	[BATTLEGROUND] = "BATTLEGROUND",
-	[GUILD_CHAT] = "GUILD",
-	[OFFICER_CHAT] = "OFFICER",
-	[YELL] = "YELL",
-	[RAID] = "RAID",
-	[RAID_WARNING] = "RAID_WARNING",
-	[GROUP] = "GROUP",
-}
+sink.channelMapping = sink.channelMapping or {}
+local function registerChannel(label, chatType)
+	if label then
+		sink.channelMapping[label] = chatType
+	end
+end
+registerChannel(SAY, "SAY")
+registerChannel(PARTY, "PARTY")
+registerChannel(INSTANCE_CHAT, "INSTANCE_CHAT")
+registerChannel(BATTLEGROUND, INSTANCE_CHAT and "INSTANCE_CHAT" or "BATTLEGROUND")
+registerChannel(GUILD_CHAT, "GUILD")
+registerChannel(OFFICER_CHAT, "OFFICER")
+registerChannel(YELL, "YELL")
+registerChannel(RAID, "RAID")
+registerChannel(RAID_WARNING, "RAID_WARNING")
+registerChannel(GROUP, "GROUP")
 sink.frame = sink.frame or CreateFrame("Frame")
 sink.frame:RegisterEvent("CHANNEL_UI_UPDATE")
 sink.frame:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -282,9 +291,9 @@ do
 	local newChannels = {}
 	local function loop(...)
 		wipe(newChannels)
-		for i = 1, select("#", ...), 2 do
+		for i = 1, select("#", ...), 3 do
 			local id, name = select(i, ...)
-			newChannels[name] = true
+			if name then newChannels[name] = true end
 		end
 		for k, v in pairs(sink.channelMapping) do
 			if v == "CHANNEL" and not newChannels[k] then
@@ -299,23 +308,26 @@ do
 end
 
 local function channel(addon, text)
+	local sendChatMessage = C_ChatInfo and C_ChatInfo.SendChatMessage or SendChatMessage
 	-- Sanitize the text, remove all color codes.
 	text = text:gsub("(|c%x%x%x%x%x%x%x%x)", ""):gsub("(|r)", "")
 	local loc = sink.storageForAddon[addon] and sink.storageForAddon[addon].sink20ScrollArea or "SAY"
 	local chan = sink.channelMapping[loc]
 	if chan == "GROUP" then
-		chan = select(2, IsInInstance()) == "pvp" and "BATTLEGROUND" or (UnitInRaid("player") and "RAID" or "PARTY")
-		if chan == "PARTY" and GetNumPartyMembers() == 0 then chan = "SAY" end
+		local inInstanceGroup = IsInGroup and IsInGroup(LE_PARTY_CATEGORY_INSTANCE or 2)
+		local inRaid = (IsInRaid and IsInRaid()) or (UnitInRaid and UnitInRaid("player"))
+		local inParty = (IsInGroup and IsInGroup()) or (GetNumPartyMembers and GetNumPartyMembers() > 0)
+		chan = (inInstanceGroup and "INSTANCE_CHAT") or (inRaid and "RAID") or (inParty and "PARTY") or "SAY"
 	elseif chan == "CHANNEL" then
 		local id, name = GetChannelName(loc)
 		if name then
-			SendChatMessage(text, "CHANNEL", nil, id)
+			sendChatMessage(text, "CHANNEL", nil, id)
 		else
 			print(text .. L_NOTINCHANNEL)
 		end
 		return
 	end
-	SendChatMessage(text, chan or "SAY")
+	sendChatMessage(text, chan or "SAY")
 end
 
 local function chat(addon, text, r, g, b, _, _, _, _, _, icon)
@@ -359,7 +371,9 @@ local customHandlersEnabled = {
 }
 
 -- Default to version 5 or higher now
-local msbtVersion = tonumber(string.match(GetAddOnMetadata("MikScrollingBattleText", "Version") or "","^%d+\.%d+")) or 5
+local getAddOnMetadata = C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata
+local msbtMetadata = getAddOnMetadata and getAddOnMetadata("MikScrollingBattleText", "Version") or ""
+local msbtVersion = tonumber(string.match(msbtMetadata or "", "^%d+%.%d+")) or 5
 local isMSBTFive = math.floor(msbtVersion) > 4 and true or nil
 if isMSBTFive then
 	customHandlersEnabled.MikSBT = function()

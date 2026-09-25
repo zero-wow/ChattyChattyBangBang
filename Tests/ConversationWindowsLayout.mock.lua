@@ -307,6 +307,9 @@ function Engine:GetMessages() return {} end
 
 ChattyChattyBangBang = {
 	Theme = Theme,
+	ClientAPI = { SetFrameResizeBounds = function(_, frame, minWidth, minHeight, maxWidth, maxHeight)
+		frame.resizeBounds = { minWidth, minHeight, maxWidth, maxHeight }
+	end },
 	Presentation = {
 		Color = function(_, value) return tostring(value or "") end,
 		ColorizeMessage = function(_, value) return tostring(value or "") end,
