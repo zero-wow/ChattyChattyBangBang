@@ -419,25 +419,30 @@ function Config:BuildHomePage()
 
 	local hero = Theme:CreatePanel(page, "surfaceRaised", "border")
 	hero:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -PAGE_TOP)
-	hero:SetSize(PAGE_WIDTH, 72)
+	hero:SetSize(PAGE_WIDTH, 108)
+	local iconGutter, iconSize, textGap, rightGutter = 8, 46, 8, 12
+	local heroTextWidth = PAGE_WIDTH - iconGutter - iconSize - textGap - rightGutter
 
 	local icon = hero:CreateTexture(nil, "ARTWORK")
 	icon:SetTexture(Theme.ICON_PATH)
-	icon:SetSize(46, 46)
-	icon:SetPoint("LEFT", hero, "LEFT", 8, 0)
+	icon:SetSize(iconSize, iconSize)
+	icon:SetPoint("LEFT", hero, "LEFT", iconGutter, 0)
 
 	local title = Theme:CreateText(hero, "GameFontNormal", "goldBright")
-	title:SetPoint("TOPLEFT", icon, "TOPRIGHT", 8, -1)
+	title:SetPoint("TOPLEFT", hero, "TOPLEFT", iconGutter + iconSize + textGap, -10)
 	title:SetText("ChattyChattyBangBang")
 
 	local detail = Theme:CreateText(hero, "GameFontHighlightSmall", "textMuted")
 	detail:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
-	detail:SetWidth(548)
+	detail:SetWidth(heroTextWidth)
+	detail:SetHeight(28)
 	detail:SetJustifyH("LEFT")
-	detail:SetText("Organized chat is the primary view. Disable it to restore native chat.")
+	detail:SetText("Community, add-on-only lines, and some Blizzard notices are outside capture.")
 
 	local status = Theme:CreateText(hero, "GameFontNormalSmall", "warning")
 	status:SetPoint("TOPLEFT", detail, "BOTTOMLEFT", 0, -4)
+	status:SetWidth(heroTextWidth)
+	status:SetHeight(28)
 	self.homeStatus = status
 
 	local smartToggle = Theme:CreateToggle(page, "Enable Intelligent Chat UI", "Capture and route messages into organized views.")
@@ -468,9 +473,30 @@ function Config:RefreshHomeState()
 	local settings = addon:GetSmartSettings()
 	self.smartToggle:SetValue(settings.enabled, true)
 	self.minimapToggle:SetValue(not settings.launcher.minimap.hide, true)
+	local coverage
+	local engine = addon.MessageEngine
+	if engine and type(engine.GetCaptureCoverageStatus) == "function" then
+		local ok, result = pcall(engine.GetCaptureCoverageStatus, engine)
+		if ok and type(result) == "table" then coverage = result end
+	end
 	if settings.enabled and addon.SmartDock and addon.SmartDock:IsActive() then
-		self.homeStatus:SetText("ACTIVE  -  Capturing and routing messages")
-		Theme.texts[self.homeStatus] = "success"
+		if coverage and coverage.enabled and (coverage.requiredFailedCount or 0) > 0 then
+			local note = coverage.nativeFallbackFailed
+				and "native restore failed"
+				or "Blizzard chat visible"
+			local first = coverage.requiredFailedEvents and coverage.requiredFailedEvents[1] or "event"
+			local more = coverage.requiredFailedCount > 1 and (" +" .. (coverage.requiredFailedCount - 1)) or ""
+			self.homeStatus:SetText("CHAT GAP  -  " .. coverage.requiredFailedCount .. " tracked sources missed ("
+				.. first .. more .. "); " .. note)
+			Theme.texts[self.homeStatus] = "warning"
+		elseif coverage and coverage.enabled then
+			self.homeStatus:SetText(string.format("TRACKED CHAT  -  %d / %d WoW sources ready",
+				coverage.requiredRegisteredCount or 0, coverage.requiredTotalCount or 0))
+			Theme.texts[self.homeStatus] = "success"
+		else
+			self.homeStatus:SetText("ACTIVE  -  Capturing and routing messages")
+			Theme.texts[self.homeStatus] = "success"
+		end
 	elseif settings.enabled and addon.SmartDock and addon.SmartDock.pendingEnabled then
 		self.homeStatus:SetText("WAITING  -  Activates after combat")
 		Theme.texts[self.homeStatus] = "warning"
@@ -12250,7 +12276,12 @@ local function getModuleCatalogCounts(catalog)
 end
 
 local function moduleStatusColor(module)
-	if module and module.status == "smart" then
+	if module and module.runtime == "native-active" then
+		return "success"
+	elseif module and (module.runtime == "smart-disabled"
+		or module.runtime == "native-unavailable") then
+		return "warning"
+	elseif module and module.status == "smart" then
 		return "goldBright"
 	elseif module and module.status == "adapter" then
 		return "warning"
@@ -12259,6 +12290,15 @@ local function moduleStatusColor(module)
 end
 
 local function moduleHumanStatus(module)
+	if module and module.runtime == "smart-disabled" then
+		return "OFF IN CHATTY"
+	elseif module and module.runtime == "native-active" then
+		return "RUNNING IN NATIVE FALLBACK"
+	elseif module and module.runtime == "native-ready" then
+		return "NATIVE FALLBACK READY"
+	elseif module and module.runtime == "native-unavailable" then
+		return "NATIVE FALLBACK UNAVAILABLE"
+	end
 	if module and module.status == "smart" then
 		return "RUNS IN CHATTY"
 	elseif module and module.status == "adapter" then
@@ -12347,7 +12387,7 @@ function Config:RefreshModulesPage(keepStatus)
 				.. " not yet available in Chatty.")
 		else
 			self.moduleOverview:SetText(tostring(catalogCounts.smart)
-				.. " features run directly in Chatty.")
+				.. " features available in Chatty.")
 		end
 	end
 	local selected
@@ -12451,6 +12491,12 @@ function Config:RefreshModulesPage(keepStatus)
 			local tellTarget = addon.GetTellTargetSettings and addon:GetTellTargetSettings()
 			self.moduleSmartToggle:SetValue(not tellTarget or tellTarget.enabled ~= false, true)
 			self.moduleSmartToggle:Show()
+		elseif selected.smartSetting == "autoOpenWhispers" and addon.SetMessengerPopupWhispersEnabled then
+			hasSmartToggle = true
+			self.moduleSmartToggle.label:SetText("OPEN WHISPERS IN MESSENGER")
+			local messenger = addon.GetMessengerSettings and addon:GetMessengerSettings()
+			self.moduleSmartToggle:SetValue(not messenger or messenger.autoOpenWhispers ~= false, true)
+			self.moduleSmartToggle:Show()
 		else
 			self.moduleSmartToggle:Hide()
 		end
@@ -12466,6 +12512,8 @@ function Config:RefreshModulesPage(keepStatus)
 			self.moduleNativeNote:SetText("Adds a background and border only behind the typing field. SAY, send, and the shared chat route stay clean; old native Edit Box Polish hooks remain off.")
 		elseif selected.smartSetting == "tellTargetEnabled" then
 			self.moduleNativeNote:SetText("/tt opens your current player target in Messenger. Text after /tt sends once, then the same reply field stays ready when shortcut focus is enabled.")
+		elseif selected.smartSetting == "autoOpenWhispers" then
+			self.moduleNativeNote:SetText("Approved whispers open Messenger automatically when this is on. Existing conversations and manual opening remain available when off.")
 		else
 			self.moduleNativeNote:SetText("This feature runs directly in Chatty. Its copied fallback code stays dormant so it cannot alter hidden chat frames.")
 		end
@@ -12478,6 +12526,9 @@ function Config:RefreshModulesPage(keepStatus)
 		local note = "This copied feature stays dormant while Chatty owns chat. The saved choice applies only after Chatty is disabled and native fallback takes over."
 		if selected.status == "adapter" then
 			note = "This feature has not been rebuilt for Chatty yet. Its saved choice applies only to native fallback and never enables the copied hook while Chatty owns chat."
+		end
+		if selected.runtime == "native-unavailable" then
+			note = "Native fallback is unavailable right now. Your saved preference is kept, but this copied feature is not running."
 		end
 		self.moduleNativeNote:SetText(note)
 	end
@@ -12625,12 +12676,17 @@ function Config:BuildModulesPage()
 			Config:SetModuleStatus(value
 				and "/tt Tell Target enabled for Messenger."
 				or "/tt Tell Target disabled; native fallback remains unchanged.", "success")
+		elseif module.smartSetting == "autoOpenWhispers" and addon.SetMessengerPopupWhispersEnabled then
+			addon:SetMessengerPopupWhispersEnabled(value)
+			Config:SetModuleStatus(value
+				and "Approved whispers now open Messenger automatically."
+				or "Automatic Messenger opening is off; manual opening remains available.", "success")
 		else
 			Config:SetModuleStatus("That Chatty feature is unavailable.", "warning")
 			Config:RefreshModulesPage(true)
 			return
 		end
-		if module.smartSetting == "tellTargetEnabled" then
+		if module.smartSetting == "tellTargetEnabled" or module.smartSetting == "autoOpenWhispers" then
 			Config:RefreshMessengerPage()
 		else
 			Config:RefreshDockPage()

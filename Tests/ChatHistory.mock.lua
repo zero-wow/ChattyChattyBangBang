@@ -156,10 +156,30 @@ assert(#engine:GetMessages() == 3 and engine:GetMessages()[1].text == "old-gener
 
 -- CLEAR removes both the live transcript and its SavedVariables copy. When
 -- persistence is disabled, later chat remains session-only and cannot return.
+local dock = {
+	unread = { general = 2, guild = 1 },
+	pendingVisible = 2,
+	historyPageOffset = 1,
+	RebuildActiveView = function(self) self.rebuilt = true end,
+	RefreshRailState = function(self) self.railRefreshed = true end,
+	RefreshNewMessageIndicator = function(self) self.markerRefreshed = true end,
+}
+local messenger = {
+	RefreshAfterHistoryMutation = function(self, clearAll)
+		self.historyCleared = clearAll
+	end,
+}
+ChattyChattyBangBang.SmartDock = dock
+ChattyChattyBangBang.ConversationWindows = messenger
 assert(engine:ClearHistory())
 assert(#engine:GetMessages() == 0 and settings.history.schema == 2
 	and next(settings.history.sources) == nil,
 	"clear history left live or saved message text behind")
+assert(next(dock.unread) == nil and dock.pendingVisible == 0 and dock.historyPageOffset == 0
+	and dock.rebuilt and dock.railRefreshed and dock.markerRefreshed,
+	"clear history left SmartDock badges or paging state behind")
+assert(messenger.historyCleared == true,
+	"clear history did not reset open Messenger sessions")
 settings.persistHistory = false
 deliverChannel("General", 1, "session-only")
 assert(settings.history == nil or next(settings.history.sources) == nil,

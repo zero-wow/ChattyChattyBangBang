@@ -82,29 +82,47 @@ function ClientAPI:SaveAddOns()
 	end
 end
 
-function ClientAPI:GetGroupChatType()
-	local inInstance, instanceType
-	if _G.IsInInstance then
-		inInstance, instanceType = _G.IsInInstance()
-	end
-	if inInstance and (instanceType == "pvp" or instanceType == "arena") then
-		return "BATTLEGROUND"
-	end
-	-- Retail exposes group state through these predicates. Wrath keeps its
-	-- member-count APIs, which remain the fallback below.
-	if _G.IsInRaid and _G.IsInRaid() then
+function ClientAPI:GetHomeGroupChatType()
+	-- Retail can have a home party and an instance group at the same time.
+	-- Query the home category explicitly so the route never points at the
+	-- other group just because it happens to be a raid.
+	local homeCategory = self.isRetail and _G.LE_PARTY_CATEGORY_HOME or nil
+	if _G.IsInRaid and _G.IsInRaid(homeCategory) then
 		return "RAID"
 	end
-	if _G.IsInGroup and _G.IsInGroup() then
+	if _G.IsInGroup and _G.IsInGroup(homeCategory) then
 		return "PARTY"
 	end
-	if _G.GetNumRaidMembers and (_G.GetNumRaidMembers() or 0) > 0 then
+	-- Wrath keeps its member-count APIs; those counts cannot distinguish a
+	-- Retail home group from an instance group.
+	if not self.isRetail and _G.GetNumRaidMembers and (_G.GetNumRaidMembers() or 0) > 0 then
 		return "RAID"
 	end
-	if _G.GetNumPartyMembers and (_G.GetNumPartyMembers() or 0) > 0 then
+	if not self.isRetail and _G.GetNumPartyMembers and (_G.GetNumPartyMembers() or 0) > 0 then
 		return "PARTY"
 	end
 	return nil
+end
+
+function ClientAPI:GetGroupChatType()
+	if self.isRetail then
+		-- Location is not group membership: a premade party inside a dungeon
+		-- still uses PARTY/RAID. Only a real instance-category group uses this
+		-- Retail chat type (including queued battlegrounds and arenas).
+		if _G.LE_PARTY_CATEGORY_INSTANCE ~= nil and _G.IsInGroup
+			and _G.IsInGroup(_G.LE_PARTY_CATEGORY_INSTANCE) then
+			return "INSTANCE_CHAT"
+		end
+	else
+		local inInstance, instanceType
+		if _G.IsInInstance then
+			inInstance, instanceType = _G.IsInInstance()
+		end
+		if inInstance and (instanceType == "pvp" or instanceType == "arena") then
+			return "BATTLEGROUND"
+		end
+	end
+	return self:GetHomeGroupChatType()
 end
 
 function ClientAPI:OpenConfiguration(aceConfigDialog, addonName, width, height)

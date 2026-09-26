@@ -80,6 +80,24 @@ assert(native.shown, "ordinary visibility sync hid the active safety fallback")
 dock:SetNativeSafetyFallback(false)
 assert(not native.shown and native.strata == "LOW" and dock.nativeSnapshot,
 	"successful catch-up did not restore the player's hide-native preference")
+dock:SetCaptureCoverageFallback(true)
+assert(native.shown and native.strata == "HIGH" and settings.dock.hideNativeChat,
+	"capture-registration gap did not reveal native chat without changing preference")
+dock:SetNativeSafetyFallback(true)
+dock:SetCaptureCoverageFallback(false)
+assert(native.shown and native.strata == "HIGH" and dock.nativeSnapshot == nil,
+	"ending capture fallback cleared a still-active recovery fallback")
+dock:SetNativeSafetyFallback(false)
+assert(not native.shown and native.strata == "LOW" and dock.nativeSnapshot,
+	"ending both fallbacks did not restore the hide-native preference")
+dock:SetCaptureCoverageFallback(true)
+dock:SetNativeSafetyFallback(true)
+dock:SetNativeSafetyFallback(false)
+assert(native.shown and native.strata == "HIGH" and dock.nativeSnapshot == nil,
+	"ending recovery cleared a still-active capture fallback")
+dock:SetCaptureCoverageFallback(false)
+assert(not native.shown and native.strata == "LOW" and dock.nativeSnapshot,
+	"ending capture fallback did not restore the hide-native preference")
 shown = false
 dock:SyncNativeChatVisibility()
 assert(native.shown, "a hidden Smart Dock left Blizzard chat hidden")

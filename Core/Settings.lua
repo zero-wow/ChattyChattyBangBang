@@ -754,6 +754,7 @@ local sourceHomeViewById = {
 	["conversation:afk"] = "conversations",
 	["conversation:dnd"] = "conversations",
 	["guild:guild"] = "guild",
+	["guild:discord"] = "guild",
 	["guild:achievement"] = "guild",
 	["guild:item-looted"] = "guild",
 	["guild:officer"] = "guild",
@@ -766,11 +767,24 @@ local sourceHomeViewById = {
 	["system:under-attack"] = "pvp",
 	["system:addon-feedback"] = "system",
 	["system:message"] = "system",
+	["system:chat-status"] = "system",
+	["system:progress"] = "system",
+	["system:pet-info"] = "system",
+	["system:combat-misc"] = "system",
+	["system:target-icons"] = "system",
+	["system:bnet-alert"] = "system",
+	["system:pet-battle"] = "system",
+	["system:ping"] = "system",
+	["system:voice-text"] = "system",
+	["system:npc-dialogue"] = "system",
+	["system:boss"] = "system",
 	["system:ui-error"] = "system",
 	["system:local-debug"] = "system",
 	["system:achievement"] = "system",
 	["loot:loot"] = "loot",
 	["loot:money"] = "loot",
+	["loot:currency"] = "loot",
+	["loot:crafting"] = "loot",
 	["channel:guildrecruitment"] = "guildInvites",
 	["channel:guild-recruitment"] = "guildInvites",
 	["channel:lookingforgroup"] = "groupFinder",
@@ -3904,7 +3918,6 @@ function addon:GetSmartSettings()
 		refreshSyncRoutingCache(self, defaults)
 		return defaults
 	end
-
 	if type(profile.smartChat) ~= "table" then
 		profile.smartChat = {}
 	end
@@ -4055,6 +4068,25 @@ function addon:GetSmartSettings()
 	end
 	refreshSyncRoutingCache(self, profile.smartChat)
 	return profile.smartChat
+end
+
+-- Rendering only reads the live profile tree. Prepare it on the first read (or
+-- after AceDB replaces the profile/table), while leaving GetSmartSettings's
+-- normalization contract intact for callers that mutate SavedVariables.
+function addon:GetPreparedSmartSettings()
+	local profile = self.db and self.db.profile
+	local stored = profile and profile.smartChat
+	if profile and type(stored) == "table"
+		and self._preparedSmartProfile == profile
+		and self._preparedSmartSettings == stored then
+		return stored
+	end
+	local settings = self:GetSmartSettings()
+	if profile then
+		self._preparedSmartProfile = profile
+		self._preparedSmartSettings = settings
+	end
+	return settings
 end
 
 function addon:GetConfigMode()

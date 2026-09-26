@@ -341,7 +341,7 @@ function Presentation:GetKeywordColorRules(settings)
 end
 
 function Presentation:ColorizePlainText(text)
-	local settings = addon:GetSmartSettings()
+	local settings = addon.GetPreparedSmartSettings and addon:GetPreparedSmartSettings() or addon:GetSmartSettings()
 	local colors = settings.keywordColors or {}
 	local rules, caseSensitiveTerms = self:GetKeywordColorRules(settings)
 
@@ -686,7 +686,7 @@ function Presentation:GetSource(record)
 end
 
 function Presentation:GetTagText(record)
-	local settings = addon:GetSmartSettings()
+	local settings = addon.GetPreparedSmartSettings and addon:GetPreparedSmartSettings() or addon:GetSmartSettings()
 	if not record.tags or (settings.dock and settings.dock.showClassificationTags == false) then
 		return ""
 	end

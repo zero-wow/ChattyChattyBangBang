@@ -1,6 +1,6 @@
 -- Run from addon root: lua Tests/ChatRecovery.mock.lua
 local secret = {}
-local locked, nativeShown, scheduled = true, false, nil
+local locked, nativeShown, scheduled, fallbackFails = true, false, nil, false
 local captures = {}
 
 canaccessvalue = function(value) return value ~= secret end
@@ -18,7 +18,11 @@ C_ChatInfo = {
 ChattyChattyBangBang = {
 	Print = function() end,
 	Diagnostics = { db = { session = 7 } },
-	SmartDock = { SetNativeSafetyFallback = function(_, active) nativeShown = active end },
+	SmartDock = { SetNativeSafetyFallback = function(_, active)
+		if active and fallbackFails then return false end
+		nativeShown = active
+		return true
+	end },
 	MessageEngine = {
 		enabled = true,
 		CaptureAccessible = function(_, event, epoch, ...)
@@ -59,6 +63,15 @@ recovery:Queue("CHAT_MSG_WHISPER", secret, secret, nil, nil, nil,
 	nil, nil, nil, nil, nil, nil)
 assert(recovery:GetStatus().unresolved == 1 and nativeShown,
 	"an unidentifiable withheld whisper falsely reported as recovered")
+fallbackFails = true
+recovery:Queue("CHAT_MSG_WHISPER", secret, secret)
+assert(recovery:GetStatus().unresolved == 2 and recovery:GetStatus().fallbackFailed,
+	"failed native fallback was not recorded before shutdown")
 recovery:Stop()
 assert(not nativeShown, "stopping capture did not release native fallback")
+assert(recovery:GetStatus().pending == 0 and recovery:GetStatus().unresolved == 0
+	and not recovery:GetStatus().fallbackFailed,
+	"stopping capture left a stale unresolved or fallback-failure state")
+assert(ChattyChattyBangBang.Diagnostics.db.chatRecovery.unresolved == 0,
+	"shutdown diagnostics retained an unresolved line after capture stopped")
 print("ChatRecovery mock tests passed")

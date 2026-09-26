@@ -695,11 +695,16 @@ local function matchesRule(self, normalized, rule)
 end
 
 local function playAlertSound()
-	if PlaySound then
-		pcall(PlaySound, "RaidWarning")
-	elseif PlaySoundFile then
-		pcall(PlaySoundFile, "Sound\\Interface\\RaidWarning.wav")
+	local soundKit = _G.SOUNDKIT and _G.SOUNDKIT.RAID_WARNING
+	if soundKit and type(PlaySound) == "function" then
+		local ok, played = pcall(PlaySound, soundKit)
+		if ok and played ~= false then return true end
 	end
+	if type(PlaySoundFile) == "function" then
+		local ok, played = pcall(PlaySoundFile, "Sound\\Interface\\RaidWarning.wav")
+		return ok and played ~= false
+	end
+	return false
 end
 
 function AlertEngine:ProcessRecord(record)

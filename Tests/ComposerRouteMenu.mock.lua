@@ -12,6 +12,9 @@ local requestedMessageTypes = {}
 GetNumRaidMembers = function() return 0 end
 GetNumPartyMembers = function() return 2 end
 local activeInstanceType = "none"
+local instanceGroup = false
+local homeRoute = "PARTY"
+local retail = true
 IsInInstance = function() return activeInstanceType ~= "none", activeInstanceType end
 IsInGuild = function() return true end
 GetChannelList = function()
@@ -41,8 +44,11 @@ ChattyChattyBangBang = {
 	Theme = {},
 	Presentation = {},
 	ClientAPI = { GetGroupChatType = function()
-		return activeInstanceType == "pvp" and "BATTLEGROUND" or "PARTY"
-	end },
+		if retail then
+			return instanceGroup and "INSTANCE_CHAT" or homeRoute
+		end
+		return activeInstanceType == "pvp" and "BATTLEGROUND" or homeRoute
+	end, GetHomeGroupChatType = function() return homeRoute end },
 	GetSmartSettings = function()
 		return settings
 	end,
@@ -158,8 +164,46 @@ assert(suggestedRoute == "CHANNEL" and suggestedTarget == 1 and not dock:IsReadO
 	"PVP view did not retain its latest writable Defense channel target")
 activeInstanceType = "pvp"
 suggestedRoute, suggestedTarget = dock:GetSuggestedComposerRoute()
+assert(suggestedRoute == "CHANNEL" and suggestedTarget == 1,
+	"Retail PvP zone without an instance group incorrectly changed chat route")
+instanceGroup = true
+suggestedRoute, suggestedTarget = dock:GetSuggestedComposerRoute()
+assert(suggestedRoute == "INSTANCE_CHAT" and suggestedTarget == nil,
+	"Retail PVP view did not prefer instance chat for an instance group")
+dock.activeView = "group"
+suggestedRoute, suggestedTarget = dock:GetSuggestedComposerRoute()
+assert(suggestedRoute == "INSTANCE_CHAT" and suggestedTarget == nil,
+	"Retail Group view did not prefer instance chat for an instance group")
+homeRoute = nil
+choices = dock:GetComposerRouteChoices()
+found = {}
+for _, choice in ipairs(choices) do found[choice.label] = choice end
+assert(found.INSTANCE_CHAT and not found.PARTY and not found.RAID,
+	"instance-only group menu offered an unavailable home route")
+homeRoute = "PARTY"
+choices = dock:GetComposerRouteChoices()
+found = {}
+for _, choice in ipairs(choices) do found[choice.label] = choice end
+assert(found.INSTANCE_CHAT and found.PARTY,
+	"simultaneous Retail instance and home groups were not both selectable")
+assert(dock:GetComposerRouteLabel("INSTANCE_CHAT") == "INSTANCE_CHAT",
+	"instance chat route label was not available")
+assert(dock:SetComposerRoute("INSTANCE_CHAT") and attributes.chatType == "INSTANCE_CHAT",
+	"instance chat selection was not applied to the composer")
+local nativeChatType
+dock.editBox = {
+	SetChatType = function(_, value) nativeChatType = value end,
+	SetAttribute = function(_, key, value) attributes[key] = value end,
+}
+assert(dock:SetComposerRoute("INSTANCE_CHAT") and nativeChatType == "INSTANCE_CHAT",
+	"instance chat selection did not use Retail edit-box chat type")
+instanceGroup = false
+activeInstanceType = "none"
+retail = false
+activeInstanceType = "pvp"
+suggestedRoute, suggestedTarget = dock:GetSuggestedComposerRoute()
 assert(suggestedRoute == "BATTLEGROUND" and suggestedTarget == nil,
-	"PVP view did not prefer Battleground chat while inside a battleground")
+	"legacy PVP view no longer prefers battleground chat")
 activeInstanceType = "none"
 
 -- The manual route is session-local per view. Switching tabs must not discard

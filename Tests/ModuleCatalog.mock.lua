@@ -1,12 +1,34 @@
 -- Focused no-client contract for Smart Chat's module compatibility registry.
 -- Run from the addon root with: lua Tests/ModuleCatalog.mock.lua
 ChattyChattyBangBang = {
-	db = { profile = { smartChat = { enabled = true }, modules = {} } },
+	db = { profile = { smartChat = {
+		enabled = true,
+		dock = { composerAutoHide = false, editBoxBorder = false },
+		conversations = { tellTargetEnabled = true, autoOpenWhispers = true },
+	}, modules = {} } },
 	modules = {},
 }
 
+local canRunFallback = true
+
 function ChattyChattyBangBang:GetSmartSettings()
 	return self.db.profile.smartChat
+end
+
+function ChattyChattyBangBang:GetComposerAutoHideSetting()
+	return self:GetSmartSettings().dock.composerAutoHide
+end
+
+function ChattyChattyBangBang:GetEditBoxBorderSetting()
+	return self:GetSmartSettings().dock.editBoxBorder
+end
+
+function ChattyChattyBangBang:GetTellTargetSettings()
+	return { enabled = self:GetSmartSettings().conversations.tellTargetEnabled }
+end
+
+function ChattyChattyBangBang:GetMessengerSettings()
+	return { autoOpenWhispers = self:GetSmartSettings().conversations.autoOpenWhispers }
 end
 
 function ChattyChattyBangBang:GetModule(name)
@@ -14,7 +36,7 @@ function ChattyChattyBangBang:GetModule(name)
 end
 
 function ChattyChattyBangBang:CanRunLegacyFallback()
-	return true
+	return canRunFallback
 end
 
 function ChattyChattyBangBang:SetLegacyModulePreference(name, enabled)
@@ -51,17 +73,38 @@ assert(tabs.compatibility == kinds.smartNative and tabs.runtime == "smart-active
 assert(tabs.enableControl == "smart-settings")
 assert(not addon:SetModuleCatalogPreference("chat-tabs", false), "Smart-native module accepted a legacy enable toggle")
 
+local whisperWindows = assert(addon:GetModuleCatalogStatus("automatic-whisper-windows"))
+assert(whisperWindows.runtime == "smart-active" and whisperWindows.smartSetting == "autoOpenWhispers",
+	"automatic whisper windows did not reflect their Smart Chat toggle")
+addon.db.profile.smartChat.conversations.autoOpenWhispers = false
+assert(addon:GetModuleCatalogStatus("automatic-whisper-windows").runtime == "smart-disabled",
+	"disabled automatic whisper windows were reported as running")
+addon.db.profile.smartChat.conversations.autoOpenWhispers = true
+
 local composer = assert(addon:GetModuleCatalogStatus("composer-auto-hide"))
 assert(composer.status == "smart" and composer.configPage == "dock" and composer.smartSetting == "composerAutoHide",
 	"idle composer auto-hide was not exposed as a Smart Chat built-in module")
 assert(composer.label == "Auto-Hide Composer" and composer.navLabel == "Auto-Hide Input",
 	"catalog did not preserve the full feature name beside its compact navigation label")
+assert(composer.runtime == "smart-disabled" and not composer.active and not composer.enabled,
+	"disabled composer auto-hide was reported as running")
+assert(composer.statusLabel == "OFF IN CHATTY", "disabled composer status label was misleading")
+addon.db.profile.smartChat.dock.composerAutoHide = true
+assert(addon:GetModuleCatalogStatus("composer-auto-hide").runtime == "smart-active",
+	"enabling composer auto-hide did not update its module status")
+addon.db.profile.smartChat.dock.composerAutoHide = false
 
 local inputBorder = assert(addon:GetModuleCatalogStatus("edit-box-border"))
 assert(inputBorder.status == "smart" and inputBorder.configPage == "dock" and inputBorder.smartSetting == "editBoxBorder",
 	"composer input-border adaptation was not exposed as a Smart Chat built-in module")
 assert(addon:GetModuleCatalogStatus("Edit Box Polish").id == "edit-box-border",
 	"legacy Edit Box Polish lookup did not resolve to Chatty's safe adapted control")
+assert(inputBorder.runtime == "smart-disabled" and not inputBorder.active,
+	"disabled typing-field border was reported as running")
+addon.db.profile.smartChat.dock.editBoxBorder = true
+assert(addon:GetModuleCatalogStatus("edit-box-border").runtime == "smart-active",
+	"enabling typing-field border did not update its module status")
+addon.db.profile.smartChat.dock.editBoxBorder = false
 
 local chatFont = assert(addon:GetModuleCatalogStatus("chat-font"))
 assert(chatFont.compatibility == kinds.smartNative and chatFont.runtime == "smart-active"
@@ -81,12 +124,18 @@ assert(addon:GetModuleCatalogStatus("Tell Target (/tt)").id == "tell-target",
 	"legacy Tell Target lookup did not resolve to Chatty's replacement")
 assert(not addon:SetModuleCatalogPreference("tell-target", false),
 	"Tell Target accepted a legacy fallback toggle after Smart Chat adopted it")
+addon.db.profile.smartChat.conversations.tellTargetEnabled = false
+assert(addon:GetModuleCatalogStatus("tell-target").runtime == "smart-disabled",
+	"disabled Tell Target was reported as running")
+addon.db.profile.smartChat.conversations.tellTargetEnabled = true
 
 local native = assert(addon:GetModuleCatalogStatus("timestamps"))
-assert(native.compatibility == kinds.nativeFallbackOnly and native.runtime == "native-ready" and not native.active,
+assert(native.compatibility == kinds.nativeFallbackOnly and native.runtime == "native-unavailable"
+	and not native.active and not native.nativeFallbackAvailable,
 	"native module was incorrectly reported as running in Smart Chat")
-assert(native.category == "Legacy Compatibility" and native.statusLabel == "RUNS ONLY WITH NATIVE FALLBACK",
-	"native fallback module omitted its user-facing compatibility metadata")
+assert(native.category == "Legacy Compatibility" and native.statusLabel == "NATIVE FALLBACK UNAVAILABLE"
+	and addon:GetModuleCatalogEntry("timestamps").statusLabel == "RUNS ONLY WITH NATIVE FALLBACK",
+	"native fallback status confused current availability with compatibility metadata")
 assert(native.preferenceEnabled, "default native preference should be enabled")
 assert(addon:SetModuleCatalogPreference("timestamps", false))
 assert(addon.db.profile.modules["Timestamps"] == false, "native preference was not saved")
@@ -107,5 +156,16 @@ addon.modules["Timestamps"] = {
 native = assert(addon:GetModuleCatalogStatus("Timestamps"))
 assert(native.runtime == "native-active" and native.active,
 	"enabled fallback module was not reported as native-active")
+addon.modules["Timestamps"].enabled = false
+native = assert(addon:GetModuleCatalogStatus("Timestamps"))
+assert(native.runtime == "native-ready" and native.nativeFallbackAvailable,
+	"available but dormant fallback module was not reported as ready")
+addon.modules["Timestamps"].enabled = true
+canRunFallback = false
+native = assert(addon:GetModuleCatalogStatus("Timestamps"))
+assert(native.runtime == "native-unavailable" and not native.nativeFallbackAvailable and not native.active,
+	"blocked native fallback was incorrectly reported as ready or active")
+assert(addon:GetModuleCatalogStatus("mousewheel-scroll").runtime == "native-unavailable",
+	"missing adapter fallback was incorrectly reported as ready")
 
 print("Module catalog mock tests passed")

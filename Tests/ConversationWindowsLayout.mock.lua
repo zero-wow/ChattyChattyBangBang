@@ -129,10 +129,17 @@ local function newFrame(kind, parent)
 	end
 	function object:SetAttribute(key, value) self[key] = value end
 	function object:GetAttribute(key) return self[key] end
-	function object:Clear() self.messages = {} end
+	function object:Clear()
+		self.clearCalls = (rawget(self, "clearCalls") or 0) + 1
+		self.messages = {}
+	end
+	function object:SetMaxLines(limit) self.maxLines = limit end
 	function object:AddMessage(message)
 		self.messages = self.messages or {}
 		self.messages[#self.messages + 1] = message
+		if self.maxLines and #self.messages > self.maxLines then
+			table.remove(self.messages, 1)
+		end
 	end
 	function object:GetNumMessages() return #(rawget(self, "messages") or {}) end
 	function object:GetNumLinesDisplayed() return rawget(self, "visibleLineCapacity") or 0 end
@@ -301,9 +308,9 @@ local settings = {
 	},
 	safety = { localIgnores = {}, confirmServerIgnore = true },
 }
-local Engine = { listeners = {} }
+local Engine = { listeners = {}, messages = {} }
 function Engine:RegisterListener(id, callback) self.listeners[id] = callback end
-function Engine:GetMessages() return {} end
+function Engine:GetMessages() return self.messages end
 
 ChattyChattyBangBang = {
 	Theme = Theme,
@@ -313,6 +320,7 @@ ChattyChattyBangBang = {
 	Presentation = {
 		Color = function(_, value) return tostring(value or "") end,
 		ColorizeMessage = function(_, value) return tostring(value or "") end,
+		GetColoredName = function() return nil end,
 	},
 	MessageEngine = Engine,
 	Compatibility = {},
@@ -558,6 +566,20 @@ window.editBox.scripts.OnEnterPressed(window.editBox)
 expect(window.editBox:GetText() == "client unavailable"
 	and replySession.draft == "client unavailable" and window.editBox:HasFocus(),
 	"unavailable whisper sending discarded the Messenger draft or focus")
+
+local retailWhisper
+C_ChatInfo = {
+	SendChatMessage = function(message, chatType, language, target)
+		retailWhisper = { message, chatType, language, target }
+	end,
+}
+setReplyText("retail reply")
+window.editBox.scripts.OnEnterPressed(window.editBox)
+expect(retailWhisper and retailWhisper[1] == "retail reply"
+	and retailWhisper[2] == "WHISPER" and retailWhisper[4] == "ReplyTarget"
+	and window.editBox:GetText() == "" and replySession.draft == "",
+	"Retail C_ChatInfo whisper path did not send or clear the successful draft")
+C_ChatInfo = nil
 
 SendChatMessage = function()
 	error("mock whisper failure")
@@ -1026,11 +1048,86 @@ window:RefreshMessageScrollbar(false)
 activeSession.pendingVisible = 3
 window:UpdateNewButton()
 bottomCalls = display.scrollToBottomCalls
-window.newButton.scripts.OnClick()
+expect(rawget(window.newButton, "icon") == nil and pcall(window.newButton.scripts.OnClick),
+	"text-only Messenger NEW control accessed a nonexistent icon or failed to click")
 expect(display.scrollToBottomCalls == bottomCalls + 1 and display.currentScroll == 0
 	and activeSession.pendingVisible == 0 and not window.newButton:IsShown()
 	and not window.scrollToBottomButton:IsShown() and scrollBar:GetValue() == 16,
 	"Messenger NEW control did not share the synchronized bottom-jump path")
+
+-- The message frame discards its oldest line at 200. Messenger must append
+-- incrementally at that boundary so a reader above bottom retains NEW and
+-- position rather than being reset by a full session rebuild.
+Manager:SelectSession(activeSession.playerKey)
+Engine.messages = {}
+for index = 1, 200 do
+	Engine.messages[index] = { id = index, event = "CHAT_MSG_WHISPER", sender = activeSession.playerName,
+		direction = "incoming", text = "history " .. index }
+end
+display.visibleLineCapacity = 4
+display.scrollMaximum = 196
+window:RenderSession(activeSession)
+expect(display:GetNumMessages() == 200 and activeSession.renderedCount == 200,
+	"Messenger mock did not establish a capped history")
+display.currentScroll = 30
+local clearCalls = display.clearCalls
+local newest = { id = 201, event = "CHAT_MSG_WHISPER", sender = activeSession.playerName,
+	direction = "incoming", text = "history 201" }
+Engine.messages[#Engine.messages + 1] = newest
+window:AddRecord(newest)
+expect(display.clearCalls == clearCalls and display:GetNumMessages() == 200
+	and activeSession.renderedCount == 200 and activeSession.renderedIds[201]
+	and not activeSession.renderedIds[1],
+	"201st message rebuilt history or left the capped rendered IDs stale")
+expect(display.currentScroll > 0 and activeSession.pendingVisible == 1
+	and window.newButton:IsShown(),
+	"201st message jumped to bottom or cleared NEW")
+local nextRecord = { id = 202, event = "CHAT_MSG_WHISPER", sender = activeSession.playerName,
+	direction = "incoming", text = "history 202" }
+Engine.messages[#Engine.messages + 1] = nextRecord
+window:AddRecord(nextRecord)
+expect(display.clearCalls == clearCalls and activeSession.pendingVisible == 2
+	and activeSession.renderedIds[202] and not activeSession.renderedIds[2],
+	"messages after the rollover lost incremental tracking")
+
+-- A retrospective removal must prune unread and pending IDs against engine
+-- history, rerender the active session once, and leave the reader above bottom.
+local bobOne = { id = 301, event = "CHAT_MSG_WHISPER", sender = "Bob",
+	direction = "incoming", text = "removed later" }
+local bobTwo = { id = 302, event = "CHAT_MSG_WHISPER", sender = "Bob",
+	direction = "incoming", text = "kept later" }
+Engine.messages[#Engine.messages + 1] = bobOne
+Engine.messages[#Engine.messages + 1] = bobTwo
+Manager:OnMessage(bobOne)
+Manager:OnMessage(bobTwo)
+expect(bob.unread >= 2 and bob.unreadIds[301] and bob.unreadIds[302],
+	"Messenger did not track unread message IDs before a retrospective removal")
+local filtered = {}
+for _, record in ipairs(Engine.messages) do
+	if record.id ~= 201 and record.id ~= 301 then filtered[#filtered + 1] = record end
+end
+Engine.messages = filtered
+display.scrollMaximum = 195
+clearCalls = display.clearCalls
+expect(Manager:RefreshAfterHistoryMutation(false)
+	and display.clearCalls == clearCalls + 1 and display.currentScroll > 0
+	and activeSession.pendingVisible == 1 and activeSession.pendingIds[202]
+	and not activeSession.pendingIds[201] and window.newButton:IsShown(),
+	"retrospective removal lost the active reading position or surviving NEW")
+expect(bob.unread == 1 and bob.unreadIds[302] and not bob.unreadIds[301],
+	"retrospective removal left a stale inactive-tab unread count")
+Engine.messages = {}
+display.scrollMaximum = 0
+expect(Manager:RefreshAfterHistoryMutation(true) and display:GetNumMessages() == 0
+	and activeSession.renderedCount == 0 and activeSession.pendingVisible == 0
+	and bob.unread == 0 and not window.newButton:IsShown(),
+	"Clear History did not reset Messenger's active display and all tab markers")
+local reused = { id = 1, event = "CHAT_MSG_WHISPER", sender = activeSession.playerName,
+	direction = "incoming", text = "new after clear" }
+Engine.messages[1] = reused
+window:AddRecord(reused)
+expect(display:GetNumMessages() == 1 and activeSession.renderedIds[1],
+	"Messenger hid a fresh message after Clear History reused an old ID")
 
 -- The minimum 300x160 shell must keep readable content clear of the 8px rail,
 -- with an additional visible gutter before the 10px V hit target.
@@ -1114,5 +1211,17 @@ expect(type(registeredChatCommands.tt) == "function" and Manager.tellTargetComma
 Manager:SetEnabled(true)
 expect(registerChatCommandCalls == lifecycleRegistrations + 1,
 	"repeated Messenger enable registered a duplicate /tt handler")
+
+-- An unavailable/failed server-ignore dispatch must not close the conversation
+-- or claim the player was ignored; a successful dispatch may close it.
+local ignoreKey = window.playerKey
+ChattyChattyBangBang.Compatibility.AddServerIgnore = function() return false end
+window:ShowServerIgnoreConfirmation()
+expect(window:ApplyServerIgnore() == false and Manager.sessionsByKey[ignoreKey]
+	and window.confirm:IsShown(),
+	"failed server ignore closed the conversation or hid its retry confirmation")
+ChattyChattyBangBang.Compatibility.AddServerIgnore = function() return true end
+expect(window:ApplyServerIgnore() == true and not Manager.sessionsByKey[ignoreKey],
+	"successful server-ignore dispatch did not close the conversation")
 
 print("ConversationWindowsLayout.mock.lua: PASS")

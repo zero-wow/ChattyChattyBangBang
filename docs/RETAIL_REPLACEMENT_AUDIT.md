@@ -1,5 +1,9 @@
 # Retail replacement audit
 
+Real-client results belong in the [manual Retail acceptance matrix](RETAIL_ACCEPTANCE_MATRIX.md);
+the [local test inventory](RETAIL_TESTING.md) is separate evidence and does not
+mark any in-game scenario as passed.
+
 Chatty's product contract is stronger than a chat reskin: every readable line
 needs one canonical record, a reasoned destination, an explicit visibility
 policy for each tab, a review path for held/blocked content, and a safe fallback

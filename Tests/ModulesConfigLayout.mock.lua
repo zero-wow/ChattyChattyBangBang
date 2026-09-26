@@ -167,9 +167,10 @@ for index = 1, 11 do
 		category = "Chat Features",
 		statusLabel = "RUNS IN CHATTY",
 		summary = "This feature runs on Chatty's own chat surface.",
-		configPage = index == 2 and "conversations" or "dock",
-		configSection = index == 2 and "opening" or nil,
-		smartSetting = index == 1 and "composerAutoHide" or (index == 2 and "tellTargetEnabled" or nil),
+		configPage = (index == 2 or index == 3) and "conversations" or "dock",
+		configSection = (index == 2 or index == 3) and "opening" or nil,
+		smartSetting = index == 1 and "composerAutoHide"
+			or (index == 2 and "tellTargetEnabled" or (index == 3 and "autoOpenWhispers" or nil)),
 	}
 end
 for index = 1, 11 do
@@ -219,6 +220,8 @@ function addon:GetComposerAutoHideSetting() return true end
 function addon:SetComposerAutoHide(value) self.composerAutoHide = value and true or false end
 function addon:GetTellTargetSettings() return { enabled = self.tellTargetEnabled ~= false } end
 function addon:SetTellTargetEnabled(value) self.tellTargetEnabled = value and true or false return true, self.tellTargetEnabled end
+function addon:GetMessengerSettings() return { autoOpenWhispers = self.popupWhispersEnabled ~= false } end
+function addon:SetMessengerPopupWhispersEnabled(value) self.popupWhispersEnabled = value and true or false return true, self.popupWhispersEnabled end
 
 dofile("Core/Config.lua")
 
@@ -292,6 +295,22 @@ expect(config.moduleInspectorStatus:GetText() == "RUNS ONLY WITH NATIVE FALLBACK
 expect(shown(config.modulePreferenceToggle) and not shown(config.moduleSmartToggle)
 	and not shown(config.moduleOpenConfig),
 	"legacy inspector controls must not overlap Chatty-only controls")
+modules[12].runtime = "native-unavailable"
+config:RefreshModulesPage(true)
+expect(config.moduleInspectorStatus:GetText() == "NATIVE FALLBACK UNAVAILABLE"
+	and config.moduleRows[1].status:GetText() == "NATIVE FALLBACK UNAVAILABLE",
+	"blocked native fallback must not be displayed as ready")
+expect(config.moduleNativeNote:GetText():find("unavailable", 1, true),
+	"unavailable fallback must explain that its saved preference is not running")
+modules[12].runtime = "native-ready"
+config:RefreshModulesPage(true)
+expect(config.moduleInspectorStatus:GetText() == "NATIVE FALLBACK READY",
+	"available dormant fallback did not show its ready state")
+modules[12].runtime = "native-active"
+config:RefreshModulesPage(true)
+expect(config.moduleInspectorStatus:GetText() == "RUNNING IN NATIVE FALLBACK",
+	"running native fallback did not show its active state")
+modules[12].runtime = nil
 
 config:SelectModule("smart-1")
 expect(config.moduleFilter == "features",
@@ -300,6 +319,21 @@ expect(config.moduleInspectorStatus:GetText() == "RUNS IN CHATTY",
 	"Chatty feature inspector must use the full human status")
 expect(not shown(config.modulePreferenceToggle) and shown(config.moduleSmartToggle),
 	"Chatty inspector must not expose the native-fallback preference")
+modules[1].runtime = "smart-disabled"
+config:RefreshModulesPage(true)
+expect(config.moduleInspectorStatus:GetText() == "OFF IN CHATTY"
+	and config.moduleRows[1].status:GetText() == "OFF IN CHATTY",
+	"disabled Smart feature must not be displayed as running")
+modules[1].runtime = nil
+
+config:SelectModule("smart-3")
+expect(shown(config.moduleSmartToggle)
+	and config.moduleSmartToggle.label:GetText() == "OPEN WHISPERS IN MESSENGER"
+	and config.moduleSmartToggle.checked,
+	"automatic whisper windows did not expose their live Smart setting")
+config.moduleSmartToggle:SetValue(false)
+expect(addon.popupWhispersEnabled == false,
+	"automatic whisper windows toggle did not update the Messenger setting")
 
 config:SelectModule("tell-target")
 expect(shown(config.moduleSmartToggle)

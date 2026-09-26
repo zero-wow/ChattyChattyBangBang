@@ -7,6 +7,13 @@ local chatEvents = {
 	"CHAT_MSG_YELL",
 	"CHAT_MSG_EMOTE",
 	"CHAT_MSG_TEXT_EMOTE",
+	"CHAT_MSG_MONSTER_SAY",
+	"CHAT_MSG_MONSTER_YELL",
+	"CHAT_MSG_MONSTER_EMOTE",
+	"CHAT_MSG_MONSTER_WHISPER",
+	"CHAT_MSG_MONSTER_PARTY",
+	"CHAT_MSG_RAID_BOSS_EMOTE",
+	"CHAT_MSG_RAID_BOSS_WHISPER",
 	"CHAT_MSG_WHISPER",
 	"CHAT_MSG_WHISPER_INFORM",
 	"CHAT_MSG_BN_WHISPER",
@@ -17,6 +24,7 @@ local chatEvents = {
 	"CHAT_MSG_CHANNEL",
 	"CHAT_MSG_ADDON",
 	"CHAT_MSG_GUILD",
+	"CHAT_MSG_GUILD_DISCORD",
 	"CHAT_MSG_GUILD_ACHIEVEMENT",
 	"CHAT_MSG_GUILD_ITEM_LOOTED",
 	"CHAT_MSG_OFFICER",
@@ -28,12 +36,30 @@ local chatEvents = {
 	"CHAT_MSG_BATTLEGROUND",
 	"CHAT_MSG_BATTLEGROUND_LEADER",
 	"CHAT_MSG_SYSTEM",
+	"CHAT_MSG_IGNORED",
+	"CHAT_MSG_FILTERED",
+	"CHAT_MSG_RESTRICTED",
 	-- UI errors are emitted by the client UI rather than a native chat frame.
 	-- Capture them explicitly so action failures remain visible while Smart Dock
 	-- owns and hides ChatFrame1.
 	"UI_ERROR_MESSAGE",
 	"CHAT_MSG_LOOT",
 	"CHAT_MSG_MONEY",
+	"CHAT_MSG_CURRENCY",
+	"CHAT_MSG_TRADESKILLS",
+	"CHAT_MSG_OPENING",
+	"CHAT_MSG_SKILL",
+	"CHAT_MSG_PET_INFO",
+	"CHAT_MSG_COMBAT_MISC_INFO",
+	"CHAT_MSG_TARGETICONS",
+	"CHAT_MSG_BN_INLINE_TOAST_ALERT",
+	"CHAT_MSG_PET_BATTLE_INFO",
+	"CHAT_MSG_PET_BATTLE_COMBAT_LOG",
+	"CHAT_MSG_PING",
+	"CHAT_MSG_VOICE_TEXT",
+	"CHAT_MSG_COMBAT_XP_GAIN",
+	"CHAT_MSG_COMBAT_HONOR_GAIN",
+	"CHAT_MSG_COMBAT_FACTION_CHANGE",
 	"CHAT_MSG_ACHIEVEMENT",
 	"CHAT_MSG_BG_SYSTEM_NEUTRAL",
 	"CHAT_MSG_BG_SYSTEM_ALLIANCE",
@@ -43,6 +69,16 @@ local chatEvents = {
 	"CHAT_MSG_ZONE_UNDER_ATTACK",
 	"CHAT_MSG_INSTANCE_CHAT",
 	"CHAT_MSG_INSTANCE_CHAT_LEADER",
+}
+
+-- These older event names are retained for compatible clients but are absent
+-- from the current Retail ChatInfo event definitions. Report their failures
+-- without forcing Blizzard chat visible for a source Retail does not emit.
+local optionalCompatibilityEvents = {
+	CHAT_MSG_BN_CONVERSATION = true,
+	CHAT_MSG_BATTLEGROUND = true,
+	CHAT_MSG_BATTLEGROUND_LEADER = true,
+	CHAT_MSG_ZONE_UNDER_ATTACK = true,
 }
 
 local localCommandRefreshEvents = {
@@ -59,6 +95,7 @@ local directCategories = {
 	CHAT_MSG_AFK = "conversations",
 	CHAT_MSG_DND = "conversations",
 	CHAT_MSG_GUILD = "guild",
+	CHAT_MSG_GUILD_DISCORD = "guild",
 	CHAT_MSG_GUILD_ACHIEVEMENT = "guild",
 	CHAT_MSG_GUILD_ITEM_LOOTED = "guild",
 	CHAT_MSG_OFFICER = "guild",
@@ -73,7 +110,32 @@ local directCategories = {
 	CHAT_MSG_INSTANCE_CHAT_LEADER = "group",
 	CHAT_MSG_LOOT = "loot",
 	CHAT_MSG_MONEY = "loot",
+	CHAT_MSG_CURRENCY = "loot",
+	CHAT_MSG_TRADESKILLS = "loot",
+	CHAT_MSG_OPENING = "loot",
 	CHAT_MSG_SYSTEM = "system",
+	CHAT_MSG_IGNORED = "system",
+	CHAT_MSG_FILTERED = "system",
+	CHAT_MSG_RESTRICTED = "system",
+	CHAT_MSG_SKILL = "system",
+	CHAT_MSG_PET_INFO = "system",
+	CHAT_MSG_COMBAT_MISC_INFO = "system",
+	CHAT_MSG_TARGETICONS = "system",
+	CHAT_MSG_BN_INLINE_TOAST_ALERT = "system",
+	CHAT_MSG_PET_BATTLE_INFO = "system",
+	CHAT_MSG_PET_BATTLE_COMBAT_LOG = "system",
+	CHAT_MSG_PING = "system",
+	CHAT_MSG_VOICE_TEXT = "system",
+	CHAT_MSG_COMBAT_XP_GAIN = "system",
+	CHAT_MSG_COMBAT_HONOR_GAIN = "system",
+	CHAT_MSG_COMBAT_FACTION_CHANGE = "system",
+	CHAT_MSG_MONSTER_SAY = "system",
+	CHAT_MSG_MONSTER_YELL = "system",
+	CHAT_MSG_MONSTER_EMOTE = "system",
+	CHAT_MSG_MONSTER_WHISPER = "system",
+	CHAT_MSG_MONSTER_PARTY = "system",
+	CHAT_MSG_RAID_BOSS_EMOTE = "system",
+	CHAT_MSG_RAID_BOSS_WHISPER = "system",
 	UI_ERROR_MESSAGE = "system",
 	CCBB_LOCAL_MESSAGE = "system",
 	CHAT_MSG_ACHIEVEMENT = "system",
@@ -154,6 +216,7 @@ registerStaticSource("CHAT_MSG_AFK", "conversations", "conversation:afk", "AFK r
 registerStaticSource("CHAT_MSG_DND", "conversations", "conversation:dnd", "DND replies")
 
 registerStaticSource("CHAT_MSG_GUILD", "guild", "guild:guild", "Guild chat")
+registerStaticSource("CHAT_MSG_GUILD_DISCORD", "guild", "guild:discord", "Guild Discord chat")
 registerStaticSource("CHAT_MSG_GUILD_ACHIEVEMENT", "guild", "guild:achievement", "Guild achievements")
 registerStaticSource("CHAT_MSG_GUILD_ITEM_LOOTED", "guild", "guild:item-looted", "Guild item notices")
 registerStaticSource("CHAT_MSG_OFFICER", "guild", "guild:officer", "Officer chat")
@@ -169,6 +232,28 @@ registerStaticSource("CHAT_MSG_INSTANCE_CHAT", "group", "group:instance", "Insta
 registerStaticSource("CHAT_MSG_INSTANCE_CHAT_LEADER", "group", "group:instance", "Instance chat")
 
 registerStaticSource("CHAT_MSG_SYSTEM", "system", "system:message", "System messages")
+registerStaticSource("CHAT_MSG_IGNORED", "system", "system:chat-status", "Chat status notices")
+registerStaticSource("CHAT_MSG_FILTERED", "system", "system:chat-status", "Chat status notices")
+registerStaticSource("CHAT_MSG_RESTRICTED", "system", "system:chat-status", "Chat status notices")
+registerStaticSource("CHAT_MSG_SKILL", "system", "system:progress", "Skill and combat progress")
+registerStaticSource("CHAT_MSG_PET_INFO", "system", "system:pet-info", "Pet notices")
+registerStaticSource("CHAT_MSG_COMBAT_MISC_INFO", "system", "system:combat-misc", "Combat notices")
+registerStaticSource("CHAT_MSG_TARGETICONS", "system", "system:target-icons", "Target markers")
+registerStaticSource("CHAT_MSG_BN_INLINE_TOAST_ALERT", "system", "system:bnet-alert", "Battle.net alerts")
+registerStaticSource("CHAT_MSG_PET_BATTLE_INFO", "system", "system:pet-battle", "Pet battle notices")
+registerStaticSource("CHAT_MSG_PET_BATTLE_COMBAT_LOG", "system", "system:pet-battle", "Pet battle notices")
+registerStaticSource("CHAT_MSG_PING", "system", "system:ping", "Ping notices")
+registerStaticSource("CHAT_MSG_VOICE_TEXT", "system", "system:voice-text", "Voice transcriptions")
+registerStaticSource("CHAT_MSG_COMBAT_XP_GAIN", "system", "system:progress", "Skill and combat progress")
+registerStaticSource("CHAT_MSG_COMBAT_HONOR_GAIN", "system", "system:progress", "Skill and combat progress")
+registerStaticSource("CHAT_MSG_COMBAT_FACTION_CHANGE", "system", "system:progress", "Skill and combat progress")
+registerStaticSource("CHAT_MSG_MONSTER_SAY", "system", "system:npc-dialogue", "NPC dialogue")
+registerStaticSource("CHAT_MSG_MONSTER_YELL", "system", "system:npc-dialogue", "NPC dialogue")
+registerStaticSource("CHAT_MSG_MONSTER_EMOTE", "system", "system:npc-dialogue", "NPC dialogue")
+registerStaticSource("CHAT_MSG_MONSTER_WHISPER", "system", "system:npc-dialogue", "NPC dialogue")
+registerStaticSource("CHAT_MSG_MONSTER_PARTY", "system", "system:npc-dialogue", "NPC dialogue")
+registerStaticSource("CHAT_MSG_RAID_BOSS_EMOTE", "system", "system:boss", "Boss notices")
+registerStaticSource("CHAT_MSG_RAID_BOSS_WHISPER", "system", "system:boss", "Boss notices")
 registerStaticSource("UI_ERROR_MESSAGE", "system", "system:ui-error", "UI alerts and errors")
 -- This is an internal record type, not a WoW event.  It is used by the tiny
 -- public DebugMessage bridge for macros and local add-ons, avoiding a broad
@@ -182,6 +267,9 @@ registerStaticSource("CHAT_MSG_ZONE_UNDER_ATTACK", "pvp", "system:under-attack",
 
 registerStaticSource("CHAT_MSG_LOOT", "loot", "loot:loot", "Loot messages")
 registerStaticSource("CHAT_MSG_MONEY", "loot", "loot:money", "Money messages")
+registerStaticSource("CHAT_MSG_CURRENCY", "loot", "loot:currency", "Currency messages")
+registerStaticSource("CHAT_MSG_TRADESKILLS", "loot", "loot:crafting", "Trade-skill and opening notices")
+registerStaticSource("CHAT_MSG_OPENING", "loot", "loot:crafting", "Trade-skill and opening notices")
 
 local roleTokens = {
 	{ token = "tank", tag = "role:tank" },
@@ -712,20 +800,12 @@ end
 -- ordinary chat events. It is never an account identity and must not survive
 -- into records where another subsystem could accidentally index it.
 local function usableBnetAccountId(value)
-	if value == nil then
-		return nil
-	end
-	local text = tostring(value)
-	text = string.gsub(text, "^%s+", "")
-	text = string.gsub(text, "%s+$", "")
-	if text == "" or text == "0" then
-		return nil
-	end
-	local numeric = tonumber(text)
-	if numeric and numeric <= 0 then
-		return nil
-	end
-	return text
+	-- Retail's arg14 can be a mobile-status boolean, not an account ID.  Only a
+	-- positive integral ID may become a persisted Battle.net identity.
+	local numeric = type(value) == "number" and value
+		or type(value) == "string" and tonumber(value) or nil
+	if not numeric or numeric <= 0 or numeric ~= math.floor(numeric) then return nil end
+	return tostring(numeric)
 end
 
 local function copySourceDefinition(definition)
@@ -2506,8 +2586,20 @@ function Engine:ClearHistory()
 	else
 		settings.history = nil
 	end
-	if addon.SmartDock and addon.SmartDock.RebuildActiveView then
-		addon.SmartDock:RebuildActiveView()
+	local dock = addon.SmartDock
+	if dock then
+		dock.unread = {}
+		dock.pendingVisible = 0
+		dock.historyPageOffset = 0
+		if type(dock.RebuildActiveView) == "function" then dock:RebuildActiveView() end
+		if type(dock.RefreshRailState) == "function" then dock:RefreshRailState() end
+		if type(dock.RefreshNewMessageIndicator) == "function" then
+			dock:RefreshNewMessageIndicator()
+		end
+	end
+	local messenger = addon.ConversationWindows
+	if messenger and type(messenger.RefreshAfterHistoryMutation) == "function" then
+		messenger:RefreshAfterHistoryMutation(true)
 	end
 	return true
 end
@@ -2866,12 +2958,10 @@ function Engine:ReapplyBlockRules()
 	if not control or type(control.ShouldBlock) ~= "function" then
 		return 0
 	end
+	local selected = {}
 	local changed = 0
 	local record = self.historyHead
 	while record do
-		-- unlinkRuntimeRecord clears the list pointers, so retain the next node
-		-- before evaluating/removing the current one.
-		local nextRecord = record._historyNext
 		record.blockedByBlockControl = nil
 		record.blockReason = nil
 		record.blockRuleId = nil
@@ -2883,9 +2973,48 @@ function Engine:ReapplyBlockRules()
 			if reason == "rule" and type(control.ArchiveRecord) == "function" then
 				control:ArchiveRecord(record, reason, rule)
 			end
-			unlinkRuntimeRecord(self, record)
+			selected[record] = true
 			changed = changed + 1
 		end
+		record = record._historyNext
+	end
+	local dock = addon.SmartDock
+	local unreadRemoved = {}
+	local pendingRemoved = 0
+	if changed > 0 and dock then
+		local settings = addon:GetSmartSettings()
+		local function countSelectedTail(viewId, pending)
+			pending = math.max(0, math.floor(tonumber(pending) or 0))
+			if pending == 0 then return 0 end
+			local visible = {}
+			local messages = self:GetMessages(viewId)
+			for index = 1, #messages do
+				local item = messages[index]
+				if not dock.IsLocallyIgnored or not dock:IsLocallyIgnored(item, settings) then
+					visible[#visible + 1] = item
+				end
+			end
+			local removed = 0
+			for index = math.max(1, #visible - pending + 1), #visible do
+				if selected[visible[index]] then removed = removed + 1 end
+			end
+			return removed
+		end
+		for viewId, unread in pairs(dock.unread or {}) do
+			local unreadCount = tonumber(unread)
+			if type(viewId) == "string" and unreadCount and unreadCount > 0 then
+				unreadRemoved[viewId] = countSelectedTail(viewId, unreadCount)
+			end
+		end
+		if type(dock.activeView) == "string" then
+			pendingRemoved = countSelectedTail(dock.activeView, dock.pendingVisible)
+		end
+	end
+	record = self.historyHead
+	while record do
+		-- unlinkRuntimeRecord clears list pointers; keep the next node first.
+		local nextRecord = record._historyNext
+		if selected[record] then unlinkRuntimeRecord(self, record) end
 		record = nextRecord
 	end
 	-- Runtime removal alone is not enough: the normal transcript's separate
@@ -2894,8 +3023,21 @@ function Engine:ReapplyBlockRules()
 	if changed > 0 and addon:GetSmartSettings().persistHistory then
 		self:RebuildPersistence()
 	end
-	if addon.SmartDock and addon.SmartDock.RebuildActiveView then
-		addon.SmartDock:RebuildActiveView()
+	if dock then
+		for viewId, removed in pairs(unreadRemoved) do
+			dock.unread[viewId] = math.max(0, (tonumber(dock.unread[viewId]) or 0) - removed)
+		end
+		dock.pendingVisible = math.max(0, (tonumber(dock.pendingVisible) or 0) - pendingRemoved)
+		if changed > 0 and type(dock.RebuildActiveViewPreservingScroll) == "function" then
+			dock:RebuildActiveViewPreservingScroll()
+		elseif type(dock.RebuildActiveView) == "function" then
+			dock:RebuildActiveView()
+		end
+		if type(dock.RefreshRailState) == "function" then dock:RefreshRailState() end
+	end
+	local messenger = addon.ConversationWindows
+	if changed > 0 and messenger and type(messenger.RefreshAfterHistoryMutation) == "function" then
+		messenger:RefreshAfterHistoryMutation(false)
 	end
 	return changed
 end
@@ -2977,7 +3119,7 @@ function Engine:CaptureAccessible(event, recoveredEpoch, ...)
 		record.timestamp = date and date("%H:%M", recoveredEpoch) or record.timestamp
 		record.recovered = true
 	end
-	self:TryDeliver(record)
+	return self:TryDeliver(record)
 end
 
 function Engine:Initialize()
@@ -3005,6 +3147,58 @@ function Engine:Initialize()
 	self:ResetForProfile()
 end
 
+local function registerCaptureEvent(frame, event)
+	if type(frame.RegisterEvent) ~= "function" then return false end
+	local ok, registered = pcall(function()
+		local result = frame:RegisterEvent(event)
+		if type(frame.IsEventRegistered) == "function" then
+			-- The frame's actual subscription is authoritative when available.
+			return frame:IsEventRegistered(event) == true
+		end
+		return result ~= false
+	end)
+	return ok and registered == true
+end
+
+local function setCoverageFallback(self, active)
+	local dock = addon.SmartDock
+	if not dock then return true end
+	if type(dock.SetCaptureCoverageFallback) ~= "function" then return not active end
+	local ok, result = pcall(dock.SetCaptureCoverageFallback, dock, active)
+	return ok and result ~= false
+end
+
+function Engine:GetCaptureCoverageStatus()
+	local coverage = self.captureCoverage or {}
+	local registered, failed, requiredFailed, optionalFailed = {}, {}, {}, {}
+	for index, event in ipairs(coverage.registeredEvents or {}) do registered[index] = event end
+	for index, event in ipairs(coverage.failedEvents or {}) do failed[index] = event end
+	for index, event in ipairs(coverage.requiredFailedEvents or {}) do requiredFailed[index] = event end
+	for index, event in ipairs(coverage.optionalFailedEvents or {}) do optionalFailed[index] = event end
+	local requiredTotal = #chatEvents + #localCommandRefreshEvents
+	for _, event in ipairs(chatEvents) do
+		if optionalCompatibilityEvents[event] then requiredTotal = requiredTotal - 1 end
+	end
+	return {
+		enabled = self.enabled == true,
+		registeredEvents = registered,
+		failedEvents = failed,
+		requiredFailedEvents = requiredFailed,
+		optionalFailedEvents = optionalFailed,
+		registeredCount = #registered,
+		failedCount = #failed,
+		requiredFailedCount = #requiredFailed,
+		optionalFailedCount = #optionalFailed,
+		requiredRegisteredCount = self.enabled and requiredTotal - #requiredFailed or 0,
+		requiredTotalCount = requiredTotal,
+		totalCount = #chatEvents + #localCommandRefreshEvents,
+		nativeFallbackRequired = self.enabled == true and #requiredFailed > 0,
+		nativeFallbackFailed = coverage.nativeFallbackFailed == true,
+		externalOutputCovered = false,
+		externalOutputNote = "Community, direct third-party chat-frame output, and untracked Blizzard notices are outside event capture coverage.",
+	}
+end
+
 function Engine:SetEnabled(enabled)
 	if not self.frame then
 		return
@@ -3023,17 +3217,37 @@ function Engine:SetEnabled(enabled)
 
 	if shouldEnable then
 		self:RefreshLocalCommandCapture()
+		local registered, failed, requiredFailed, optionalFailed = {}, {}, {}, {}
+		local function record(event)
+			if registerCaptureEvent(self.frame, event) then
+				registered[#registered + 1] = event
+			else
+				failed[#failed + 1] = event
+				local list = optionalCompatibilityEvents[event] and optionalFailed or requiredFailed
+				list[#list + 1] = event
+			end
+		end
 		for index = 1, #chatEvents do
-			pcall(self.frame.RegisterEvent, self.frame, chatEvents[index])
+			record(chatEvents[index])
 		end
 		for index = 1, #localCommandRefreshEvents do
-			pcall(self.frame.RegisterEvent, self.frame, localCommandRefreshEvents[index])
+			record(localCommandRefreshEvents[index])
 		end
+		self.captureCoverage = {
+			registeredEvents = registered, failedEvents = failed,
+			requiredFailedEvents = requiredFailed, optionalFailedEvents = optionalFailed,
+		}
+		self.captureCoverage.nativeFallbackFailed = not setCoverageFallback(self, #requiredFailed > 0)
 	else
 		if addon.ChatRecovery and addon.ChatRecovery.Stop then
 			addon.ChatRecovery:Stop()
 		end
 		self.localCommandCaptureViews = {}
 		self.frame:UnregisterAllEvents()
+		self.captureCoverage = {
+			registeredEvents = {}, failedEvents = {},
+			requiredFailedEvents = {}, optionalFailedEvents = {},
+		}
+		self.captureCoverage.nativeFallbackFailed = not setCoverageFallback(self, false)
 	end
 end

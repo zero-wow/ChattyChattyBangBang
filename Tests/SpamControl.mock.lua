@@ -394,6 +394,10 @@ assert(select(1, control:OnChatFilter(
 	primaryFrame, "CHAT_MSG_BN_WHISPER", "hello", "BNetFriend", nil,
 	nil, nil, nil, nil, nil, nil, nil, nil, 55
 )) == true, "positive Battle.net identity did not remain a valid local ban")
+assert(select(1, control:OnChatFilter(
+	primaryFrame, "CHAT_MSG_BN_WHISPER", "hello again", "BNetFriend", nil,
+	nil, nil, nil, nil, nil, nil, nil, nil, 55, true
+)) == true, "Retail mobile-status boolean displaced the Battle.net sender ID")
 
 -- Retail may hand native filters inaccessible chat values during messaging
 -- lockdown. The firewall must pass that line through without reading it or
@@ -411,5 +415,52 @@ assert(select(1, control:OnChatFilter(
 assert(control:GetStats().processed == processedBeforeRestricted,
 	"inaccessible Retail payload was evaluated by the firewall")
 _G.canaccessvalue = previousCanAccess
+
+-- Filter installation is all-or-nothing. A partial native registration must
+-- never leave the firewall active for Smart Chat while Blizzard sees only
+-- some of its filters; any callbacks that cannot be removed stay inert.
+assert(control:SetEnabled(false) and next(filters) == nil,
+	"SpamControl did not remove registered native filters")
+local originalAddFilter = ChatFrame_AddMessageEventFilter
+local originalRemoveFilter = ChatFrame_RemoveMessageEventFilter
+ChatFrame_AddMessageEventFilter = nil
+assert(control:SetEnabled(true) == false and not control:GetStats().enabled
+	and control:GetStats().registeredEvents == 0,
+	"missing native registration left the firewall enabled")
+
+local attempts = 0
+ChatFrame_AddMessageEventFilter = function(event, callback)
+	attempts = attempts + 1
+	filters[event] = callback
+	return attempts ~= 2
+end
+assert(control:SetEnabled(true) == false and attempts == 2
+	and next(filters) == nil and not control:GetStats().enabled
+	and control:GetStats().registeredEvents == 0
+	and engineReplay("partial registration") == false,
+	"rejected partial registration did not roll back native and engine filters")
+
+attempts = 0
+ChatFrame_RemoveMessageEventFilter = nil
+ChatFrame_AddMessageEventFilter = function(event, callback)
+	attempts = attempts + 1
+	filters[event] = callback
+	if attempts == 2 then error("registration failed") end
+	return true
+end
+assert(control:SetEnabled(true) == false and attempts == 2
+	and not control:GetStats().enabled and control:GetStats().registeredEvents == 0
+	and next(filters) ~= nil,
+	"registration error without removal did not fail open")
+local _, leftoverFilter = next(filters)
+assert(leftoverFilter(primaryFrame, "CHAT_MSG_CHANNEL", "native fallback", "Spammer") == false
+	and engineReplay("native fallback") == false,
+	"leftover native callback or Smart Chat bridge still blocked while disabled")
+ChatFrame_RemoveMessageEventFilter = originalRemoveFilter
+for event in pairs(filters) do originalRemoveFilter(event) end
+ChatFrame_AddMessageEventFilter = originalAddFilter
+assert(control:SetEnabled(true) and control:GetStats().enabled
+	and control:GetStats().registeredEvents > 2,
+	"SpamControl could not retry a complete native registration")
 
 print("SpamControl mock tests passed")

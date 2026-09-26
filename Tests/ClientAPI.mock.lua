@@ -39,17 +39,44 @@ assert(resize[1] == 300 and resize[4] == 500, "Retail resize bounds incorrect")
 api:DisableAddOn("Loaded")
 api:SaveAddOns()
 assert(disabled == "Loaded" and saved, "C_AddOns mutation facade did not run")
-_G.IsInInstance = function() return false, nil end
-_G.IsInRaid = function() return true end
-_G.IsInGroup = function() return true end
-assert(api:GetGroupChatType() == "RAID", "Retail raid route was not recognized")
-_G.IsInRaid = function() return false end
-assert(api:GetGroupChatType() == "PARTY", "Retail party route was not recognized")
-_G.IsInInstance = function() return true, "pvp" end
-assert(api:GetGroupChatType() == "BATTLEGROUND", "Retail battleground route was not recognized")
+_G.LE_PARTY_CATEGORY_HOME = 1
+_G.LE_PARTY_CATEGORY_INSTANCE = 2
+local homeRaid, homeGroup, instanceGroup = false, false, false
+local instanceType = nil
+_G.IsInInstance = function() return instanceType ~= nil, instanceType end
+_G.IsInRaid = function(category)
+	assert(category == _G.LE_PARTY_CATEGORY_HOME, "Retail raid lookup missed home category")
+	return homeRaid
+end
+_G.IsInGroup = function(category)
+	if category == _G.LE_PARTY_CATEGORY_INSTANCE then return instanceGroup end
+	assert(category == _G.LE_PARTY_CATEGORY_HOME, "Retail group lookup missed explicit category")
+	return homeGroup
+end
+homeRaid, homeGroup = true, true
+assert(api:GetGroupChatType() == "RAID", "Retail home raid route was not recognized")
+homeRaid = false
+assert(api:GetGroupChatType() == "PARTY", "Retail home party route was not recognized")
+instanceType = "party"
+assert(api:GetGroupChatType() == "PARTY", "being inside a dungeon changed a home party into instance chat")
+instanceType = "pvp"
+assert(api:GetGroupChatType() == "PARTY", "PvP location without instance-group membership changed the route")
+instanceGroup = true
+assert(api:GetGroupChatType() == "INSTANCE_CHAT", "Retail instance group did not use instance chat")
+homeRaid = true
+assert(api:GetGroupChatType() == "INSTANCE_CHAT" and api:GetHomeGroupChatType() == "RAID",
+	"simultaneous Retail home and instance groups lost their separate routes")
+instanceType = nil
+homeRaid, homeGroup = false, false
+assert(api:GetGroupChatType() == "INSTANCE_CHAT", "queued Retail instance group needed zone detection")
+instanceGroup = false
+assert(api:GetGroupChatType() == nil, "Retail route persisted after leaving both groups")
 
 _G.C_AddOns = nil
 _G.WOW_PROJECT_ID = nil
+api.isRetail = false
+_G.LE_PARTY_CATEGORY_HOME = nil
+_G.LE_PARTY_CATEGORY_INSTANCE = nil
 _G.GetNumAddOns = function() return 1 end
 _G.GetAddOnInfo = function() return "Legacy", "Legacy title", "legacy notes", 1 end
 _G.IsAddOnLoaded = function(name) return name == "Legacy" end
@@ -68,6 +95,10 @@ api:DisableAddOn("Legacy")
 api:SaveAddOns()
 assert(disabled == "legacy:Legacy" and saved == "legacy", "legacy addon mutations were not retained")
 assert(api:GetGroupChatType() == "PARTY", "Wrath party route was not retained")
+_G.IsInInstance = function() return true, "pvp" end
+assert(api:GetGroupChatType() == "BATTLEGROUND", "Wrath battleground route was not retained")
+_G.IsInInstance = function() return true, "arena" end
+assert(api:GetGroupChatType() == "BATTLEGROUND", "Wrath arena route was not retained")
 local legacyFrame = {
 	SetMinResize = function(_, width, height) resize[1], resize[2] = width, height end,
 	SetMaxResize = function(_, width, height) resize[3], resize[4] = width, height end,

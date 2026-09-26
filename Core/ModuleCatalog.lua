@@ -13,12 +13,21 @@ local COMPATIBILITY = {
 	NEEDS_ADAPTER = "needs-adapter",
 }
 
+local RUNTIME_LABELS = {
+	["smart-active"] = "RUNS IN CHATTY",
+	["smart-disabled"] = "OFF IN CHATTY",
+	["native-active"] = "RUNNING IN NATIVE FALLBACK",
+	["native-ready"] = "NATIVE FALLBACK READY",
+	["native-unavailable"] = "NATIVE FALLBACK UNAVAILABLE",
+	["needs-adapter"] = "NOT YET AVAILABLE",
+}
+
 local catalog = {
 	-- These are real Smart Chat features.  Their copied Chatter counterparts
 	-- remain disabled because they would alter the hidden native frames.
 	{ id = "chat-tabs", label = "Chat Tabs", legacyName = "ChatTabs", compatibility = COMPATIBILITY.SMART_NATIVE, configPage = "views", summary = "Message Views supplies Smart Chat's tabs, routing, order, and visibility." },
 	{ id = "scrollback", label = "Scrollback & History", navLabel = "Chat History", legacyName = "Scrollback", compatibility = COMPATIBILITY.SMART_NATIVE, configPage = "dock", summary = "Smart Chat retains a separate bounded history for every source and can restore it after login or /reload." },
-	{ id = "automatic-whisper-windows", label = "Automatic Whisper Windows", navLabel = "Whisper Windows", legacyName = "Automatic Whisper Windows", compatibility = COMPATIBILITY.SMART_NATIVE, configPage = "conversations", summary = "Smart Chat opens and groups whisper conversations in Messenger windows." },
+	{ id = "automatic-whisper-windows", label = "Automatic Whisper Windows", navLabel = "Whisper Windows", legacyName = "Automatic Whisper Windows", compatibility = COMPATIBILITY.SMART_NATIVE, configPage = "conversations", configSection = "opening", smartSetting = "autoOpenWhispers", summary = "Smart Chat opens and groups whisper conversations in Messenger windows." },
 	{ id = "all-edge-resizing", label = "All Edge Resizing", navLabel = "Edge Resizing", legacyName = "All Edge resizing", compatibility = COMPATIBILITY.SMART_NATIVE, configPage = "dock", summary = "Smart Chat has its own edge and corner resize handles." },
 	{ id = "disable-buttons", label = "Disable Buttons", navLabel = "Chat Controls", legacyName = "Disable Buttons", compatibility = COMPATIBILITY.SMART_NATIVE, configPage = "dock", summary = "Smart Chat controls its own compact header and scroll controls." },
 	{ id = "composer-auto-hide", label = "Auto-Hide Composer", navLabel = "Auto-Hide Input", legacyName = "Auto-Hide Composer", compatibility = COMPATIBILITY.SMART_NATIVE, configPage = "dock", smartSetting = "composerAutoHide", summary = "Hides the bottom composer while idle. Enter, slash, and reply reveal it temporarily while chat fills the released space." },
@@ -90,7 +99,38 @@ local function copyEntry(entry)
 end
 
 local function smartChatEnabled(owner)
-	return owner.GetSmartSettings and owner:GetSmartSettings().enabled and true or false
+	local settings = owner.GetSmartSettings and owner:GetSmartSettings()
+	return type(settings) == "table" and settings.enabled == true
+end
+
+local function smartFeatureEnabled(owner, entry)
+	local settings = owner.GetSmartSettings and owner:GetSmartSettings() or {}
+	if entry.smartSetting == "composerAutoHide" then
+		if owner.GetComposerAutoHideSetting then
+			return owner:GetComposerAutoHideSetting() == true
+		end
+		local dock = settings.dock or {}
+		return dock.composerAutoHide == true
+			or (dock.composerAutoHide == nil and dock.showComposer == false)
+	elseif entry.smartSetting == "editBoxBorder" then
+		if owner.GetEditBoxBorderSetting then
+			return owner:GetEditBoxBorderSetting() == true
+		end
+		return (settings.dock or {}).editBoxBorder == true
+	elseif entry.smartSetting == "tellTargetEnabled" then
+		if owner.GetTellTargetSettings then
+			local feature = owner:GetTellTargetSettings()
+			if type(feature) == "table" then return feature.enabled ~= false end
+		end
+		return (settings.conversations or {}).tellTargetEnabled ~= false
+	elseif entry.smartSetting == "autoOpenWhispers" then
+		if owner.GetMessengerSettings then
+			local feature = owner:GetMessengerSettings()
+			if type(feature) == "table" then return feature.autoOpenWhispers ~= false end
+		end
+		return (settings.conversations or {}).autoOpenWhispers ~= false
+	end
+	return true
 end
 
 function addon:GetModuleCompatibilityKinds()
@@ -117,8 +157,9 @@ function addon:GetModuleCatalogEntry(id)
 end
 
 -- Dynamic status contract for the Modules UI:
---   runtime = "smart-active", "native-active", "native-ready", or
---             "needs-adapter".  compatibility remains one of the immutable
+--   runtime = "smart-active", "smart-disabled", "native-active",
+--             "native-ready", "native-unavailable", or "needs-adapter".
+--   compatibility remains one of the immutable
 -- constants returned by GetModuleCompatibilityKinds().
 function addon:GetModuleCatalogStatus(id)
 	local entry = byId[id]
@@ -134,32 +175,34 @@ function addon:GetModuleCatalogStatus(id)
 	end
 	result.smartChatEnabled = smartEnabled
 	result.preferenceEnabled = preferenceEnabled
-	result.canConfigureLegacy = self.GetModule and self:GetModule(entry.legacyName, true) ~= nil or false
+	local module = self.GetModule and self:GetModule(entry.legacyName, true)
+	result.canConfigureLegacy = module ~= nil
 
 	if entry.compatibility == COMPATIBILITY.SMART_NATIVE then
-		result.runtime = smartEnabled and "smart-active" or "smart-disabled"
-		result.active = smartEnabled
-		result.enabled = smartEnabled
+		result.featureEnabled = smartFeatureEnabled(self, entry)
+		result.active = smartEnabled and result.featureEnabled
+		result.runtime = result.active and "smart-active" or "smart-disabled"
+		result.enabled = result.active
 		result.enableControl = "smart-settings"
-	elseif entry.compatibility == COMPATIBILITY.NEEDS_ADAPTER then
-		local canRun = self.CanRunLegacyFallback and self:CanRunLegacyFallback() or false
-		local module = self.GetModule and self:GetModule(entry.legacyName, true)
-		local active = not smartEnabled and canRun and module and module.IsEnabled and module:IsEnabled() or false
-		result.runtime = smartEnabled and "needs-adapter" or (active and "native-active" or "native-ready")
-		result.active = active and true or false
-		result.enabled = preferenceEnabled
-		result.nativeFallbackAvailable = not smartEnabled and canRun
-		result.enableControl = "native-fallback"
 	else
 		local canRun = self.CanRunLegacyFallback and self:CanRunLegacyFallback() or false
-		local module = self.GetModule and self:GetModule(entry.legacyName, true)
-		local active = not smartEnabled and canRun and module and module.IsEnabled and module:IsEnabled() or false
-		result.runtime = active and "native-active" or "native-ready"
+		local available = not smartEnabled and canRun and module ~= nil
+		local active = available and module.IsEnabled and module:IsEnabled() or false
+		if smartEnabled and entry.compatibility == COMPATIBILITY.NEEDS_ADAPTER then
+			result.runtime = "needs-adapter"
+		elseif active then
+			result.runtime = "native-active"
+		elseif available then
+			result.runtime = "native-ready"
+		else
+			result.runtime = "native-unavailable"
+		end
 		result.active = active and true or false
 		result.enabled = preferenceEnabled
-		result.nativeFallbackAvailable = not smartEnabled and canRun
+		result.nativeFallbackAvailable = available and true or false
 		result.enableControl = "native-fallback"
 	end
+	result.statusLabel = RUNTIME_LABELS[result.runtime] or result.statusLabel
 	return result
 end
 

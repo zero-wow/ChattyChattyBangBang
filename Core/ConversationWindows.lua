@@ -20,6 +20,7 @@ Window.__index = Window
 local MAX_TABS = 12
 local MAX_HISTORY = 200
 local MAX_PENDING = 12
+local SEND_ECHO_TIMEOUT = 15
 local MESSAGE_SCROLLBAR_RIGHT_INSET = 3
 local MESSAGE_SCROLLBAR_VERTICAL_INSET = 4
 local MESSAGE_SCROLLBAR_THUMB_WIDTH = 6
@@ -41,6 +42,10 @@ local TAB_BADGE_RIGHT_INSET = 16
 local whisperEvents = {
 	CHAT_MSG_WHISPER = true,
 	CHAT_MSG_WHISPER_INFORM = true,
+}
+local bnetWhisperEvents = {
+	CHAT_MSG_BN_WHISPER = true,
+	CHAT_MSG_BN_WHISPER_INFORM = true,
 }
 
 local ACTION_ICON_ROOT = "Interface\\AddOns\\ChattyChattyBangBang\\Media\\Messenger\\"
@@ -185,18 +190,38 @@ local function playerKey(name)
 	return name and string.lower(name) or nil
 end
 
-local function getPartner(record)
-	if not record or record.isBNet or not whisperEvents[record.event] then
+local function validBnetAccountID(value)
+	if type(value) ~= "number" and (type(value) ~= "string" or not string.match(value, "^%d+$")) then
 		return nil
 	end
-
-	-- On Wrath clients arg2 is the other player for both WHISPER and
-	-- WHISPER_INFORM.  The target fallback helps private-server variants that
-	-- populate only arg5 for outgoing whispers.
-	return cleanPlayerName(record.sender) or cleanPlayerName(record.target)
+	local id = tonumber(value)
+	return id and id > 0 and id == math.floor(id) and id or nil
 end
 
-local function isLocallyIgnored(name)
+local function getConversationTarget(record)
+	if not record then return nil end
+	if bnetWhisperEvents[record.event] and record.isBNet then
+		-- Retail's chat payload supplies bnSenderID at arg13 (stored here as
+		-- presenceId). An older client may instead supply an extended arg14 ID.
+		-- Reject nonnumeric arg14 values such as Retail's isMobile boolean.
+		local accountID = validBnetAccountID(record.bnetAccountId)
+			or validBnetAccountID(record.presenceId)
+		if not accountID then return nil end
+		return cleanPlayerName(record.sender) or cleanPlayerName(record.target)
+			or "Battle.net " .. tostring(accountID), "bnet:" .. tostring(accountID), accountID
+	end
+	if record.isBNet or not whisperEvents[record.event] then return nil end
+	-- On Wrath clients arg2 is the other player for both WHISPER and
+	-- WHISPER_INFORM. The target fallback helps private-server variants that
+	-- populate only arg5 for outgoing whispers.
+	local name = cleanPlayerName(record.sender) or cleanPlayerName(record.target)
+	return name, playerKey(name), nil
+end
+
+local function isLocallyIgnored(name, bnetAccountID)
+	-- Character-name ignores must never hide a different Battle.net identity
+	-- that happens to have the same displayed name.
+	if bnetAccountID then return false end
 	local settings = addon:GetSmartSettings()
 	local ignores = settings.safety and settings.safety.localIgnores
 	local key = playerKey(name)
@@ -342,8 +367,8 @@ local function isFrameHovered(frame)
 end
 
 local function sessionMatches(session, record)
-	local partner = getPartner(record)
-	return partner and session and playerKey(partner) == session.playerKey
+	local _, key = getConversationTarget(record)
+	return key and session and key == session.playerKey
 end
 
 local function compactName(name)
@@ -546,6 +571,55 @@ function Window:UpdateNewButton()
 	self.newButton:Show()
 end
 
+function Window:SaveReaderPosition(session)
+	if not session or not self.display or not self.display.GetCurrentScroll then return end
+	session.pageOffsets = session.pageOffsets or {}
+	session.pageOffsets[session.historyPage or 1] = math.max(0,
+		math.floor((tonumber(self.display:GetCurrentScroll()) or 0) + 0.5))
+end
+
+function Window:RefreshHistoryPager(session)
+	if not self.historyPrevious then return end
+	local pageCount = session and session.historyPageCount or 1
+	local visible = pageCount > 1
+	if self.historyPagerVisible ~= visible then
+		self.historyPagerVisible = visible
+		self.display:ClearAllPoints()
+		self.display:SetPoint("TOPLEFT", self.content, "TOPLEFT", 4, visible and -22 or -4)
+		self.display:SetPoint("BOTTOMRIGHT", self.content, "BOTTOMRIGHT", -18, 4)
+		self.messageScrollbar:ClearAllPoints()
+		self.messageScrollbar:SetPoint("TOPRIGHT", self.content, "TOPRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+			visible and -22 or -MESSAGE_SCROLLBAR_VERTICAL_INSET)
+		self.messageScrollbar:SetPoint("BOTTOMRIGHT", self.content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+			MESSAGE_SCROLLBAR_VERTICAL_INSET + MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP)
+	end
+	if visible then
+		local page = session.historyPage or 1
+		self.historyLabel:SetText(page .. "/" .. pageCount)
+		self.historyPrevious:SetAlpha(page < pageCount and 1 or 0.45)
+		self.historyNext:SetAlpha(page > 1 and 1 or 0.45)
+		self.historyPrevious:Show()
+		self.historyNext:Show()
+		self.historyLabel:Show()
+	else
+		self.historyPrevious:Hide()
+		self.historyNext:Hide()
+		self.historyLabel:Hide()
+	end
+end
+
+function Window:ChangeHistoryPage(delta)
+	local session = self:GetActiveSession()
+	if not session then return false end
+	local nextPage = math.max(1, math.min(session.historyPageCount or 1,
+		(session.historyPage or 1) + delta))
+	if nextPage == (session.historyPage or 1) then return false end
+	self:SaveReaderPosition(session)
+	session.historyPage = nextPage
+	self:RenderSession(session)
+	return true
+end
+
 local function setMessengerDisplayScrollOffset(display, offset)
 	offset = math.max(0, math.floor((tonumber(offset) or 0) + 0.5))
 	if display.SetScrollOffset then
@@ -591,9 +665,11 @@ function Window:SetMessageScrollbarOffset(value)
 		or tonumber(self.messageScrollMaximum) or 0))
 	local sliderValue = math.max(0, math.min(maximum, math.floor((tonumber(value) or 0) + 0.5)))
 	setMessengerDisplayScrollOffset(display, maximum - sliderValue)
-	if maximum - sliderValue == 0 or (display.AtBottom and display:AtBottom()) then
-		local session = self:GetActiveSession()
-		if session then session.pendingVisible = 0 end
+	local session = self:GetActiveSession()
+	if session and (session.historyPage or 1) == 1 and not session.pendingOutsideSnapshot
+		and (maximum - sliderValue == 0 or (display.AtBottom and display:AtBottom())) then
+		session.pendingVisible = 0
+		session.pendingIds = {}
 		self:UpdateNewButton()
 	end
 	self:RefreshMessageScrollbar(false)
@@ -602,9 +678,20 @@ end
 
 function Window:ScrollMessageDisplayToBottom()
 	if not self.display then return false end
-	if self.display.ScrollToBottom then self.display:ScrollToBottom() end
 	local session = self:GetActiveSession()
-	if session then session.pendingVisible = 0 end
+	if session and ((session.historyPage or 1) ~= 1 or session.pendingOutsideSnapshot) then
+		self:SaveReaderPosition(session)
+		session.historyPage = 1
+		session.historyAnchorId = nil
+		session.pendingOutsideSnapshot = nil
+		self:RenderSession(session)
+	end
+	if self.display.ScrollToBottom then self.display:ScrollToBottom() end
+	if session then
+		session.pendingVisible = 0
+		session.pendingIds = {}
+		self:SaveReaderPosition(session)
+	end
 	self:UpdateNewButton()
 	self:RefreshMessageScrollbar(false)
 	return true
@@ -639,19 +726,32 @@ function Window:RefreshMessageScrollbar(recalculate)
 			math.floor(height * math.min(1, visible / (visible + maximum)) + 0.5))
 		Theme:SetScrollBarThumbSize(scrollBar, MESSAGE_SCROLLBAR_THUMB_WIDTH, thumbHeight)
 	end
-	local atBottom = scrollOffset == 0 or (display.AtBottom and display:AtBottom())
+	local session = self:GetActiveSession()
+	local atBottom = (not session or ((session.historyPage or 1) == 1
+		and not session.pendingOutsideSnapshot))
+		and (scrollOffset == 0 or (display.AtBottom and display:AtBottom()))
 	if self.scrollToBottomButton then
-		if overflow and not atBottom then self.scrollToBottomButton:Show()
+		if (overflow or (session and (session.historyPage or 1) > 1)) and not atBottom then
+			self.scrollToBottomButton:Show()
 		else self.scrollToBottomButton:Hide() end
 	end
 	return overflow
 end
 
-function Window:RenderSession(session)
+function Window:RenderSession(session, preserveReaderState)
+	local previousOffset
+	local pendingIds = session and session.pendingIds or {}
+	if preserveReaderState and session and self.playerKey == session.playerKey
+		and self.display.GetCurrentScroll then
+		previousOffset = math.max(0, tonumber(self.display:GetCurrentScroll()) or 0)
+	elseif session and session.pageOffsets then
+		previousOffset = session.pageOffsets[session.historyPage or 1]
+	end
 	self.display:Clear()
 	self.messageScrollMaximum = nil
 	self.newButton:Hide()
 	if not session then
+		self:RefreshHistoryPager(nil)
 		self.empty:SetText("Choose a Messenger tab to begin.")
 		self.empty:Show()
 		self:RefreshMessageScrollbar(true)
@@ -659,9 +759,14 @@ function Window:RenderSession(session)
 	end
 
 	session.renderedIds = {}
+	session.renderedOrder = {}
 	session.renderedCount = 0
 	session.pendingVisible = 0
-	if not Engine or not Engine.GetMessages or isLocallyIgnored(session.playerName) then
+	session.pendingIds = {}
+	if not Engine or not Engine.GetMessages or isLocallyIgnored(session.playerName, session.bnetAccountID) then
+		session.historyPage = 1
+		session.historyPageCount = 1
+		self:RefreshHistoryPager(session)
 		self.empty:SetText("No whisper history with this player yet.")
 		self.empty:Show()
 		self:RefreshMessageScrollbar(true)
@@ -670,23 +775,56 @@ function Window:RenderSession(session)
 
 	local records = Engine:GetMessages("conversations") or {}
 	local history = {}
-	for index = #records, 1, -1 do
-		local record = records[index]
-		if sessionMatches(session, record) then
-			history[#history + 1] = record
-			if #history >= MAX_HISTORY then
+	local total = 0
+	-- Freeze the page boundaries while reading older history. New arrivals
+	-- stay behind NEW until the reader explicitly jumps to the live page.
+	if not session.historyAnchorId then
+		for index = #records, 1, -1 do
+			if sessionMatches(session, records[index]) then
+				session.historyAnchorId = tonumber(records[index].id)
 				break
 			end
 		end
 	end
+	local function inSnapshot(record)
+		local id = tonumber(record.id)
+		return not session.historyAnchorId or not id or id <= session.historyAnchorId
+	end
+	for index = #records, 1, -1 do
+		if sessionMatches(session, records[index]) and inSnapshot(records[index]) then
+			total = total + 1
+		end
+	end
+	session.historyTotal = total
+	session.historyPageCount = math.max(1, math.ceil(total / MAX_HISTORY))
+	session.historyPage = math.max(1, math.min(session.historyPage or 1, session.historyPageCount))
+	local first = (session.historyPage - 1) * MAX_HISTORY + 1
+	local last = first + MAX_HISTORY - 1
+	local matched = 0
+	for index = #records, 1, -1 do
+		local record = records[index]
+		if sessionMatches(session, record) and inSnapshot(record) then
+			matched = matched + 1
+			if matched >= first and matched <= last then history[#history + 1] = record end
+			if matched >= last then break end
+		end
+	end
+	self:RefreshHistoryPager(session)
 
 	for index = #history, 1, -1 do
 		local record = history[index]
 		self.display:AddMessage(self:FormatRecord(record, session), 1, 1, 1)
 		if record.id then
 			session.renderedIds[record.id] = true
+			session.renderedOrder[#session.renderedOrder + 1] = record.id
 		end
 		session.renderedCount = session.renderedCount + 1
+	end
+	for id in pairs(pendingIds) do
+		if session.historyPage > 1 or session.pendingOutsideSnapshot or session.renderedIds[id] then
+			session.pendingIds[id] = true
+			session.pendingVisible = session.pendingVisible + 1
+		end
 	end
 
 	if #history > 0 then
@@ -696,11 +834,17 @@ function Window:RenderSession(session)
 		self.empty:SetText("No whisper history with this player yet.")
 		self.empty:Show()
 	end
+	if previousOffset and previousOffset > 0 then
+		local maximum = self:GetMessageScrollMaximum()
+		setMessengerDisplayScrollOffset(self.display, math.min(previousOffset, maximum))
+	end
+	self:SaveReaderPosition(session)
+	self:UpdateNewButton()
 	self:RefreshMessageScrollbar(true)
 end
 
 function Window:RebuildHistory()
-	self:RenderSession(self:GetActiveSession())
+	self:RenderSession(self:GetActiveSession(), true)
 end
 
 function Window:AddRecord(record, suppressScrollNotice)
@@ -708,25 +852,63 @@ function Window:AddRecord(record, suppressScrollNotice)
 	if not record or not record.id or not session or session.renderedIds[record.id] or not sessionMatches(session, record) then
 		return
 	end
-	if isLocallyIgnored(session.playerName) then
+	if isLocallyIgnored(session.playerName, session.bnetAccountID) then
 		return
 	end
-
-	if session.renderedCount >= MAX_HISTORY then
-		self:RenderSession(session)
+	if (session.historyPage or 1) > 1 or session.pendingOutsideSnapshot then
+		session.pendingOutsideSnapshot = true
+		session.pendingIds = session.pendingIds or {}
+		if not session.pendingIds[record.id] then
+			session.pendingIds[record.id] = true
+			session.pendingVisible = (session.pendingVisible or 0) + 1
+		end
+		self:RefreshHistoryPager(session)
+		self:UpdateNewButton()
 		return
 	end
 
 	local wasAtBottom = self.display:AtBottom()
+	local previousOffset = not wasAtBottom and self.display.GetCurrentScroll
+		and math.max(0, tonumber(self.display:GetCurrentScroll()) or 0) or 0
 	self.display:AddMessage(self:FormatRecord(record, session), 1, 1, 1)
 	session.renderedIds[record.id] = true
-	session.renderedCount = session.renderedCount + 1
+	session.renderedOrder = session.renderedOrder or {}
+	session.renderedOrder[#session.renderedOrder + 1] = record.id
+	if #session.renderedOrder > MAX_HISTORY then
+		local expiredId = table.remove(session.renderedOrder, 1)
+		session.renderedIds[expiredId] = nil
+		if session.pendingIds and session.pendingIds[expiredId] then
+			session.pendingIds[expiredId] = nil
+			session.pendingVisible = math.max(0, session.pendingVisible - 1)
+		end
+	end
+	session.renderedCount = math.min(MAX_HISTORY, session.renderedCount + 1)
+	local nextTotal = (session.historyTotal or 0) + 1
+	if Engine and Engine.GetMessages then
+		-- The engine can evict an older line at any source capacity, including
+		-- limits between page boundaries (for example 450). Count retained
+		-- records so the pager never advertises an empty older page.
+		nextTotal = 0
+		for _, candidate in ipairs(Engine:GetMessages("conversations") or {}) do
+			if sessionMatches(session, candidate) then nextTotal = nextTotal + 1 end
+		end
+	end
+	session.historyTotal = nextTotal
+	session.historyPageCount = math.max(1, math.ceil(session.historyTotal / MAX_HISTORY))
+	session.historyAnchorId = tonumber(record.id) or session.historyAnchorId
+	self:RefreshHistoryPager(session)
 	session.lastUsed = now()
 	self.empty:Hide()
 
 	if suppressScrollNotice or wasAtBottom then
 		self.display:ScrollToBottom()
 	else
+		-- The native ScrollingMessageFrame drops its oldest line at the cap.
+		-- Keep the reader above the newest message instead of rebuilding the
+		-- entire session (which would jump to bottom and erase NEW).
+		setMessengerDisplayScrollOffset(self.display, previousOffset + 1)
+		session.pendingIds = session.pendingIds or {}
+		session.pendingIds[record.id] = true
 		session.pendingVisible = session.pendingVisible + 1
 		self:UpdateNewButton()
 	end
@@ -792,6 +974,9 @@ function Window:RefreshAppearance()
 	addText(self.tabNext and self.tabNext.text)
 	addText(self.actionToggle and self.actionToggle.text)
 	addText(self.newButton and self.newButton.text)
+	addText(self.historyPrevious and self.historyPrevious.text)
+	addText(self.historyLabel)
+	addText(self.historyNext and self.historyNext.text)
 	addText(self.send and self.send.text)
 	addText(self.scrollToBottomGlyph)
 	addText(self.confirmTitle)
@@ -891,7 +1076,7 @@ end
 function Window:UpdateRouteLabel(session)
 	local label = "TO"
 	if session and session.playerName then
-		label = "TO " .. compactName(session.playerName)
+		label = (session.bnetAccountID and "BN " or "TO ") .. compactName(session.playerName)
 	end
 	self.route:SetText(label)
 	local measured = self.route.GetStringWidth and self.route:GetStringWidth() or (string.len(label) * 6)
@@ -1019,7 +1204,8 @@ function Window:RevealComposer(focus)
 	self.transientComposer = true
 	self:Show()
 	self:ApplyChromeLayout(true)
-	if focus and self.playerName and not isLocallyIgnored(self.playerName) then
+	local session = self:GetActiveSession()
+	if focus and session and not isLocallyIgnored(session.playerName, session.bnetAccountID) then
 		self.editBox:SetFocus()
 	end
 end
@@ -1029,16 +1215,47 @@ function Window:UpdateComposerForSession(session)
 		self.editBox:SetText("")
 		self.placeholder:Show()
 		self:UpdateRouteLabel(nil)
+		self:RefreshSendFeedback(nil)
 		return
 	end
 
 	self.editBox:SetText(session.draft or "")
 	self.editBox:ClearFocus()
 	self:UpdateRouteLabel(session)
+	self:RefreshSendFeedback(session)
 	if trim(session.draft or "") == "" then
 		self.placeholder:Show()
 	else
 		self.placeholder:Hide()
+	end
+end
+
+function Window:RefreshSendFeedback(session)
+	local label = session and (session.bnetAccountID and "BATTLE.NET" or "MESSENGER") or "PRIVATE"
+	if session and session.sendState == "pending" and now() - (session.pendingSince or 0) >= SEND_ECHO_TIMEOUT then
+		-- No echo is not proof of failure or delivery. Retain the attempted
+		-- text only to correlate a late echo; never silently resend it.
+		session.sendState = "unconfirmed"
+	end
+	if session then
+		local labels = { pending = "PENDING", failed = "FAILED", echoed = "ECHOED", unconfirmed = "NO ECHO" }
+		label = labels[session.sendState] or label
+	end
+	self.subtitle:SetText(label)
+end
+
+function Window:SetSendFeedback(session, state, message)
+	if not session then return end
+	session.sendState = state
+	if state == "pending" then
+		session.pendingSendText = message
+		session.pendingSince = now()
+	elseif state == "failed" or state == "echoed" then
+		session.pendingSendText = nil
+		session.pendingSince = nil
+	end
+	if self:GetActiveSession() == session then
+		self:RefreshSendFeedback(session)
 	end
 end
 
@@ -1050,6 +1267,7 @@ function Window:SelectSession(session)
 	local previous = self:GetActiveSession()
 	if previous and self.editBox then
 		previous.draft = self.editBox:GetText() or ""
+		self:SaveReaderPosition(previous)
 	end
 
 	self.playerName = session.playerName
@@ -1058,8 +1276,8 @@ function Window:SelectSession(session)
 	self.lastUsed = now()
 	session.lastUsed = self.lastUsed
 	session.unread = 0
+	session.unreadIds = {}
 	self.title:SetText(session.playerName)
-	self.subtitle:SetText("MESSENGER")
 	self.confirm:Hide()
 	self:UpdateComposerForSession(session)
 	self:RenderSession(session)
@@ -1100,14 +1318,15 @@ function Window:Hide()
 end
 
 function Window:FocusComposer()
-	if self.playerName and not isLocallyIgnored(self.playerName) then
+	local session = self:GetActiveSession()
+	if session and not isLocallyIgnored(session.playerName, session.bnetAccountID) then
 		self:RevealComposer(true)
 	end
 end
 
 function Window:Send()
 	local session = self:GetActiveSession()
-	if not session or not self.playerName or isLocallyIgnored(self.playerName) then
+	if not session or not self.playerName or isLocallyIgnored(session.playerName, session.bnetAccountID) then
 		return
 	end
 	local retainFocus = self.editBox and self.editBox.HasFocus and self.editBox:HasFocus() or false
@@ -1119,16 +1338,37 @@ function Window:Send()
 		self.editBox:SetFocus()
 		return
 	end
+	-- The local API call is a request, not a delivery receipt. Establish the
+	-- pending state before invocation so a synchronous outgoing echo can win.
+	self:SetSendFeedback(session, "pending", message)
 
-	if not SendChatMessage then
-		printStatus("Whisper sending is unavailable on this client.")
-		return
-	end
-
-	local ok, err = pcall(SendChatMessage, message, "WHISPER", nil, sentPlayerName)
-	if not ok then
-		printStatus("Could not whisper " .. sentPlayerName .. ": " .. tostring(err))
-		return
+	if session.bnetAccountID then
+		local modernSend = _G.C_BattleNet and type(_G.C_BattleNet.SendWhisper) == "function"
+		local sendBnetWhisper = modernSend and _G.C_BattleNet.SendWhisper or _G.BNSendWhisper
+		if type(sendBnetWhisper) ~= "function" then
+			self:SetSendFeedback(session, "failed")
+			printStatus("Battle.net whisper sending is unavailable on this client.")
+			return
+		end
+		local ok, result = pcall(sendBnetWhisper, session.bnetAccountID, message)
+		if not ok or result == false or (modernSend and result ~= true) then
+			self:SetSendFeedback(session, "failed")
+			printStatus("Could not send a Battle.net whisper to " .. sentPlayerName .. ".")
+			return
+		end
+	else
+		local sendChatMessage = _G.C_ChatInfo and _G.C_ChatInfo.SendChatMessage or _G.SendChatMessage
+		if type(sendChatMessage) ~= "function" then
+			self:SetSendFeedback(session, "failed")
+			printStatus("Whisper sending is unavailable on this client.")
+			return
+		end
+		local ok, err = pcall(sendChatMessage, message, "WHISPER", nil, sentPlayerName)
+		if not ok then
+			self:SetSendFeedback(session, "failed")
+			printStatus("Could not whisper " .. sentPlayerName .. ": " .. tostring(err))
+			return
+		end
 	end
 
 	session.draft = ""
@@ -1157,6 +1397,11 @@ function Window:ApplyLocalIgnore()
 	if not self.playerName then
 		return
 	end
+	local session = self:GetActiveSession()
+	if session and session.bnetAccountID then
+		printStatus("Use Battle.net's own block controls for this account.")
+		return false
+	end
 	local settings = addon:GetSmartSettings()
 	settings.safety = settings.safety or {}
 	settings.safety.localIgnores = settings.safety.localIgnores or {}
@@ -1169,14 +1414,31 @@ function Window:ApplyLocalIgnore()
 end
 
 function Window:ApplyServerIgnore()
-	if self.playerName and addon.Compatibility and addon.Compatibility.AddServerIgnore then
-		addon.Compatibility:AddServerIgnore(self.playerName)
+	local session = self:GetActiveSession()
+	if session and session.bnetAccountID then
+		printStatus("Use Battle.net's own block controls for this account.")
+		return false
+	end
+	local compatibility = addon.Compatibility
+	local ok, dispatched = false, false
+	if self.playerName and compatibility and type(compatibility.AddServerIgnore) == "function" then
+		ok, dispatched = pcall(compatibility.AddServerIgnore, compatibility, self.playerName)
+	end
+	if not ok or not dispatched then
+		printStatus("Could not request a server ignore for " .. tostring(self.playerName or "this player") .. ". Try again or use WoW's Ignore list.")
+		return false
 	end
 	self.confirm:Hide()
 	Manager:Close(self.playerKey)
+	return true
 end
 
 function Window:ShowServerIgnoreConfirmation()
+	local session = self:GetActiveSession()
+	if session and session.bnetAccountID then
+		printStatus("Use Battle.net's own block controls for this account.")
+		return false
+	end
 	local settings = addon:GetSmartSettings()
 	if self.playerName and settings.safety and settings.safety.confirmServerIgnore then
 		self.confirmText:SetText("Add " .. self.playerName .. " to the actual WoW ignore list?")
@@ -1504,12 +1766,20 @@ function Window:UpdateActionButtons(forceIcons, orientation)
 	orientation = orientation == "vertical" and "vertical" or "horizontal"
 	local style = getActionButtonStyle()
 	local useIcons = style == "icons" or forceIcons == true
+	local activeSession = self:GetActiveSession()
+	local isBnet = activeSession and activeSession.bnetAccountID ~= nil
 	local totalWidth = 0
 	local totalHeight = 0
 	local maximumWidth = 0
 	for index = 1, #self.actionButtons do
 		local button = self.actionButtons[index]
 		local definition = button.definition
+		-- These four controls operate on WoW character names, not Battle.net
+		-- account IDs. Never present them as available for an account session.
+		if button.SetEnabled then button:SetEnabled(not isBnet or index == 1) end
+		button._tooltipText = isBnet and index > 1
+			and "Manage this Battle.net contact in the game's Friends UI."
+			or definition.tooltip
 		button.usesIcon = useIcons
 		if useIcons then
 			button:SetWidth(20)
@@ -1588,6 +1858,7 @@ function Window:Reset()
 	self.empty:SetText("Choose a Messenger tab to begin.")
 	self.empty:Show()
 	self.newButton:Hide()
+	self:RefreshHistoryPager(nil)
 	self.editBox:SetText("")
 	self.placeholder:Show()
 	self:UpdateRouteLabel(nil)
@@ -1623,6 +1894,10 @@ function Manager:BuildWindow()
 		if window.hoverElapsed >= 0.08 then
 			window.hoverElapsed = 0
 			window:RefreshHoverState()
+			local session = window:GetActiveSession()
+			if session and session.sendState == "pending" then
+				window:RefreshSendFeedback(session)
+			end
 		end
 	end)
 
@@ -1753,6 +2028,11 @@ function Manager:BuildWindow()
 			glyph = "+",
 			iconName = "invite",
 			callback = function()
+				local session = window:GetActiveSession()
+				if session and session.bnetAccountID then
+					printStatus("Invite a Battle.net contact through the game's Friends UI.")
+					return
+				end
 				if addon.Compatibility and window.playerName then
 					addon.Compatibility:InvitePlayer(window.playerName)
 				end
@@ -1764,6 +2044,11 @@ function Manager:BuildWindow()
 			glyph = "F",
 			iconName = "friend",
 			callback = function()
+				local session = window:GetActiveSession()
+				if session and session.bnetAccountID then
+					printStatus("Manage this contact through Battle.net Friends.")
+					return
+				end
 				if addon.Compatibility and window.playerName then
 					addon.Compatibility:AddFriend(window.playerName)
 				end
@@ -1845,10 +2130,11 @@ function Manager:BuildWindow()
 		end
 		if display:AtBottom() then
 			local session = window:GetActiveSession()
-			if session then
+			if session and (session.historyPage or 1) == 1 and not session.pendingOutsideSnapshot then
 				session.pendingVisible = 0
+				session.pendingIds = {}
+				window:UpdateNewButton()
 			end
-			window:UpdateNewButton()
 		end
 		window:RefreshMessageScrollbar(false)
 	end)
@@ -1892,8 +2178,11 @@ function Manager:BuildWindow()
 		if delta > 0 then display:ScrollUp() else display:ScrollDown() end
 		if display:AtBottom() then
 			local session = window:GetActiveSession()
-			if session then session.pendingVisible = 0 end
-			window:UpdateNewButton()
+			if session and (session.historyPage or 1) == 1 and not session.pendingOutsideSnapshot then
+				session.pendingVisible = 0
+				session.pendingIds = {}
+				window:UpdateNewButton()
+			end
 		end
 		window:RefreshMessageScrollbar(false)
 	end)
@@ -1928,6 +2217,32 @@ function Manager:BuildWindow()
 	end)
 	newButton:Hide()
 	window.newButton = newButton
+
+	-- Only multi-page history consumes this eighteen-pixel row. The message
+	-- surface and thumb start below it, leaving a visible gutter at 300x160.
+	local historyPrevious = Theme:CreateTightButton(content, "<", 16, false)
+	historyPrevious:SetWidth(20)
+	historyPrevious:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -2)
+	historyPrevious:SetScript("OnClick", function() window:ChangeHistoryPage(1) end)
+	addTooltip(historyPrevious, "Older whispers")
+	historyPrevious:Hide()
+	window.historyPrevious = historyPrevious
+
+	local historyLabel = Theme:CreateText(content, "GameFontNormalSmall", "textMuted")
+	historyLabel:SetWidth(40)
+	historyLabel:SetHeight(16)
+	historyLabel:SetPoint("LEFT", historyPrevious, "RIGHT", 4, 0)
+	historyLabel:SetJustifyH("CENTER")
+	historyLabel:Hide()
+	window.historyLabel = historyLabel
+
+	local historyNext = Theme:CreateTightButton(content, ">", 16, false)
+	historyNext:SetWidth(20)
+	historyNext:SetPoint("LEFT", historyLabel, "RIGHT", 4, 0)
+	historyNext:SetScript("OnClick", function() window:ChangeHistoryPage(-1) end)
+	addTooltip(historyNext, "Newer whispers")
+	historyNext:Hide()
+	window.historyNext = historyNext
 	content:SetScript("OnSizeChanged", function()
 		window:RefreshMessageScrollbar(true)
 	end)
@@ -2105,14 +2420,19 @@ function Manager:RemoveSession(key, suppressSelection)
 	end
 end
 
-function Manager:AcquireSession(name)
-	local key = playerKey(name)
+function Manager:AcquireSession(name, bnetAccountID)
+	local key = bnetAccountID and "bnet:" .. tostring(bnetAccountID) or playerKey(name)
 	if not key then
 		return nil
 	end
 
 	local existing = self.sessionsByKey[key]
 	if existing then
+		-- The account ID owns the conversation even if the display name later
+		-- changes or another character has the same name.
+		if bnetAccountID and cleanPlayerName(name) then
+			existing.playerName = cleanPlayerName(name)
+		end
 		return existing
 	end
 
@@ -2136,10 +2456,17 @@ function Manager:AcquireSession(name)
 	local session = {
 		playerName = cleanPlayerName(name),
 		playerKey = key,
+		bnetAccountID = bnetAccountID,
 		renderedIds = {},
+		renderedOrder = {},
 		renderedCount = 0,
+		historyPage = 1,
+		historyPageCount = 1,
+		pageOffsets = {},
 		pendingVisible = 0,
+		pendingIds = {},
 		unread = 0,
+		unreadIds = {},
 		draft = "",
 		lastUsed = now(),
 		frame = shell.frame, -- light compatibility for legacy callers
@@ -2170,8 +2497,7 @@ function Manager:SelectSession(key)
 end
 
 function Manager:QueueOpen(record)
-	local name = getPartner(record)
-	local key = playerKey(name)
+	local _, key = getConversationTarget(record)
 	if not key then
 		return
 	end
@@ -2203,7 +2529,8 @@ function Manager:DrainPending()
 	self.pending = {}
 	for index = 1, #order do
 		local record = pending[order[index]]
-		if record and not isLocallyIgnored(getPartner(record)) then
+		local name, _, accountID = getConversationTarget(record)
+		if name and not isLocallyIgnored(name, accountID) then
 			self:OpenForRecord(record, true)
 		end
 	end
@@ -2214,11 +2541,11 @@ function Manager:OpenForRecord(record, bypassCombatDeferral)
 		return nil, "disabled"
 	end
 
-	local name = getPartner(record)
+	local name, _, accountID = getConversationTarget(record)
 	if not name then
-		return nil, record and record.isBNet and "bnet" or "not-whisper"
+		return nil, record and record.isBNet and "bnet-id-unavailable" or "not-whisper"
 	end
-	if isLocallyIgnored(name) then
+	if isLocallyIgnored(name, accountID) then
 		return nil, "locally-ignored"
 	end
 
@@ -2228,7 +2555,7 @@ function Manager:OpenForRecord(record, bypassCombatDeferral)
 		return nil, "deferred"
 	end
 
-	local session = self:AcquireSession(name)
+	local session = self:AcquireSession(name, accountID)
 	if not session then
 		return nil, "invalid-player"
 	end
@@ -2262,31 +2589,65 @@ function Manager:Close(player)
 end
 
 function Manager:OnMessage(record)
-	if not self.enabled or not record or record.isBNet or not whisperEvents[record.event] then
+	if not self.enabled or not record then
 		return
 	end
 
-	local name = getPartner(record)
-	local key = playerKey(name)
-	if not key or isLocallyIgnored(name) then
+	local name, key, accountID = getConversationTarget(record)
+	if not key or isLocallyIgnored(name, accountID) then
 		return
 	end
 
 	local session = self.sessionsByKey[key]
 	local shell = self.shell
+	if session and shell and (record.event == "CHAT_MSG_WHISPER_INFORM"
+		or record.event == "CHAT_MSG_BN_WHISPER_INFORM")
+		and (session.sendState == "pending" or session.sendState == "unconfirmed")
+		and record.text == session.pendingSendText then
+		-- The client's outgoing echo confirms that the line entered chat, not
+		-- that the other person received or read it.
+		shell:SetSendFeedback(session, "echoed")
+	end
+	if session and accountID and session.playerName ~= name then
+		session.playerName = name
+		if shell and shell.playerKey == key then
+			shell.playerName = name
+			shell.title:SetText(name)
+			shell:UpdateRouteLabel(session)
+		end
+		if shell then shell:RefreshTabs() end
+	end
 	local shellWasShown = shell and shell.frame:IsShown() or false
 	-- Tab intake is not popup behavior. Every incoming whisper gets a session
 	-- immediately so an already-open Messenger cannot silently omit a new
 	-- player, and a hidden Messenger retains the tab for its next manual open.
-	if not session and record.event == "CHAT_MSG_WHISPER" then
-		session = self:AcquireSession(name)
+	local incoming = record.event == "CHAT_MSG_WHISPER" or record.event == "CHAT_MSG_BN_WHISPER"
+	local outgoing = record.event == "CHAT_MSG_WHISPER_INFORM"
+		or record.event == "CHAT_MSG_BN_WHISPER_INFORM"
+	-- A Battle.net conversation may be started from Blizzard's Friends UI.
+	-- Its first event is an outgoing inform; retain a quiet tab for that ID.
+	if not session and (incoming or record.event == "CHAT_MSG_BN_WHISPER_INFORM") then
+		session = self:AcquireSession(name, accountID)
 		shell = self.shell
+	end
+	if session and not (shellWasShown and shell and shell.playerKey == key) then
+		if (session.historyPage or 1) > 1 and record.id then
+			session.pendingOutsideSnapshot = true
+			session.pendingIds = session.pendingIds or {}
+			if not session.pendingIds[record.id] then
+				session.pendingIds[record.id] = true
+				session.pendingVisible = (session.pendingVisible or 0) + 1
+			end
+		else
+			session.historyAnchorId = nil
+		end
 	end
 	if session and shellWasShown and shell then
 		if shell.playerKey == key then
 			shell:AddRecord(record)
-		elseif record.direction ~= "outgoing" then
+		elseif not outgoing then
 			session.unread = (tonumber(session.unread) or 0) + 1
+			if record.id then session.unreadIds[record.id] = true end
 			session.lastUsed = now()
 			shell:RefreshTabs()
 			shell:EnsureTabVisible(key)
@@ -2295,14 +2656,73 @@ function Manager:OnMessage(record)
 	end
 
 	local settings = getConversationSettings()
-	if record.event == "CHAT_MSG_WHISPER" and session and shell then
+	if incoming and session and shell then
 		session.unread = (tonumber(session.unread) or 0) + 1
+		if record.id then session.unreadIds[record.id] = true end
 		session.lastUsed = now()
 		shell:RefreshTabs()
 	end
-	if record.event == "CHAT_MSG_WHISPER" and settings.autoOpenWhispers then
+	if incoming and settings.autoOpenWhispers then
 		self:OpenForRecord(record)
 	end
+end
+
+-- The message engine calls this after Clear History or a retrospective block
+-- changes its canonical conversation records.  Reconcile tabs without sending
+-- another message event, then refresh only the active viewport.  Keeping the
+-- active reader's offset and surviving NEW IDs avoids an unsolicited jump.
+function Manager:RefreshAfterHistoryMutation(clearAll)
+	local sessions = self.sessionsByKey
+	if not sessions then return false end
+	local canonicalIds = {}
+	if not clearAll and Engine and Engine.GetMessages then
+		for _, record in ipairs(Engine:GetMessages("conversations") or {}) do
+			local _, key = getConversationTarget(record)
+			if key and record.id then
+				canonicalIds[key] = canonicalIds[key] or {}
+				canonicalIds[key][record.id] = true
+			end
+		end
+	end
+	for key, session in pairs(sessions) do
+		local surviving = canonicalIds[key] or {}
+		session.renderedIds = {}
+		session.renderedOrder = {}
+		session.renderedCount = 0
+		if clearAll then
+			session.historyPage = 1
+			session.historyPageCount = 1
+			session.historyTotal = 0
+			session.historyAnchorId = nil
+			session.pendingOutsideSnapshot = nil
+			session.pageOffsets = {}
+		end
+		local unreadIds = {}
+		for id in pairs(session.unreadIds or {}) do
+			if surviving[id] then unreadIds[id] = true end
+		end
+		session.unreadIds = unreadIds
+		session.unread = 0
+		for _ in pairs(unreadIds) do session.unread = session.unread + 1 end
+		local pendingIds = {}
+		for id in pairs(session.pendingIds or {}) do
+			if surviving[id] then pendingIds[id] = true end
+		end
+		session.pendingIds = pendingIds
+		session.pendingVisible = 0
+		for _ in pairs(pendingIds) do session.pendingVisible = session.pendingVisible + 1 end
+		if session.pendingVisible == 0 then
+			session.pendingOutsideSnapshot = nil
+			if (session.historyPage or 1) == 1 then session.historyAnchorId = nil end
+		end
+	end
+	local shell = self.shell
+	if shell then
+		local active = shell:GetActiveSession()
+		if active then shell:RenderSession(active, not clearAll) end
+		shell:RefreshTabs()
+	end
+	return true
 end
 
 function Manager:ApplySettings()

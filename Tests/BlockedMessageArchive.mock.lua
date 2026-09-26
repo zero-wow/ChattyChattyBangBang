@@ -62,10 +62,29 @@ end
 captureChannel("Archive this exact message", "ArchiveTester", 1)
 assert(#delivered == 1 and engine.count == 1, "seed message was not delivered")
 local original = delivered[1]
+local dock = {
+	unread = { trade = 1 },
+	pendingVisible = 1,
+	activeView = "trade",
+	IsLocallyIgnored = function() return false end,
+	RebuildActiveViewPreservingScroll = function(self) self.rebuilt = true end,
+	RefreshRailState = function(self) self.railRefreshed = true end,
+}
+local messenger = {
+	RefreshAfterHistoryMutation = function(self, clearAll)
+		self.blockRefresh = clearAll == false
+	end,
+}
+addon.SmartDock = dock
+addon.ConversationWindows = messenger
 local ok, rule = addon:BlockRecord(original)
 assert(ok and rule, "quick block did not create a rule")
 assert(engine.count == 0 and #engine:GetMessages() == 0,
 	"existing block match remained in normal runtime history")
+assert(dock.unread.trade == 0 and dock.pendingVisible == 0
+	and dock.rebuilt and dock.railRefreshed,
+	"retroactive block left stale unread or NEW counts")
+assert(messenger.blockRefresh, "retroactive block did not refresh open Messenger")
 assert(settings.history and next(settings.history.sources) == nil,
 	"existing block match remained in persisted normal history")
 

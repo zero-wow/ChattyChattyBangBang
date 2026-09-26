@@ -280,15 +280,10 @@ end
 -- it out of every identity/index path is essential: otherwise one automatic
 -- ban can accidentally turn into a global "bnet:0" ban for channel traffic.
 local function usableBnetAccountId(value)
-	local text = trimText(value, 64)
-	if text == "" or text == "0" then
-		return nil
-	end
-	local numeric = tonumber(text)
-	if numeric and numeric <= 0 then
-		return nil
-	end
-	return text
+	local numeric = type(value) == "number" and value
+		or type(value) == "string" and tonumber(value) or nil
+	if not numeric or numeric <= 0 or numeric ~= math.floor(numeric) then return nil end
+	return tostring(numeric)
 end
 
 local function cleanSenderText(value)
@@ -1719,21 +1714,33 @@ function SpamControl:SetEnabled(enabled)
 	end
 
 	local addFilter = _G.ChatFrame_AddMessageEventFilter
-	if not addFilter then
+	if type(addFilter) ~= "function" then
 		return false
 	end
 
-	local registered = 0
+	local attempted = {}
 	for index = 1, #eventDefinitions do
 		local event = eventDefinitions[index].event
+		attempted[#attempted + 1] = event
 		local ok, result = pcall(addFilter, event, self.filter)
-		if ok and result ~= false then
-			self.registeredEvents[event] = true
-			registered = registered + 1
+		if not ok or result == false then
+			-- Even a failed call may have installed its callback before returning.
+			-- Roll back every attempt; if removal is unavailable, the disabled
+			-- callback and engine bridge both fail open until a complete retry.
+			local removeFilter = _G.ChatFrame_RemoveMessageEventFilter
+			if type(removeFilter) == "function" then
+				for rollback = #attempted, 1, -1 do
+					pcall(removeFilter, attempted[rollback], self.filter)
+				end
+			end
+			self.registeredEvents = {}
+			self.enabled = false
+			return false
 		end
+		self.registeredEvents[event] = true
 	end
-	self.enabled = registered > 0
-	return self.enabled
+	self.enabled = true
+	return true
 end
 
 function SpamControl:ResetForProfile()

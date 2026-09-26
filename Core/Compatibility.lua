@@ -106,19 +106,29 @@ function Compatibility:DisableAddonsAndReload(addonNames)
 end
 
 function Compatibility:InvitePlayer(name)
-	if name and name ~= "" and InviteUnit then
-		InviteUnit(name)
+	if type(name) ~= "string" or name == "" then return end
+	if _G.C_PartyInfo and type(_G.C_PartyInfo.InviteUnit) == "function" then
+		_G.C_PartyInfo.InviteUnit(name)
+	elseif type(_G.InviteUnit) == "function" then
+		_G.InviteUnit(name)
 	end
 end
 
 function Compatibility:AddFriend(name)
-	if name and name ~= "" and AddFriend then
-		AddFriend(name)
+	if type(name) ~= "string" or name == "" then return end
+	if _G.C_FriendList and type(_G.C_FriendList.AddFriend) == "function" then
+		_G.C_FriendList.AddFriend(name)
+	elseif type(_G.AddFriend) == "function" then
+		_G.AddFriend(name)
 	end
 end
 
 function Compatibility:AddServerIgnore(name)
-	if name and name ~= "" and AddIgnore then
-		AddIgnore(name)
-	end
+	if type(name) ~= "string" or name == "" then return false end
+	local ignore = _G.C_FriendList and _G.C_FriendList.AddIgnore
+	if type(ignore) ~= "function" then ignore = _G.AddIgnore end
+	if type(ignore) ~= "function" then return false end
+	local ok, result = pcall(ignore, name)
+	-- Dispatch is not server confirmation; legacy AddIgnore can return nil.
+	return ok and result ~= false
 end

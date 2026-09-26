@@ -41,6 +41,23 @@ local function normalizedName(value)
 	return name
 end
 
+local function bnetId(value)
+	if type(value) ~= "number" or value < 1 or value > 9007199254740991
+		or value % 1 ~= 0 then return nil end
+	return value
+end
+
+local function controlKey(value)
+	if type(value) == "string" then
+		local accountId = string.match(trim(value), "^bn:(%d+)$")
+		if accountId then
+			accountId = bnetId(tonumber(accountId))
+			return accountId and "bn:" .. tostring(accountId) or nil
+		end
+	end
+	return normalizedName(value)
+end
+
 local function accessible(value)
 	if _G.canaccessvalue then return _G.canaccessvalue(value) end
 	if _G.issecretvalue then return not _G.issecretvalue(value) end
@@ -137,8 +154,33 @@ local function isFriend(name, guid)
 	return false
 end
 
-local function isGuildmate(name)
-	if not _G.IsInGuild or not _G.IsInGuild() then return false end
+local function inGuild()
+	if type(_G.IsInGuild) ~= "function" then return false end
+	local ok, result = pcall(_G.IsInGuild)
+	return ok and result and true or false
+end
+
+local function requestGuildRoster(self)
+	local guildInfo = _G.C_GuildInfo
+	local request = guildInfo and guildInfo.GuildRoster
+	if type(request) ~= "function" then request = _G.GuildRoster end
+	if type(request) ~= "function" then return end
+	local now = GetTime and tonumber(GetTime()) or epoch()
+	if self.guildRosterRequestAt and now >= self.guildRosterRequestAt
+		and now - self.guildRosterRequestAt < 10 then return end
+	if pcall(request) then self.guildRosterRequestAt = now end
+end
+
+local function isGuildmate(self, name)
+	if not inGuild() then return false end
+	requestGuildRoster(self)
+	local guildInfo = _G.C_GuildInfo
+	if guildInfo and type(guildInfo.MemberExistsByName) == "function" then
+		local ok, exists = pcall(guildInfo.MemberExistsByName, name)
+		-- An unavailable or still-loading roster is not proof of membership.
+		return ok and exists == true
+	end
+	-- Older clients expose only the indexed guild roster globals.
 	if type(_G.GetNumGuildMembers) ~= "function" or type(_G.GetGuildRosterInfo) ~= "function" then
 		return false
 	end
@@ -152,17 +194,36 @@ local function isGuildmate(name)
 	return false
 end
 
-local function remember(guard, message, sender, key)
+local function remember(guard, message, sender, key, event, accountId, lineId)
 	local entries = prune(guard)
-	entries[#entries + 1] = {
+	local now = epoch()
+	local text = event == "CHAT_MSG_BN_WHISPER" and message or trim(message, MAX_TEXT)
+	if #text > MAX_TEXT then return false end
+	if event == "CHAT_MSG_BN_WHISPER" then
+		for _, entry in ipairs(entries) do
+			if entry.event == event and entry.senderKey == key and entry.lineId == lineId
+				and entry.text == text
+				and math.abs(now - (tonumber(entry.epoch) or 0)) <= 5 then
+				return true
+			end
+		end
+	end
+	local entry = {
 		id = guard.nextId,
-		epoch = epoch(),
+		epoch = now,
 		sender = trim(sender, 128),
 		senderKey = key,
-		text = trim(message, MAX_TEXT),
+		text = text,
 	}
+	if event == "CHAT_MSG_BN_WHISPER" then
+		entry.event = event
+		entry.bnetAccountId = accountId
+		entry.lineId = lineId
+	end
+	entries[#entries + 1] = entry
 	guard.nextId = guard.nextId + 1
 	if #entries > MAX_ENTRIES then table.remove(entries, 1) end
+	return true
 end
 
 local function shouldHoldIncoming(self, message, sender, guid)
@@ -173,15 +234,82 @@ local function shouldHoldIncoming(self, message, sender, guid)
 	if guard.blocked[key] then return true, "blocked", key end
 	if guard.trusted[key] then return false end
 	local ok, trustedSocial = pcall(function()
-		return isFriend(sender, guid) or isGuildmate(sender)
+		return isFriend(sender, guid) or isGuildmate(self, sender)
 	end)
 	if ok and trustedSocial then return false end
 	return true, "quarantine", key
 end
 
+local function bnetFriendStatus(accountId)
+	local battleNet = _G.C_BattleNet
+	local lookup = battleNet and battleNet.GetAccountInfoByID
+	if type(lookup) == "function" then
+		local ok, isFriend = pcall(function()
+			local info = lookup(accountId)
+			if not accessible(info) or type(info) ~= "table" then return nil end
+			local returnedId, friend = info.bnetAccountID, info.isFriend
+			if not accessible(returnedId) or not accessible(friend)
+				or bnetId(returnedId) ~= accountId or type(friend) ~= "boolean" then
+				return nil
+			end
+			return friend
+		end)
+		if ok then return isFriend end
+		return nil
+	end
+	-- Older clients return the account ID and isFriend as results 1 and 13.
+	-- Never infer friendship from the display name or an unverified result.
+	local legacy = _G.BNGetFriendInfoByID
+	if type(legacy) ~= "function" then return nil end
+	local ok, isFriend = pcall(function()
+		local info = { legacy(accountId) }
+		local returnedId, friend = info[1], info[13]
+		if not accessible(returnedId) or not accessible(friend)
+			or bnetId(returnedId) ~= accountId or type(friend) ~= "boolean" then
+			return nil
+		end
+		return friend
+	end)
+	if ok then return isFriend end
+	return nil
+end
+
+local function shouldHoldBnet(self, message, sender, accountId, lineId)
+	if not self.bnetFilterActive then return false end
+	local guard = settings()
+	if not guard or guard.enabled == false or type(message) ~= "string"
+		or #message > MAX_TEXT
+		or type(sender) ~= "string" or sender == "" then return false end
+	accountId = bnetId(accountId)
+	if not accountId or type(lineId) ~= "number" or lineId < 1
+		or lineId % 1 ~= 0 then return false end
+	local key = "bn:" .. tostring(accountId)
+	if guard.blocked[key] then return true, "blocked", key, accountId end
+	if guard.trusted[key] then return false end
+	-- Only a positively identified friend bypasses first-contact review.
+	-- Missing or restricted roster data is not proof of friendship.
+	if bnetFriendStatus(accountId) == true then return false end
+	return true, "quarantine", key, accountId
+end
+
 function Guard:ShouldBlockEngineEvent(event, ...)
 	if not self.enabled then return false end
 	local message, sender, _, _, _, _, _, _, _, _, _, guid = ...
+	if event == "CHAT_MSG_BN_WHISPER_INFORM" then
+		local accountId = bnetId(select(13, ...))
+		local guard = settings()
+		if accountId and guard then boundedTrust(guard, "bn:" .. tostring(accountId), "outgoing") end
+		return false
+	end
+	if event == "CHAT_MSG_BN_WHISPER" then
+		local lineId, accountId = select(11, ...), select(13, ...)
+		local hold, reason, key, validatedId = shouldHoldBnet(self, message, sender, accountId, lineId)
+		if hold and reason == "quarantine" then
+			local ok, stored = pcall(remember, settings(), message, sender, key, event, validatedId, lineId)
+			if not ok or not stored then return false end
+		end
+		return hold
+	end
 	if event == "CHAT_MSG_WHISPER_INFORM" then
 		local key = normalizedName(sender)
 		local guard = settings()
@@ -197,15 +325,25 @@ end
 function Guard:Filter(frame, event, ...)
 	if not self.enabled then return false, ... end
 	-- A ChatFrame filter fans out across multiple frames and can run before
-	-- MessageEngine. It only reads policy; the engine alone archives one copy.
-	-- If any Retail argument is secret, leave native delivery alone and surface
-	-- the degraded state from MessageEngine's guarded capture path.
+	-- MessageEngine. Battle.net first contacts are archived here before hiding:
+	-- the engine may receive later secret arguments that this filter never sees.
+	-- If a visible argument is secret, leave native delivery alone.
 	for index = 1, select("#", ...) do
 		if not accessible(select(index, ...)) then return false, ... end
 	end
 	if event == "CHAT_MSG_WHISPER" then
 		local message, sender, _, _, _, _, _, _, _, _, _, guid = ...
 		if shouldHoldIncoming(self, message, sender, guid) then return true end
+	elseif event == "CHAT_MSG_BN_WHISPER" then
+		local message, sender = ...
+		local lineId, accountId = select(11, ...), select(13, ...)
+		local hold, reason, key, validatedId = shouldHoldBnet(self, message, sender, accountId, lineId)
+		if hold then
+			if reason == "blocked" then return true end
+			local ok, stored = pcall(remember, settings(), message, sender, key,
+				event, validatedId, lineId)
+			if ok and stored then return true end
+		end
 	end
 	return false, ...
 end
@@ -214,39 +352,66 @@ function Guard:MarkUnreadable()
 	self.unreadable = (self.unreadable or 0) + 1
 end
 
+local function messageFilterAPI()
+	local util = _G.ChatFrameUtil
+	if util and type(util.AddMessageEventFilter) == "function" then
+		return util.AddMessageEventFilter, util.RemoveMessageEventFilter
+	end
+	return _G.ChatFrame_AddMessageEventFilter, _G.ChatFrame_RemoveMessageEventFilter
+end
+
 function Guard:SetEnabled(enabled)
 	local shouldEnable = enabled and true or false
 	if shouldEnable == self.enabled then return true end
 	if shouldEnable then
-		self.enabled = true
-		if type(_G.ChatFrame_AddMessageEventFilter) ~= "function" then
+		local addFilter, removeFilter = messageFilterAPI()
+		if type(addFilter) ~= "function" then
+			self.enabled = false
 			self.nativeFilterActive = false
+			self.bnetFilterActive = false
 			return false
 		end
 		self.filter = self.filter or function(...) return Guard:Filter(...) end
-		local firstOk, firstResult = pcall(_G.ChatFrame_AddMessageEventFilter, "CHAT_MSG_WHISPER", self.filter)
+		local firstOk, firstResult = pcall(addFilter, "CHAT_MSG_WHISPER", self.filter)
 		if not firstOk or firstResult == false then
-			if type(_G.ChatFrame_RemoveMessageEventFilter) == "function" then
-				pcall(_G.ChatFrame_RemoveMessageEventFilter, "CHAT_MSG_WHISPER", self.filter)
+			if type(removeFilter) == "function" then
+				pcall(removeFilter, "CHAT_MSG_WHISPER", self.filter)
 			end
+			self.enabled = false
 			self.nativeFilterActive = false
+			self.bnetFilterActive = false
 			return false
 		end
+		self.removeFilter = removeFilter
+		self.enabled = true
 		self.nativeFilterActive = true
+		local bnetOk, bnetResult = pcall(addFilter, "CHAT_MSG_BN_WHISPER", self.filter)
+		self.bnetFilterActive = bnetOk and bnetResult ~= false
+		if not self.bnetFilterActive and type(removeFilter) == "function" then
+			pcall(removeFilter, "CHAT_MSG_BN_WHISPER", self.filter)
+		end
 		self:ReleaseApproved()
 		return true
 	end
-	if self.filter and type(_G.ChatFrame_RemoveMessageEventFilter) == "function" then
-		pcall(_G.ChatFrame_RemoveMessageEventFilter, "CHAT_MSG_WHISPER", self.filter)
+	local removeFilter = self.removeFilter
+	if type(removeFilter) ~= "function" then
+		local _, fallbackRemove = messageFilterAPI()
+		removeFilter = fallbackRemove
+	end
+	if self.filter and type(removeFilter) == "function" then
+		pcall(removeFilter, "CHAT_MSG_WHISPER", self.filter)
+		pcall(removeFilter, "CHAT_MSG_BN_WHISPER", self.filter)
 	end
 	self.enabled = false
 	self.nativeFilterActive = false
+	self.bnetFilterActive = false
 	return true
 end
 
 function Guard:Initialize()
 	settings()
 	self.unreadable = 0
+	if inGuild() then requestGuildRoster(self) end
 	return true
 end
 
@@ -280,7 +445,8 @@ function Guard:GetEntry(id)
 	for _, entry in ipairs(prune(guard)) do
 		if entry.id == id then
 			return { id = entry.id, epoch = entry.epoch, sender = entry.sender,
-				senderKey = entry.senderKey, text = entry.text }
+				senderKey = entry.senderKey, text = entry.text, event = entry.event,
+				bnetAccountId = entry.bnetAccountId, lineId = entry.lineId }
 		end
 	end
 	return nil
@@ -297,9 +463,19 @@ function Guard:ReleaseApproved()
 	local kept, released = {}, 0
 	for _, entry in ipairs(prune(guard)) do
 		if guard.trusted[entry.senderKey] then
-			local ok = pcall(engine.CaptureAccessible, engine, "CHAT_MSG_WHISPER",
-				entry.epoch, entry.text, entry.sender)
-			if ok then
+			local ok, delivered
+			if entry.event == "CHAT_MSG_BN_WHISPER" and bnetId(entry.bnetAccountId) then
+				-- The original account ID is arg13, not the non-unique display name.
+				local args = { entry.text, entry.sender }
+				args[11], args[13] = entry.lineId, entry.bnetAccountId
+				ok, delivered = pcall(engine.CaptureAccessible, engine, entry.event,
+					entry.epoch, unpack(args, 1, 13))
+			elseif not entry.event or entry.event == "CHAT_MSG_WHISPER" then
+				ok, delivered = pcall(engine.CaptureAccessible, engine, "CHAT_MSG_WHISPER",
+					entry.epoch, entry.text, entry.sender)
+			end
+			-- A completed call may still decline the record; keep it for review.
+			if ok and delivered then
 				released = released + 1
 			else
 				kept[#kept + 1] = entry
@@ -313,7 +489,7 @@ function Guard:ReleaseApproved()
 end
 
 function Guard:ApproveSender(name)
-	local key = normalizedName(name)
+	local key = controlKey(name)
 	local guard = settings()
 	if not key or not guard then return false end
 	guard.blocked[key] = nil
@@ -322,7 +498,7 @@ function Guard:ApproveSender(name)
 end
 
 function Guard:BlockSender(name)
-	local key = normalizedName(name)
+	local key = controlKey(name)
 	local guard = settings()
 	if not key or not guard then return false end
 	guard.trusted[key] = nil
@@ -331,7 +507,7 @@ function Guard:BlockSender(name)
 end
 
 function Guard:UnblockSender(name)
-	local key = normalizedName(name)
+	local key = controlKey(name)
 	local guard = settings()
 	if not key or not guard or not guard.blocked[key] then return false end
 	guard.blocked[key] = nil
@@ -339,7 +515,7 @@ function Guard:UnblockSender(name)
 end
 
 function Guard:UnapproveSender(name)
-	local key = normalizedName(name)
+	local key = controlKey(name)
 	local guard = settings()
 	if not key or not guard or not guard.trusted[key] then return false end
 	guard.trusted[key] = nil
@@ -365,7 +541,8 @@ function Guard:GetStatus()
 	local guard = settings()
 	return { enabled = guard and guard.enabled ~= false or false,
 		entries = guard and #prune(guard) or 0, unreadable = self.unreadable or 0,
-		filterActive = self.nativeFilterActive == true }
+		filterActive = self.nativeFilterActive == true,
+		bnetFilterActive = self.bnetFilterActive == true }
 end
 
 local function statusText(text)
@@ -387,10 +564,17 @@ function Guard:HandleCommand(input)
 		if self.enabled and not state.filterActive then
 			statusText("WARNING: native chat whisper filter is unavailable; native chat may show these messages.")
 		end
+		if self.enabled and not state.bnetFilterActive then
+			statusText("Battle.net whisper quarantine is unavailable; those messages remain in native chat.")
+		end
 		local summaries = self:GetSummaries()
 		for index = 1, math.min(#summaries, 20) do
 			local summary = summaries[index]
-			statusText(summary.sender .. " — " .. tostring(summary.count)
+			local label = summary.sender
+			if string.sub(summary.senderKey, 1, 3) == "bn:" then
+				label = label .. " (" .. summary.senderKey .. ")"
+			end
+			statusText(label .. " — " .. tostring(summary.count)
 				.. " held. Latest ID " .. tostring(summary.lastId) .. ".")
 		end
 		if #summaries > 20 then statusText(tostring(#summaries - 20) .. " more senders not listed.") end
@@ -407,7 +591,11 @@ function Guard:HandleCommand(input)
 			text = "%s", button1 = "CLOSE", timeout = 0, whileDead = true,
 			hideOnEscape = true, preferredIndex = 3,
 		}
-		_G.StaticPopup_Show("CCBB_WHISPER_REVIEW", entry.sender .. " wrote:\n\n" .. entry.text)
+		local senderLabel = entry.sender
+		if entry.event == "CHAT_MSG_BN_WHISPER" then
+			senderLabel = senderLabel .. " (" .. entry.senderKey .. ")"
+		end
+		_G.StaticPopup_Show("CCBB_WHISPER_REVIEW", senderLabel .. " wrote:\n\n" .. entry.text)
 		return true
 	elseif verb == "approve" and argument ~= "" then
 		local ok, released = self:ApproveSender(argument)

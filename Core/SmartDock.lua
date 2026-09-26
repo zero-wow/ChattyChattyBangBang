@@ -4961,6 +4961,7 @@ local composerRouteTypes = {
 	PARTY = true,
 	RAID = true,
 	BATTLEGROUND = true,
+	INSTANCE_CHAT = true,
 	GUILD = true,
 	OFFICER = true,
 	WHISPER = true,
@@ -5069,7 +5070,7 @@ function Dock:GetSuggestedComposerRoute()
 		return self:GetGroupComposerRoute()
 	elseif self.activeView == "pvp" then
 		local groupRoute = self:GetGroupComposerRoute()
-		if groupRoute == "BATTLEGROUND" then
+		if groupRoute == "BATTLEGROUND" or groupRoute == "INSTANCE_CHAT" then
 			return groupRoute
 		end
 		local channelNumber = addon:GetSmartSettings().channelTargets[self.activeView]
@@ -5216,6 +5217,14 @@ function Dock:GetComposerRouteChoices()
 	local groupRoute = self:GetGroupComposerRoute()
 	if groupRoute then
 		add(groupRoute, groupRoute)
+		-- Retail may keep a separate home party/raid while the player is in an
+		-- instance group. Keep that route available as an explicit choice.
+		if groupRoute == "INSTANCE_CHAT" and addon.ClientAPI.GetHomeGroupChatType then
+			local homeRoute = addon.ClientAPI:GetHomeGroupChatType()
+			if homeRoute then
+				add(homeRoute, homeRoute)
+			end
+		end
 	end
 	if IsInGuild and IsInGuild() then
 		add("GUILD", "GUILD")
@@ -6026,7 +6035,7 @@ function Dock:HideNativeChat()
 	-- Never leave the player without a chat surface. In particular, a hidden
 	-- Smart Dock must restore Blizzard chat even when this preference is on.
 	if not self.active or not self.frame or not self.frame:IsShown()
-		or self.visibleState == false or self.nativeSafetyFallback then
+		or self.visibleState == false or self.nativeFallbackEffective then
 		return
 	end
 	if self.nativeSnapshot or not addon:GetSmartSettings().dock.hideNativeChat then
@@ -6052,23 +6061,22 @@ function Dock:SyncNativeChatVisibility()
 	local settings = addon:GetSmartSettings()
 	if self.active and self.frame and self.frame:IsShown()
 		and self.visibleState ~= false and settings.dock.hideNativeChat
-		and not self.nativeSafetyFallback then
+		and not self.nativeFallbackEffective then
 		return self:HideNativeChat()
 	else
 		return self:RestoreNativeChat()
 	end
 end
 
--- Retail can temporarily withhold message contents from addons. Keep the
--- player's hide-native preference intact, but reveal Blizzard chat while
--- Chatty cannot verify that it has captured every line.
-function Dock:SetNativeSafetyFallback(active)
-	active = active and true or false
-	if self.nativeSafetyFallback == active
+-- Recovery and missing event registrations independently require Blizzard
+-- chat. Releasing either reason must not clear the other's safety surface.
+function Dock:RefreshNativeSafetyFallback()
+	local active = self.nativeSafetyFallback == true or self.captureCoverageFallback == true
+	if self.nativeFallbackEffective == active
 		and (not active or not self.nativeFallbackActivationFailed) then
 		return self.nativeFallbackActivationFailed ~= true
 	end
-	self.nativeSafetyFallback = active
+	self.nativeFallbackEffective = active
 	-- Showing protected Blizzard frames may itself be refused in combat. Keep
 	-- the failure visible to recovery diagnostics instead of claiming safety.
 	local ok, restored = pcall(self.SyncNativeChatVisibility, self)
@@ -6077,14 +6085,19 @@ function Dock:SetNativeSafetyFallback(active)
 		-- Smart Dock normally sits above Blizzard's chat frames. Raise only the
 		-- native transcript while it is the safety surface, then restore its
 		-- original layering when ordinary capture resumes.
-		self.nativeFallbackStrata = {}
+		self.nativeFallbackStrata = self.nativeFallbackStrata or {}
+		local tracked = {}
+		for _, entry in ipairs(self.nativeFallbackStrata) do tracked[entry.frame] = true end
 		for index = 1, (tonumber(NUM_CHAT_WINDOWS) or 0) do
 			local frame = _G["ChatFrame" .. index]
 			if frame and frame.IsShown and frame:IsShown()
 				and frame.GetFrameStrata and frame.SetFrameStrata then
-				self.nativeFallbackStrata[#self.nativeFallbackStrata + 1] = {
-					frame = frame, strata = frame:GetFrameStrata(),
-				}
+				if not tracked[frame] then
+					self.nativeFallbackStrata[#self.nativeFallbackStrata + 1] = {
+						frame = frame, strata = frame:GetFrameStrata(),
+					}
+					tracked[frame] = true
+				end
 				if not pcall(frame.SetFrameStrata, frame, "HIGH") then
 					succeeded = false
 				end
@@ -6098,6 +6111,16 @@ function Dock:SetNativeSafetyFallback(active)
 	end
 	self.nativeFallbackActivationFailed = active and not succeeded or false
 	return succeeded
+end
+
+function Dock:SetNativeSafetyFallback(active)
+	self.nativeSafetyFallback = active and true or false
+	return self:RefreshNativeSafetyFallback()
+end
+
+function Dock:SetCaptureCoverageFallback(active)
+	self.captureCoverageFallback = active and true or false
+	return self:RefreshNativeSafetyFallback()
 end
 
 -- The Social/Friends micro button is not part of the native chat frame, so it
@@ -6160,7 +6183,7 @@ end
 
 function Dock:SuppressTemporaryChatFrame(frame)
 	if not self.active or not frame or not self.frame or not self.frame:IsShown()
-		or self.visibleState == false or self.nativeSafetyFallback
+		or self.visibleState == false or self.nativeFallbackEffective
 		or not addon:GetSmartSettings().dock.hideNativeChat then
 		return
 	end

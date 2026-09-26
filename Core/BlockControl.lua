@@ -607,6 +607,41 @@ local function archiveNowEpoch()
 	return normalizeArchiveEpoch(time and time() or 0)
 end
 
+-- Runtime-only maintenance state; never attach scan bookkeeping to the
+-- SavedVariables archive. Expiry is checked on each access, but a full sanitize
+-- pass is needed only when its earliest known expiry arrives or inputs change.
+local archiveMaintenance = setmetatable({}, { __mode = "k" })
+
+local function rememberArchive(archive)
+	local entries = archive.entries
+	local nextExpiry
+	for index = 1, #entries do
+		local epoch = normalizeArchiveEpoch(entries[index].lastEpoch)
+		if epoch > 0 then
+			local expiry = epoch + archive.retentionDays * 86400 + 1
+			if not nextExpiry or expiry < nextExpiry then nextExpiry = expiry end
+		end
+	end
+	archiveMaintenance[archive] = {
+		entries = entries, length = #entries,
+		maxEntries = archive.maxEntries, retentionDays = archive.retentionDays,
+		nextExpiry = nextExpiry,
+	}
+end
+
+local function rememberArchiveMutation(archive, entry)
+	local state = archiveMaintenance[archive]
+	if not state or state.entries ~= archive.entries then return end
+	state.length = #archive.entries
+	local epoch = normalizeArchiveEpoch(entry.lastEpoch)
+	if epoch > 0 then
+		local expiry = epoch + archive.retentionDays * 86400 + 1
+		if not state.nextExpiry or expiry < state.nextExpiry then
+			state.nextExpiry = expiry
+		end
+	end
+end
+
 local function pruneArchive(archive, nowEpoch)
 	local entries = type(archive.entries) == "table" and archive.entries or {}
 	local retained = {}
@@ -624,10 +659,11 @@ local function pruneArchive(archive, nowEpoch)
 		table.remove(retained, 1)
 	end
 	archive.entries = retained
+	rememberArchive(archive)
 	return retained
 end
 
-local function ensureArchive(settings)
+local function ensureArchive(settings, forcePrune)
 	local archive = type(settings.archive) == "table" and settings.archive or {}
 	settings.archive = archive
 	archive.schema = ARCHIVE_SCHEMA
@@ -638,13 +674,21 @@ local function ensureArchive(settings)
 	if type(archive.entries) ~= "table" then
 		archive.entries = {}
 	end
-	local entries = pruneArchive(archive, archiveNowEpoch())
-	-- A hand-edited/older archive may have entries but no reliable sequence.
-	-- Never reuse an existing blocked<ID> row identifier in that situation.
-	for index = 1, #entries do
-		local number = string.match(entries[index].id or "", "^blocked(%d+)$")
-		if number then
-			archive.nextSequence = math.max(archive.nextSequence, (tonumber(number) or 0) + 1)
+	local state = archiveMaintenance[archive]
+	local nowEpoch = archiveNowEpoch()
+	if forcePrune or not state or state.entries ~= archive.entries
+		or state.length ~= #archive.entries
+		or state.maxEntries ~= archive.maxEntries
+		or state.retentionDays ~= archive.retentionDays
+		or (state.nextExpiry and nowEpoch >= state.nextExpiry) then
+		local entries = pruneArchive(archive, nowEpoch)
+		-- A hand-edited/older archive may have entries but no reliable sequence.
+		-- Never reuse an existing blocked<ID> row identifier in that situation.
+		for index = 1, #entries do
+			local number = string.match(entries[index].id or "", "^blocked(%d+)$")
+			if number then
+				archive.nextSequence = math.max(archive.nextSequence, (tonumber(number) or 0) + 1)
+			end
 		end
 	end
 	return archive
@@ -1483,6 +1527,7 @@ function BlockControl:ArchiveRecord(record, reason, rule, repeatSignature, repea
 			-- evicted based on its first occurrence instead of its latest one.
 			table.remove(entries, index)
 			table.insert(entries, entry)
+			rememberArchiveMutation(archive, entry)
 			return copyArchiveEntry(entry)
 		end
 	end
@@ -1511,6 +1556,7 @@ function BlockControl:ArchiveRecord(record, reason, rule, repeatSignature, repea
 	}
 	table.insert(entries, entry)
 	if #entries > archive.maxEntries then table.remove(entries, 1) end
+	rememberArchiveMutation(archive, entry)
 	return copyArchiveEntry(entry)
 end
 
@@ -1538,8 +1584,8 @@ end
 
 function BlockControl:GetArchive()
 	local settings = getBlockSettings()
-	local archive = ensureArchive(settings)
-	local entries = pruneArchive(archive, archiveNowEpoch())
+	local archive = ensureArchive(settings, true)
+	local entries = archive.entries
 	local result = {}
 	for index = #entries, 1, -1 do
 		result[#result + 1] = copyArchiveEntry(entries[index])
@@ -1549,8 +1595,8 @@ end
 
 function BlockControl:GetArchiveStats()
 	local settings = getBlockSettings()
-	local archive = ensureArchive(settings)
-	local entries = pruneArchive(archive, archiveNowEpoch())
+	local archive = ensureArchive(settings, true)
+	local entries = archive.entries
 	local occurrences = 0
 	for index = 1, #entries do
 		occurrences = occurrences + normalizeArchiveOccurrences(entries[index].occurrences)

@@ -180,6 +180,9 @@ end
 function Recovery:Stop()
 	self.pending = {}
 	self.keys = {}
+	self.unresolved = 0
+	self.fallbackFailed = false
+	self.noticeShown = false
 	local dock = addon.SmartDock
 	if dock and type(dock.SetNativeSafetyFallback) == "function" then
 		pcall(dock.SetNativeSafetyFallback, dock, false)

@@ -1,0 +1,129 @@
+# Chatty Retail workboard
+
+This is the source-of-truth checklist for the 100-item Retail audit. It tracks implementation, not a background scan. No `/rl` or log inspection happens unless Zero requests it. The protected 3.3.5 `main` branch is out of scope.
+
+**Status key:** 🔴 Queued · 🟡 In progress · 🟢 Code complete and locally verified · 🟣 Awaiting in-game validation · ⚪ Audit claim invalidated by source recheck · ⚫ Blocked or decision needed.
+
+**Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. After deployment, gameplay-dependent items move to purple until Zero validates them.
+
+**Progress:** 31/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+
+## Add — missing capabilities
+
+| ID | Status | Feature |
+| --- | --- | --- |
+| A01 | 🟡 | Known event-registration failures now reveal Blizzard chat and Overview shows tracked coverage; unsupported Community/direct add-on output can still be hidden until A02/A05 or a broader fallback policy is solved. |
+| A02 | 🔴 | Opt-in, allowlisted third-party chat-output bridge if Retail permits it. |
+| A03 | 🟢 | First-class Battle.net Messenger sessions and replies, keyed by account ID; mocked identity, send, and failure paths pass. In-game behavior remains unverified. |
+| A04 | 🟢 | Account-ID quarantine retains first contacts before native hiding; only verified friends bypass, unsafe payloads stay visible. In-game behavior remains unverified. |
+| A05 | 🔴 | Explicit Community chat identities and routing after API validation. |
+| A06 | 🟢 | Messenger distinguishes local failure, pending send, client echo, and no echo without claiming delivery; failed sends retain the draft. |
+| A07 | 🟢 | Messenger pages 200 records at a time, preserving per-tab scroll/drafts/NEW; 450-entry rollover and small-window mocks pass. |
+| A08 | 🔴 | Accept/ignore tab suggestion for newly learned channels. |
+| A09 | 🔴 | Search retained messages by text, sender, source, and date. |
+| A10 | 🔴 | Sender-history view from player actions. |
+| A11 | 🔴 | Bookmarks for retained messages. |
+| A12 | 🔴 | Copy one message and bounded transcript selection/export. |
+| A13 | 🔴 | Plain-text URL detection and copy affordance. |
+| A14 | 🔴 | Optional hyperlink-hover previews in Smart Chat and Messenger. |
+| A15 | 🔴 | Invite-link actions in message text. |
+| A16 | 🔴 | Optional persistent unsent Messenger drafts. |
+| A17 | 🔴 | Optional persistent per-tab composer routes. |
+| A18 | 🔴 | Smart Chat send/command history recall. |
+| A19 | 🔴 | Chat logging controls with private-channel exclusions. |
+| A20 | 🔴 | Different history limits per source. |
+| A21 | 🔴 | Privacy-specific whisper/Battle.net retention. |
+| A22 | 🔴 | Safe import/export of non-sensitive policies. |
+| A23 | 🔴 | Alert inbox linked to retained messages. |
+| A24 | 🔴 | User-entered alt-name associations. |
+| A25 | 🔴 | Advanced scoped highlight rules. |
+
+## Fix — incorrect behavior and safety risks
+
+| ID | Status | Fix |
+| --- | --- | --- |
+| F01 | ⚪ | Prior nil-icon claim invalidated: current NEW helper does not access an icon; behavioral regression test added. |
+| F02 | 🟢 | Clear History ID reuse can hide new whispers in open Messenger. |
+| F03 | 🟢 | Retroactively blocked whispers remain in open Messenger. |
+| F04 | 🟢 | Retroactive blocks leave unread/NEW counts overstated. |
+| F05 | 🟢 | Failed whisper-filter setup incorrectly leaves guard enabled. |
+| F06 | 🟢 | Approving held whispers may discard uncaptured text. |
+| F07 | 🟢 | Recovery shutdown leaves stale unresolved state. |
+| F08 | 🟢 | Partial spam-filter registration can misreport full protection. |
+| F09 | 🟢 | Messenger's 201st message jumps reader to bottom and clears NEW. |
+| F10 | 🟢 | Repair Retail Add Friend action; in-game click verification remains. |
+| F11 | 🟢 | Repair Retail Server Ignore dispatch and keep Messenger open on local failure; in-game verification remains. |
+| F12 | 🟢 | Repair Retail Invite action; in-game click verification remains. |
+| F13 | 🟢 | Use Retail Messenger send API with legacy fallback; in-game send verification remains. |
+| F14 | 🟢 | Use SoundKit alert sound and fallback on failure; in-game audio verification remains. |
+| F15 | 🟢 | PvP composer uses Retail INSTANCE_CHAT when in an instance group; in-game verification remains. |
+| F16 | 🟢 | Detect instance groups and accept INSTANCE_CHAT composer route; in-game verification remains. |
+| F17 | 🟢 | Clear History leaves SmartDock unread/NEW markers. |
+| F18 | 🟢 | Request Retail guild roster and trust only explicit membership; first-load/cross-realm check remains. |
+| F19 | 🔴 | Guard legacy Player Names raid/party API use if fallback enabled. |
+| F20 | 🔴 | Guard absent GuildFrame in legacy Alt Names fallback. |
+| F21 | 🔴 | Correct Chat Tabs noMouseAlpha restoration if fallback enabled. |
+| F22 | 🔴 | Remove hard-coded level-80 limit in Player Names fallback. |
+| F23 | 🟢 | Modules status must honor each Smart Chat feature toggle. |
+| F24 | 🟢 | Do not call unavailable native fallback “ready.” |
+| F25 | 🟡 | Added more text-bearing Retail chat families with source/view fixtures; raw channel notices and synthetic native output still need formatting or explicit coverage limits. |
+
+## Improve — reliability, scale, and workflow
+
+| ID | Status | Improvement |
+| --- | --- | --- |
+| I01 | 🟢 | Per-line rendering reuses prepared settings while the public getter keeps its normalization contract; profile-swap and direct-edit mocks pass. |
+| I02 | 🟢 | Blocked archive full-prunes on first use, expiry, bounds change, or explicit review rather than each blocked line; mocks pass. |
+| I03 | 🔴 | Query bounded history pages directly. |
+| I04 | 🔴 | Index Messenger history by conversation partner. |
+| I05 | 🔴 | Add an aggregate history budget across sources. |
+| I06 | 🔴 | Cache friend/guild membership for whisper decisions. |
+| I07 | 🔴 | Protect drafts and unread sessions at Messenger's 12-tab limit. |
+| I08 | 🔴 | Unify message visibility and unread-count membership logic. |
+| I09 | 🔴 | Batch route edits before retained-history reclassification. |
+| I10 | 🔴 | Coalesce rapid full-display redraws. |
+| I11 | 🔴 | Amortize keyword-suggestion cleanup. |
+| I12 | 🔴 | Prefer recently used learned channels at the 64-channel cap. |
+| I13 | 🔴 | Preserve route-decision provenance: “then” versus “now.” |
+| I14 | 🔴 | Add precise alert matching and a match preview. |
+| I15 | 🔴 | Adapt repeated-ad vocabulary beyond English openings. |
+| I16 | 🔴 | Make keyword discovery Unicode/language aware. |
+| I17 | 🔴 | Clarify and control suggestion-data retention scopes. |
+| I18 | 🔴 | Explain total history footprint beside per-source capacity. |
+| I19 | 🔴 | Make recovery status actionable without persisting message bodies. |
+| I20 | 🟢 | Manual Retail acceptance matrix added; every in-game row remains Not run. |
+| I21 | 🟢 | One documented local test command and coverage inventory; full local runner passes. |
+| I22 | 🟢 | Staged TOC/XML/Lua/media references validated, with negative fixtures. |
+| I23 | 🟢 | Package manifest records dirty-tree provenance and a content hash. |
+| I24 | 🟢 | Dormant legacy modules excluded from Retail packages. |
+| I25 | 🟢 | Retail README and dual-client workflow docs updated. |
+
+## Polish — appearance and clarity
+
+| ID | Status | Polish |
+| --- | --- | --- |
+| P01 | 🔴 | Reflow settings at small sizes instead of globally shrinking them. |
+| P02 | 🔴 | Adapt sidebar width for longer labels. |
+| P03 | 🔴 | Add a subtle sidebar scroll affordance. |
+| P04 | 🔴 | Enlarge the settings close-button hit target. |
+| P05 | 🔴 | Reserve visible gutters at page edges/dividers. |
+| P06 | 🔴 | Increase the three-pixel gaps between adjacent controls. |
+| P07 | 🔴 | Let long button labels expand/wrap, with tooltip backup. |
+| P08 | 🔴 | Distinguish selected, hover, and focus states on subpages. |
+| P09 | 🔴 | Show Start Here's seven steps as a progress map. |
+| P10 | 🔴 | Use actual chat typography/colors/bands in Start Here preview. |
+| P11 | 🔴 | Let the Start Here preview grow when text wraps. |
+| P12 | 🔴 | Let Start Here warnings/notes grow with copy. |
+| P13 | 🔴 | Size Start Here option rows to their content. |
+| P14 | 🔴 | Replace repeated explanatory prefixes with cleaner hierarchy. |
+| P15 | 🔴 | Clarify/enlarge Messenger's Go to Bottom control. |
+| P16 | 🔴 | Add units and breathing room to sale-ad numeric settings. |
+| P17 | 🔴 | Label each colorway swatch's role. |
+| P18 | 🔴 | Reveal full colorway descriptions on hover. |
+| P19 | 🔴 | Use one selected-theme indicator, not ACTIVE plus CURRENT. |
+| P20 | 🔴 | Enlarge/clarify theme pager controls. |
+| P21 | 🔴 | Widen the invisible scrollbar drag target, not its visual thumb. |
+| P22 | 🔴 | Clarify/enlarge main chat's Go to Bottom control. |
+| P23 | 🔴 | Enlarge and separate Older/Newer/Latest history controls. |
+| P24 | 🔴 | Give alert text and dismiss control a stronger border gutter. |
+| P25 | 🔴 | Space and label Messenger tab/action controls more clearly. |

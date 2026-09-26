@@ -52,6 +52,29 @@ local matched = addon.AlertEngine:ProcessRecord({
 assert(matched, "[PLAYER_NAME] did not resolve to the active player")
 assert(addon.SmartDock.alerts == 1 and addon.SmartDock.lastRule == "alert1", "default rule did not reveal the dock")
 
+-- Retail plays SoundKit IDs, not the old string sound name. If the sound call
+-- fails, retain the file fallback instead of silently swallowing that error.
+local playedKit, fallbackCount
+SOUNDKIT = { RAID_WARNING = 12345 }
+PlaySound = function(id) playedKit = id; return true end
+PlaySoundFile = function() fallbackCount = (fallbackCount or 0) + 1; return true end
+addon:GetSmartSettings().alerts.sound = true
+assert(addon.AlertEngine:ProcessRecord({
+	event = "CHAT_MSG_CHANNEL", sourceId = "channel:trade", sender = "AnotherPlayer",
+	guid = "Player-Another", direction = "incoming", normalized = "stovos, hello",
+	text = "Stovos, hello",
+}), "sound test did not match the alert")
+assert(playedKit == 12345 and not fallbackCount,
+	"Retail alert did not use the numeric SoundKit ID")
+PlaySound = function() error("sound unavailable") end
+assert(addon.AlertEngine:ProcessRecord({
+	event = "CHAT_MSG_CHANNEL", sourceId = "channel:trade", sender = "ThirdPlayer",
+	guid = "Player-Third", direction = "incoming", normalized = "stovos again",
+	text = "Stovos again",
+}), "fallback sound test did not match the alert")
+assert(fallbackCount == 1, "failed SoundKit playback did not try the file fallback")
+SOUNDKIT, PlaySound, PlaySoundFile = nil, nil, nil
+
 local skippedSelf = addon.AlertEngine:ProcessRecord({
 	event = "CHAT_MSG_CHANNEL",
 	sourceId = "channel:trade",
