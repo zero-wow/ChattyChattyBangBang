@@ -274,6 +274,43 @@ local function getConversationSettings()
 	return settings.conversations
 end
 
+-- Use only WoW's native, read-only item/spell tooltip path.  A link from a
+-- message may also be a Chatty action or another addon's custom link; those
+-- must never be handed to GameTooltip.  The shared tooltip is left alone when
+-- another control owns it.
+function Manager:ShowNativeLinkPreview(owner, link, enabled)
+	if enabled ~= true or not owner or not GameTooltip
+		or type(GameTooltip.SetHyperlink) ~= "function"
+		or type(GameTooltip.GetOwner) ~= "function" then return false end
+	local valid, supported = pcall(function()
+		if issecretvalue and issecretvalue(link) then return false end
+		if type(link) ~= "string" or #link > 512 or string.find(link, "[%c|]") then return false end
+		local kind, id = string.match(link, "^([a-z]+):(%d+)")
+		return id ~= nil and (kind == "item" or kind == "spell")
+	end)
+	if not valid or not supported then return false end
+	if GameTooltip:IsShown() and GameTooltip:GetOwner() ~= owner then return false end
+	local ok = pcall(function()
+		GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+		GameTooltip:SetHyperlink(link)
+		GameTooltip:Show()
+	end)
+	if not ok then
+		if GameTooltip:GetOwner() == owner then GameTooltip:Hide() end
+		return false
+	end
+	self.previewLinkOwner = owner
+	return true
+end
+
+function Manager:HideNativeLinkPreview(owner)
+	if not owner or self.previewLinkOwner ~= owner then return end
+	self.previewLinkOwner = nil
+	if GameTooltip and GameTooltip.GetOwner and GameTooltip:GetOwner() == owner then
+		GameTooltip:Hide()
+	end
+end
+
 local function validSavedKey(key)
 	return type(key) == "string" and #key > 0 and #key <= MAX_SAVED_NAME_BYTES
 		and not string.find(key, "[%c|]")
@@ -2355,6 +2392,7 @@ function Manager:BuildWindow()
 		window:RefreshMessageScrollbar(true)
 	end)
 	display:SetScript("OnHyperlinkClick", function(_, link, text, button)
+		Manager:HideNativeLinkPreview(display)
 		if Presentation and Presentation.HandleCopyURLHyperlink
 			and Presentation:HandleCopyURLHyperlink(link) then return end
 		if ChatFrame_OnHyperlinkShow then
@@ -2363,11 +2401,16 @@ function Manager:BuildWindow()
 			SetItemRef(link, text, button)
 		end
 	end)
-	display:SetScript("OnHyperlinkEnter", function()
+	display:SetScript("OnHyperlinkEnter", function(_, link)
 		window.hoveredHyperlink = true
+		Manager:ShowNativeLinkPreview(display, link, getConversationSettings().hoverLinkPreviews)
 	end)
 	display:SetScript("OnHyperlinkLeave", function()
 		window.hoveredHyperlink = false
+		Manager:HideNativeLinkPreview(display)
+	end)
+	display:HookScript("OnHide", function()
+		Manager:HideNativeLinkPreview(display)
 	end)
 	local function toggleClickChrome(_, button)
 		if button == "LeftButton" and not window.hoveredHyperlink then

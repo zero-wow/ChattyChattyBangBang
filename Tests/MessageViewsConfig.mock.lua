@@ -115,6 +115,7 @@ GameFontHighlightSmall = {}
 local Theme = {
 	texts = {},
 	frames = {},
+	createdButtons = {},
 }
 
 function Theme:CreatePanel(parent)
@@ -131,6 +132,7 @@ end
 
 function Theme:CreateButton(parent, text, width, height)
 	local button = frame()
+	self.createdButtons[#self.createdButtons + 1] = button
 	button.parent = parent
 	button:SetSize(width or 120, height or 22)
 	button.text = frame()
@@ -507,6 +509,7 @@ function addon:GetSmartChatTextAppearanceOptions()
 	for index = 1, 12 do
 		fonts[#fonts + 1] = { id = "Font " .. index, label = "Font " .. index }
 	end
+	fonts[#fonts + 1] = { id = "Unicode", label = string.rep("é", 30) }
 	return {
 		fonts = fonts,
 		outlines = {},
@@ -569,6 +572,14 @@ config.pages = {}
 config.navigationButtons = {}
 config.content = frame()
 config:BuildViewsPage()
+local createViewButton
+for _, button in ipairs(Theme.createdButtons) do
+	if button.text and button.text:GetText() == "NEW TAB" then createViewButton = button break end
+end
+assert(createViewButton and createViewButton.width == 100
+	and createViewButton.point[4] == 180 and createViewButton.boundedLabelMaxWidth == 100
+	and #createViewButton.text:GetText() * 10 + 16 <= createViewButton.width,
+	"new-tab action clips at wider fonts or crosses the view-list divider gutter")
 
 -- Chat Access owns local diagnostic capture and its primary destination. The
 -- command controls use their own bounded surface so a wide partner-client font
@@ -1064,7 +1075,8 @@ assert(semanticBounds.paneWidth == 408 and semanticBounds.paneHeight == 308
 	and semanticBounds.actionsTop + 24 <= semanticBounds.paneHeight,
 	"custom terms, semantic catalog, and action row can overlap at minimum config size")
 assert(config.messageViewsSemanticCatalogTitle:GetText() == "BUILT-IN SEMANTIC ROUTING - READ ONLY"
-	and config.messageViewsSemanticCatalogOpen.text:GetText() == "FULL ANALYZER",
+	and config.messageViewsSemanticCatalogOpen.text:GetText() == "ANALYZE"
+	and #config.messageViewsSemanticCatalogOpen.text:GetText() * 10 + 16 <= 92,
 	"semantic catalog lost its read-only identity or route to the full analyzer")
 assert(config.messageViewsSemanticCatalogRows[1].title:GetText():find("GROUP FINDER", 1, true)
 	and config.messageViewsSemanticCatalogRows[1].title:GetText():find("ON", 1, true)
@@ -1283,6 +1295,12 @@ config.messageTextFontSearch:SetText("Font 9")
 config.messageTextFontSearch.scripts.OnTextChanged(config.messageTextFontSearch)
 assert(config.messageTextFontRows[1].option.inherit and config.messageTextFontRows[2].option.id == "Font 9",
 	"font dropdown search did not retain inherit and narrow to the matching face")
+config.messageTextFontSearch:SetText("é")
+config.messageTextFontSearch.scripts.OnTextChanged(config.messageTextFontSearch)
+local fittedFontName = config.messageTextFontRows[2].text:GetText()
+assert(config.messageTextFontRows[2].option.id == "Unicode"
+	and fittedFontName:sub(-3) == "..." and fittedFontName:sub(1, -4):gsub("é", "") == "",
+	"long localized font name was cut inside a UTF-8 character")
 
 -- The picker is a root-level overlay. Section and page navigation must close
 -- it explicitly rather than depending on a later outside-click OnUpdate.

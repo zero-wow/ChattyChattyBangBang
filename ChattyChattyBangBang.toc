@@ -35,6 +35,7 @@ Localization\koKR.lua
 ChattyChattyBangBang.lua
 Core\ClientAPI.lua
 Core\Settings.lua
+Core\PolicyTransfer.lua
 Core\ModuleCatalog.lua
 Core\Theme.lua
 Core\ChatColors.lua

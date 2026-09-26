@@ -49,9 +49,14 @@ GameFontNormal = {}
 GameFontNormalSmall = {}
 GameFontHighlightSmall = {}
 
+local createdTexts = {}
 local Theme = { texts = {}, frames = {}, textures = {} }
 function Theme:GetColor() return 1, 1, 1, 1 end
-function Theme:CreateText(parent) return frame(parent) end
+function Theme:CreateText(parent)
+	local text = frame(parent)
+	createdTexts[#createdTexts + 1] = text
+	return text
+end
 function Theme:CreateButton(parent, text, width, height)
 	local button = frame(parent)
 	button.width, button.height = width, height
@@ -191,6 +196,12 @@ end
 local work = config.alertGlobalEnabledToggle.parent
 assert(work ~= config.alertInspectorPanes.global,
 	"ALERTS ON moved into a replaceable inspector instead of remaining the page master")
+local masterHint
+for _, text in ipairs(createdTexts) do
+	if text:GetText():find("Rules stay saved", 1, true) then masterHint = text break end
+end
+assert(masterHint and #masterHint:GetText() * 10 <= 636 - (6 + 104 + 8) - 8,
+	"master hint can cross the 700px minimum page gutter with a wide font")
 assert(config.alertNameEdit.parent == config.alertInspectorPanes.words
 	and config.alertTermsEdit.parent == config.alertInspectorPanes.words
 	and config.alertSaveButton.parent == config.alertInspectorPanes.words,

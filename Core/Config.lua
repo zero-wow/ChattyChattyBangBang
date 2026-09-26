@@ -935,7 +935,10 @@ function Config:RefreshDockLayoutCategory()
 		if layoutVisible then control:Show() else control:Hide() end
 	end
 	for id, controls in pairs(self.dockLayoutGroups or {}) do
-		local visible = layoutVisible and id == category
+		local visible = layoutVisible and (id == category
+			and not (id == "input" and (self.dockHistorySourcePageOpen or self.dockHistoryPrivatePageOpen))
+			or id == "inputSources" and category == "input" and self.dockHistorySourcePageOpen
+			or id == "inputPrivate" and category == "input" and self.dockHistoryPrivatePageOpen)
 		for _, control in ipairs(controls) do
 			if visible then control:Show() else control:Hide() end
 		end
@@ -1525,8 +1528,15 @@ function Config:RefreshDockPage()
 	if self.dockHistoryLinesEdit then
 		self.dockHistoryLinesEdit:SetText(tostring(math.floor(tonumber(history.linesPerSource) or 1000)))
 	end
+	if self.dockHistoryAggregateToggle then
+		self.dockHistoryAggregateToggle:SetValue(history.aggregateCapacity ~= nil, true)
+	end
+	if self.dockHistoryAggregateEdit then
+		self.dockHistoryAggregateEdit:SetText(tostring(math.floor(
+			tonumber(history.aggregateCapacity or self.dockHistoryAggregateDraft
+				or history.suggestedAggregateCapacity) or 50000)))
+	end
 	if self.dockHistoryFootprint then
-		local capacity = math.floor(tonumber(history.linesPerSource) or 1000)
 		local engine = addon.MessageEngine
 		local stats
 		if engine and type(engine.GetHistoryStats) == "function" then
@@ -1536,13 +1546,16 @@ function Config:RefreshDockPage()
 		local lines = math.max(0, math.floor(tonumber(stats and stats.lines) or 0))
 		local sources = math.max(0, math.floor(tonumber(stats and stats.sources) or 0))
 		local prefix = history.enabled == false and "This session: " or "Retained now: "
+		local total = tonumber(history.aggregateCapacity)
 		if sources > 0 then
 			self.dockHistoryFootprint:SetText(prefix .. tostring(lines) .. " lines across "
-				.. tostring(sources) .. " sources. These sources can hold up to "
-				.. tostring(sources * capacity) .. " lines total; new sources add more. Disk size varies.")
+				.. tostring(sources) .. " sources. " .. (total
+					and ("Total cap: " .. tostring(total) .. "; oldest lines go first. A busy source may keep fewer than its own limit.")
+					or "No total cap; each source has its own limit. Disk size varies."))
 		else
-			self.dockHistoryFootprint:SetText(prefix .. "no lines yet. Each new source can add up to "
-				.. tostring(capacity) .. " lines; there is no fixed total cap. Disk size varies.")
+			self.dockHistoryFootprint:SetText(prefix .. "no lines yet. " .. (total
+				and ("Total cap: " .. tostring(total) .. " lines across every source.")
+				or "No total cap; new sources inherit the default limit. Disk size varies."))
 		end
 	end
 	local responsive = type(addon.GetResponsiveMetadata) == "function" and addon:GetResponsiveMetadata()
@@ -1625,6 +1638,8 @@ function Config:RefreshDockPage()
 		self.dockOverallAlphaEdit:SetText(tostring(math.floor(((tonumber(transparency.overallAlpha) or 1) * 100) + 0.5)))
 	end
 	self:RefreshDockSections()
+	if self.RefreshDockHistorySourcePage then self:RefreshDockHistorySourcePage() end
+	if self.RefreshDockHistoryPrivatePage then self:RefreshDockHistoryPrivatePage() end
 	self:RefreshNewMessageIndicatorAppearance()
 	self:RefreshRailUnreadCountAppearance()
 end
@@ -1932,14 +1947,15 @@ function Config:BuildDockPage()
 		"Saves bounded received history, including allowed whispers, in this character's local SavedVariables. Older retained lines load in 400-record pages. Turning this off erases saved text immediately; held stranger whispers stay separate.")
 	local historyLinesLabel = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
 	historyLinesLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 232, -214)
-	historyLinesLabel:SetText("LINES / SOURCE")
+	historyLinesLabel:SetText("DEFAULT / SOURCE")
 	self.dockHistoryLinesEdit = Theme:CreateEditBox(page, 74, 22, false)
 	self.dockHistoryLinesEdit:SetPoint("TOPLEFT", page, "TOPLEFT", 232, -230)
 	setControlTooltip(self.dockHistoryLinesEdit, "History lines per source",
-		"Keeps 100 to 10,000 received messages independently for each source. The default is 1,000.")
+		"The inherited limit is 100 to 10,000 received lines per source. You can tune individual sources below. The default is 1,000.")
 	local function commitHistoryLines()
 		local value = tonumber(Config.dockHistoryLinesEdit:GetText())
-		if not value or value < 100 or value > 10000 then
+		if not value or value ~= value or value == math.huge or value == -math.huge
+			or value < 100 or value > 10000 then
 			Config:RefreshDockPage()
 			Config:SetDockStatus("Use 100 to 10,000 history lines per source.", "warning")
 			return
@@ -1955,8 +1971,49 @@ function Config:BuildDockPage()
 	end
 	self.dockHistoryLinesEdit:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
 	self.dockHistoryLinesEdit:HookScript("OnEditFocusLost", commitHistoryLines)
+	self.dockHistoryAggregateToggle = Theme:CreateCompactToggle(page, "TOTAL LIMIT", 146)
+	self.dockHistoryAggregateToggle:SetPoint("TOPLEFT", page, "TOPLEFT", 331, -230)
+	self.dockHistoryAggregateToggle.OnValueChanged = function(_, enabled)
+		if type(addon.SetChatHistoryAggregateCapacity) ~= "function" then return end
+		local value = enabled and tonumber(Config.dockHistoryAggregateEdit:GetText()) or nil
+		if enabled and (not value or value ~= value or value == math.huge
+			or value == -math.huge or value < 100 or value > 1000000) then value = 50000 end
+		addon:SetChatHistoryAggregateCapacity(value)
+		Config:RefreshDockPage()
+		Config:SetDockStatus(enabled
+			and ("Total limit is " .. tostring(value) .. " lines; oldest messages go first across sources.")
+			or "Total limit off. Each source now keeps its own allowance independently.", "success")
+	end
+	setControlTooltip(self.dockHistoryAggregateToggle, "Optional total history limit",
+		"Off by default. When enabled, the oldest line across all sources leaves first. A busy source may retain fewer than its per-source limit.")
+	local historyAggregateLabel = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	historyAggregateLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 494, -214)
+	historyAggregateLabel:SetText("TOTAL LINES")
+	self.dockHistoryAggregateEdit = Theme:CreateEditBox(page, 86, 22, false)
+	self.dockHistoryAggregateEdit:SetPoint("TOPLEFT", page, "TOPLEFT", 494, -230)
+	setControlTooltip(self.dockHistoryAggregateEdit, "Total retained lines",
+		"Use 100 to 1,000,000 across all sources. The value only applies while TOTAL LIMIT is checked.")
+	self.dockHistoryAggregateEdit:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
+	self.dockHistoryAggregateEdit:HookScript("OnEditFocusLost", function(self)
+		local value = tonumber(self:GetText())
+		if not value or value ~= value or value == math.huge or value == -math.huge
+			or value < 100 or value > 1000000 then
+			Config:RefreshDockPage()
+			Config:SetDockStatus("Use 100 to 1,000,000 lines for the optional total limit.", "warning")
+			return
+		end
+		value = math.floor(value + 0.5)
+		Config.dockHistoryAggregateDraft = value
+		if addon:GetChatHistorySettings().aggregateCapacity ~= nil then
+			addon:SetChatHistoryAggregateCapacity(value)
+			Config:SetDockStatus("Total limit updated to " .. tostring(value) .. " lines.", "success")
+		else
+			Config:SetDockStatus("Total limit is still off. Check TOTAL LIMIT to apply this value.", "textMuted")
+		end
+		Config:RefreshDockPage()
+	end)
 	self.dockClearHistoryButton = Theme:CreateTightButton(page, "CLEAR HISTORY", 22, false)
-	self.dockClearHistoryButton:SetPoint("LEFT", self.dockHistoryLinesEdit, "RIGHT", 8, 0)
+	self.dockClearHistoryButton:SetPoint("TOPLEFT", page, "TOPLEFT", 398, -329)
 	setActionStyle(self.dockClearHistoryButton, "danger", "Clear received-chat history",
 		"Erases saved and current Chatty history for every source. Settings and block/spam rules are kept.")
 	self.dockClearHistoryButton:SetScript("OnClick", function(self)
@@ -1972,16 +2029,207 @@ function Config:BuildDockPage()
 		Config:SetDockStatus("Received-chat history cleared from every source.", "success")
 	end)
 	local historyHint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-	historyHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -260)
+	historyHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -269)
 	historyHint:SetWidth(PAGE_WIDTH)
 	historyHint:SetJustifyH("LEFT")
-	historyHint:SetText("One shared copy of each message is stored, then restored into every matching tab without duplicating it.")
+	historyHint:SetText("One saved copy per message; matching tabs share it. Held and blocked messages stay separate.")
+	local historyTotalHint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	historyTotalHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -289)
+	historyTotalHint:SetSize(PAGE_WIDTH, 31)
+	historyTotalHint:SetJustifyH("LEFT")
+	if historyTotalHint.SetJustifyV then historyTotalHint:SetJustifyV("TOP") end
+	historyTotalHint:SetText("TOTAL LIMIT is optional. If reached, oldest messages leave first and a source may hold fewer than its own limit.")
+	self.dockHistorySourcesButton = Theme:CreateTightButton(page, "TUNE SOURCES", 22, false)
+	self.dockHistorySourcesButton:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -329)
+	self.dockHistorySourcesButton:SetScript("OnClick", function()
+		Config.dockHistorySourcePageOpen = true
+		Config.dockHistoryPrivatePageOpen = false
+		Config.dockHistorySourcePageIndex = 1
+		Config:RefreshDockPage()
+	end)
+	setControlTooltip(self.dockHistorySourcesButton, "Tune one source",
+		"Choose a known chat source and give it its own 100 to 10,000-line limit, or leave it inheriting the default.")
+	self.dockHistoryPrivateButton = Theme:CreateTightButton(page, "PRIVATE HISTORY", 22, false)
+	self.dockHistoryPrivateButton:SetPoint("TOPLEFT", page, "TOPLEFT", 180, -329)
+	self.dockHistoryPrivateButton:SetScript("OnClick", function()
+		Config.dockHistoryPrivatePageOpen = true
+		Config.dockHistorySourcePageOpen = false
+		Config:RefreshDockPage()
+	end)
+	setControlTooltip(self.dockHistoryPrivateButton, "Private history",
+		"Control future saved whispers and Battle.net messages separately. Already-saved private lines require a confirmed clear.")
 	self.dockHistoryFootprint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-	self.dockHistoryFootprint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -303)
-	self.dockHistoryFootprint:SetSize(PAGE_WIDTH, 48)
+	self.dockHistoryFootprint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -370)
+	self.dockHistoryFootprint:SetSize(PAGE_WIDTH, 64)
 	self.dockHistoryFootprint:SetJustifyH("LEFT")
 	if self.dockHistoryFootprint.SetJustifyV then self.dockHistoryFootprint:SetJustifyV("TOP") end
-	self.dockHistoryFootprint:SetText("History grows independently for each chat source; there is no fixed total cap.")
+	self.dockHistoryFootprint:SetText("No total cap unless you choose one. Every source inherits the 1,000-line default.")
+
+	-- Source overrides live in a sibling inspector, so six rows fit without
+	-- covering the default controls or the status line at the minimum panel size.
+	self.dockHistorySourceControls = {}
+	local function addHistorySourceControl(control)
+		self.dockHistorySourceControls[#self.dockHistorySourceControls + 1] = control
+		return control
+	end
+	local historySourceHeading = addHistorySourceControl(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	historySourceHeading:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	historySourceHeading:SetText("PER-SOURCE HISTORY LIMITS")
+	local historySourceBack = addHistorySourceControl(Theme:CreateTightButton(page, "BACK TO INPUT", 22, false))
+	historySourceBack:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAGE_GUTTER, -130)
+	historySourceBack:SetScript("OnClick", function()
+		Config.dockHistorySourcePageOpen = false
+		Config:RefreshDockPage()
+	end)
+	local historySourceHint = addHistorySourceControl(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	historySourceHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -158)
+	historySourceHint:SetWidth(PAGE_WIDTH)
+	historySourceHint:SetText("Each source inherits your default until changed. A total limit, if enabled, still applies across all sources.")
+	local historySourceLimitHeading = addHistorySourceControl(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	historySourceLimitHeading:SetPoint("TOPLEFT", page, "TOPLEFT", 405, -187)
+	historySourceLimitHeading:SetText("LINES")
+	self.dockHistorySourceRows = {}
+	for index = 1, 6 do
+		local y = 209 + (index - 1) * 34
+		local row = { controls = {} }
+		row.label = Theme:CreateText(page, "GameFontHighlightSmall", "text")
+		row.label:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -y)
+		row.label:SetSize(379, 22)
+		row.label:SetJustifyH("LEFT")
+		if row.label.SetWordWrap then row.label:SetWordWrap(false) end
+		row.edit = Theme:CreateEditBox(page, 72, 22, false)
+		row.edit:SetPoint("TOPLEFT", page, "TOPLEFT", 405, -y)
+		row.inherit = Theme:CreateTightButton(page, "DEFAULT", 22, false)
+		row.inherit:SetPoint("TOPLEFT", page, "TOPLEFT", 493, -y)
+		for _, control in ipairs({ row.label, row.edit, row.inherit }) do
+			row.controls[#row.controls + 1] = addHistorySourceControl(control)
+		end
+		setControlTooltip(row.edit, "Source history limit",
+			"Use 100 to 10,000 lines for this source. INHERIT returns to the default per-source limit.")
+		setControlTooltip(row.inherit, "Inherit default limit",
+			"Remove this source's custom value. If the inherited limit is lower, older lines for this source are removed.")
+		row.edit:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
+		row.edit:HookScript("OnEditFocusLost", function(self)
+			if not row.sourceId then return end
+			local value = tonumber(self:GetText())
+			if not value or value ~= value or value == math.huge or value == -math.huge
+				or value < 100 or value > 10000 then
+				Config:RefreshDockPage()
+				Config:SetDockStatus("Use 100 to 10,000 lines for one source.", "warning")
+				return
+			end
+			local ok, limit = addon:SetChatHistorySourceLimit(row.sourceId, value)
+			Config:RefreshDockPage()
+			Config:SetDockStatus(ok and ("This source now keeps up to " .. tostring(limit) .. " lines.")
+				or "Could not save that source limit.", ok and "success" or "warning")
+		end)
+		row.inherit:SetScript("OnClick", function()
+			if not row.sourceId then return end
+			local ok, limit = addon:SetChatHistorySourceLimit(row.sourceId, nil)
+			Config:RefreshDockPage()
+			Config:SetDockStatus(ok and ("This source now inherits " .. tostring(limit) .. " lines.")
+				or "Could not reset that source limit.", ok and "success" or "warning")
+		end)
+		self.dockHistorySourceRows[index] = row
+	end
+	self.dockHistorySourcePrev = addHistorySourceControl(Theme:CreateTightButton(page, "< PREV", 22, false))
+	self.dockHistorySourcePrev:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -423)
+	self.dockHistorySourcePrev:SetScript("OnClick", function()
+		Config.dockHistorySourcePageIndex = math.max(1, (Config.dockHistorySourcePageIndex or 1) - 1)
+		Config:RefreshDockHistorySourcePage()
+	end)
+	self.dockHistorySourcePager = addHistorySourceControl(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	self.dockHistorySourcePager:SetPoint("TOPLEFT", page, "TOPLEFT", 116, -427)
+	self.dockHistorySourcePager:SetWidth(230)
+	self.dockHistorySourceNext = addHistorySourceControl(Theme:CreateTightButton(page, "NEXT >", 22, false))
+	self.dockHistorySourceNext:SetPoint("TOPLEFT", page, "TOPLEFT", 354, -423)
+	self.dockHistorySourceNext:SetScript("OnClick", function()
+		Config.dockHistorySourcePageIndex = (Config.dockHistorySourcePageIndex or 1) + 1
+		Config:RefreshDockHistorySourcePage()
+	end)
+
+	-- This sibling page controls only Chatty's local SavedVariables. It does
+	-- not touch WoW's global /chatlog switch or hide current-session Messenger.
+	self.dockHistoryPrivateControls = {}
+	local function addPrivateControl(control)
+		self.dockHistoryPrivateControls[#self.dockHistoryPrivateControls + 1] = control
+		return control
+	end
+	local privateHeading = addPrivateControl(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	privateHeading:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	privateHeading:SetText("PRIVATE CHAT HISTORY")
+	local privateBack = addPrivateControl(Theme:CreateTightButton(page, "BACK TO INPUT", 22, false))
+	privateBack:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAGE_GUTTER, -130)
+	privateBack:SetScript("OnClick", function()
+		Config.dockHistoryPrivatePageOpen = false
+		for _, button in pairs(Config.dockHistoryPrivateClearButtons or {}) do
+			button.confirming = false
+			button:SetLabel(button.normalLabel)
+		end
+		Config:RefreshDockPage()
+	end)
+	local privateHint = addPrivateControl(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	privateHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -158)
+	privateHint:SetSize(PAGE_WIDTH, 35)
+	privateHint:SetJustifyH("LEFT")
+	privateHint:SetText("Chatty's local saved history only, not WoW /chatlog. Current-session Messenger stays visible.")
+	self.dockHistorySaveWhispersToggle = addPrivateControl(Theme:CreateCompactToggle(page,
+		"SAVE WHISPERS AFTER LOGIN", 290))
+	self.dockHistorySaveWhispersToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -209)
+	self.dockHistorySaveWhispersToggle.OnValueChanged = function(_, value)
+		addon:SetChatHistoryPrivateSaveEnabled("whispers", value)
+		Config:SetDockStatus(value and "New whispers will be saved again."
+			or "New whispers stay in this session only; older saved copies remain until cleared.", "success")
+	end
+	self.dockHistorySaveBattleNetToggle = addPrivateControl(Theme:CreateCompactToggle(page,
+		"SAVE BATTLE.NET AFTER LOGIN", 310))
+	self.dockHistorySaveBattleNetToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -248)
+	self.dockHistorySaveBattleNetToggle.OnValueChanged = function(_, value)
+		addon:SetChatHistoryPrivateSaveEnabled("battleNet", value)
+		Config:SetDockStatus(value and "New Battle.net messages will be saved again."
+			or "New Battle.net messages stay in this session only; older saved copies remain until cleared.", "success")
+	end
+	local privatePolicy = addPrivateControl(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	privatePolicy:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -288)
+	privatePolicy:SetSize(PAGE_WIDTH, 43)
+	privatePolicy:SetJustifyH("LEFT")
+	privatePolicy:SetText("Turning saving off affects future messages only. To remove already-saved private text, use the confirmed buttons below. Neither action hides live replies.")
+	self.dockHistoryPrivateClearButtons = {}
+	local function createPrivateClear(kind, label, x)
+		local button = addPrivateControl(Theme:CreateTightButton(page, label, 22, false))
+		button.normalLabel = label
+		button:SetPoint("TOPLEFT", page, "TOPLEFT", x, -351)
+		button:SetScript("OnClick", function(self)
+			if not self.confirming then
+				for _, other in pairs(Config.dockHistoryPrivateClearButtons) do
+					other.confirming = false
+					other:SetLabel(other.normalLabel)
+				end
+				self.confirming = true
+				self:SetLabel(kind == "whispers" and "CONFIRM WHISPERS" or "CONFIRM B.NET")
+				Config:SetDockStatus("Click again to erase only saved " .. (kind == "whispers"
+					and "whispers." or "Battle.net messages."), "warning")
+				return
+			end
+			self.confirming = false
+			self:SetLabel(self.normalLabel)
+			local ok, cleared = addon:ClearSavedPrivateChatHistory(kind)
+			Config:RefreshDockHistoryPrivatePage()
+			Config:SetDockStatus(ok and (tostring(cleared or 0) .. " saved "
+				.. (kind == "whispers" and "whispers" or "Battle.net messages")
+				.. " cleared; live session remains visible.")
+				or "Could not clear saved private history.", ok and "success" or "warning")
+		end)
+		self.dockHistoryPrivateClearButtons[kind] = button
+		return button
+	end
+	createPrivateClear("whispers", "CLEAR SAVED WHISPERS", PAGE_GUTTER)
+	createPrivateClear("battleNet", "CLEAR SAVED B.NET", 309)
+	self.dockHistoryPrivateSummary = addPrivateControl(Theme:CreateText(page,
+		"GameFontHighlightSmall", "textMuted"))
+	self.dockHistoryPrivateSummary:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -402)
+	self.dockHistoryPrivateSummary:SetSize(PAGE_WIDTH, 25)
+	self.dockHistoryPrivateSummary:SetJustifyH("LEFT")
 
 	local responsiveTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
 	responsiveTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
@@ -2652,9 +2900,14 @@ function Config:BuildDockPage()
 		input = {
 			chromeTitle, self.dockComposerAutoHideToggle, self.dockEditBoxBorderToggle,
 			historyTitle, self.dockHistoryToggle, historyLinesLabel,
-			self.dockHistoryLinesEdit, self.dockClearHistoryButton, historyHint,
-			self.dockHistoryFootprint,
+			self.dockHistoryLinesEdit, self.dockHistoryAggregateToggle,
+			historyAggregateLabel, self.dockHistoryAggregateEdit,
+			self.dockClearHistoryButton, self.dockHistorySourcesButton,
+			self.dockHistoryPrivateButton,
+			historyHint, historyTotalHint, self.dockHistoryFootprint,
 		},
+		inputSources = self.dockHistorySourceControls,
+		inputPrivate = self.dockHistoryPrivateControls,
 		readability = {
 			responsiveTitle, self.dockResponsiveMetadataToggle,
 			lineSpacingTitle, self.dockLineSpacingEdit, lineSpacingHint,
@@ -4641,7 +4894,96 @@ local function shortenSmartChatFontLabel(label, maximumLength)
 	if string.len(label) <= maximumLength then
 		return label
 	end
-	return string.sub(label, 1, math.max(1, maximumLength - 3)) .. "..."
+	local last = math.max(1, maximumLength - 3)
+	while last > 0 do
+		local nextByte = string.byte(label, last + 1)
+		if not nextByte or nextByte < 128 or nextByte >= 192 then break end
+		last = last - 1
+	end
+	return string.sub(label, 1, last) .. "..."
+end
+
+function Config:GetDockHistorySourceDefinitions()
+	local definitions, seen = {}, {}
+	local function add(sourceId, label)
+		if type(sourceId) ~= "string" or sourceId == "" or seen[sourceId] then return end
+		seen[sourceId] = true
+		definitions[#definitions + 1] = {
+			id = sourceId,
+			label = type(label) == "string" and label ~= "" and label or sourceId,
+		}
+	end
+	local engine = addon.MessageEngine
+	if engine and type(engine.GetSourceDefinitions) == "function" then
+		local sourceDefinitions = engine:GetSourceDefinitions()
+		for index = 1, #(sourceDefinitions or {}) do
+			local source = sourceDefinitions[index]
+			add(source.sourceId or source.id, source.sourceLabel or source.label)
+		end
+	end
+	local settings = addon:GetSmartSettings()
+	for sourceId in pairs(type(settings.historySourceLimits) == "table"
+		and settings.historySourceLimits or {}) do add(sourceId) end
+	for sourceId in pairs(type(settings.history) == "table"
+		and type(settings.history.sources) == "table" and settings.history.sources or {}) do
+		add(sourceId)
+	end
+	for sourceId in pairs(engine and engine.sourceHistories or {}) do add(sourceId) end
+	table.sort(definitions, function(left, right)
+		local leftLabel, rightLabel = string.lower(left.label), string.lower(right.label)
+		if leftLabel ~= rightLabel then return leftLabel < rightLabel end
+		return left.id < right.id
+	end)
+	return definitions
+end
+
+function Config:RefreshDockHistorySourcePage()
+	local rows = self.dockHistorySourceRows
+	if not rows then return end
+	local definitions = self:GetDockHistorySourceDefinitions()
+	local pageSize = #rows
+	local pageCount = math.max(1, math.ceil(#definitions / pageSize))
+	self.dockHistorySourcePageIndex = math.max(1,
+		math.min(pageCount, math.floor(tonumber(self.dockHistorySourcePageIndex) or 1)))
+	local visible = self.dockSection ~= "colors"
+		and self.dockLayoutCategory == "input" and self.dockHistorySourcePageOpen
+	for index = 1, pageSize do
+		local row = rows[index]
+		local source = definitions[(self.dockHistorySourcePageIndex - 1) * pageSize + index]
+		row.sourceId = source and source.id or nil
+		if source then
+			local limit, overridden = addon:GetChatHistorySourceLimit(source.id)
+			row.label:SetText(source.label)
+			row.edit:SetText(tostring(limit))
+			row.inherit:SetLabel(overridden and "INHERIT" or "DEFAULT")
+		end
+		for _, control in ipairs(row.controls) do
+			if visible and source then control:Show() else control:Hide() end
+		end
+	end
+	if self.dockHistorySourcePager then
+		self.dockHistorySourcePager:SetText(tostring(self.dockHistorySourcePageIndex)
+			.. " / " .. tostring(pageCount) .. "  |  " .. tostring(#definitions) .. " sources")
+	end
+	if self.dockHistorySourcePrev and self.dockHistorySourcePrev.SetEnabled then
+		self.dockHistorySourcePrev:SetEnabled(self.dockHistorySourcePageIndex > 1)
+	end
+	if self.dockHistorySourceNext and self.dockHistorySourceNext.SetEnabled then
+		self.dockHistorySourceNext:SetEnabled(self.dockHistorySourcePageIndex < pageCount)
+	end
+end
+
+function Config:RefreshDockHistoryPrivatePage()
+	if not self.dockHistorySaveWhispersToggle then return end
+	local privacy = addon.GetChatHistoryPrivacySettings and addon:GetChatHistoryPrivacySettings() or {}
+	self.dockHistorySaveWhispersToggle:SetValue(privacy.saveWhispers ~= false, true)
+	self.dockHistorySaveBattleNetToggle:SetValue(privacy.saveBattleNet ~= false, true)
+	local engine = addon.MessageEngine
+	local counts = engine and type(engine.GetSavedPrivateHistoryStats) == "function"
+		and engine:GetSavedPrivateHistoryStats() or {}
+	self.dockHistoryPrivateSummary:SetText("Saved now: "
+		.. tostring(tonumber(counts.whispers) or 0) .. " whispers  |  "
+		.. tostring(tonumber(counts.battleNet) or 0) .. " Battle.net messages")
 end
 
 local function getSmartChatTextAppearanceOptions()
@@ -5284,11 +5626,11 @@ function Config:BuildViewsPage()
 
 	local listTitle = Theme:CreateText(work, "GameFontNormalSmall", "gold")
 	listTitle:SetPoint("TOPLEFT", work, "TOPLEFT", 10, -9)
-	listTitle:SetText("MESSAGE VIEWS")
-	local newButton = Theme:CreateButton(work, "NEW CUSTOM", 76, 20, true)
+	listTitle:SetText("VIEWS")
+	local newButton = Theme:CreateButton(work, "NEW TAB", 100, 20, true)
 	setActionStyle(newButton, "primary", "Create a custom view", "Start a new chat view, then choose its sources and tab label.")
 	newButton:SetPoint("TOPRIGHT", work, "TOPLEFT", 180, -6)
-	self:FitFixedButtonLabel(newButton, 76)
+	self:FitFixedButtonLabel(newButton, 100)
 	newButton:SetScript("OnClick", function()
 		Config:ClearCustomViewEditor()
 	end)
@@ -5546,7 +5888,7 @@ function Config:BuildViewsPage()
 	semanticTitle:SetJustifyH("LEFT")
 	semanticTitle:SetText("BUILT-IN SEMANTIC ROUTING - READ ONLY")
 	self.messageViewsSemanticCatalogTitle = semanticTitle
-	local semanticOpen = Theme:CreateButton(semanticCatalog, "FULL ANALYZER", 92, 18, false)
+	local semanticOpen = Theme:CreateButton(semanticCatalog, "ANALYZE", 92, 18, false)
 	semanticOpen:SetPoint("TOPRIGHT", semanticCatalog, "TOPRIGHT", -6, -3)
 	setControlTooltip(semanticOpen, "Open Semantic Routes", "See every route switch and analyze a sample message with full scoring evidence.")
 	semanticOpen:SetScript("OnClick", function() Config:ShowPage("semantic") end)
@@ -6490,11 +6832,209 @@ function Config:RefreshSpamHealth()
 	self.spamHealth:SetTextColor(r, g, b, a)
 end
 
+Config.SPAM_POLICY_ROWS = 3
+
+function Config:SetSpamPolicyNotice(message, colorName)
+	if not self.spamPolicyNotice then return end
+	colorName = colorName or "textMuted"
+	self.spamPolicyNotice:SetText(message or "")
+	Theme.texts[self.spamPolicyNotice] = colorName
+	local r, g, b, a = Theme:GetColor(colorName)
+	self.spamPolicyNotice:SetTextColor(r, g, b, a)
+end
+
+function Config:RefreshSpamPolicyPreview()
+	local preview = self.spamPolicyPreview
+	local changes = preview and preview.changes or {}
+	local pages = math.max(1, math.ceil(#changes / self.SPAM_POLICY_ROWS))
+	self.spamPolicyPage = math.max(1, math.min(pages, self.spamPolicyPage or 1))
+	if self.spamPolicyPreviewCount then
+		self.spamPolicyPreviewCount:SetText(preview and
+			(#changes .. " CHANGES / PAGE " .. self.spamPolicyPage .. " OF " .. pages)
+			or "PREVIEW BEFORE APPLY")
+	end
+	for index, row in ipairs(self.spamPolicyRows or {}) do
+		local change = changes[(self.spamPolicyPage - 1) * self.SPAM_POLICY_ROWS + index]
+		if change then
+			local old
+			if change.invalidCurrent then old = "invalid current value"
+			elseif change.old == nil then old = "unset"
+			else old = tostring(change.old) end
+			row:SetText(change.key .. "    " .. old .. "  >  " .. tostring(change.new))
+			row:Show()
+		else
+			row:SetText("")
+			row:Hide()
+		end
+	end
+	for _, spec in ipairs({ { self.spamPolicyPrevious, self.spamPolicyPage > 1 },
+		{ self.spamPolicyNext, self.spamPolicyPage < pages } }) do
+		if spec[1] then
+			spec[1]:SetAlpha(spec[2] and 1 or 0.4)
+			spec[1]:EnableMouse(spec[2])
+		end
+	end
+	if self.spamPolicyApply then
+		local enabled = preview ~= nil and #changes > 0
+		self.spamPolicyApply:SetAlpha(enabled and 1 or 0.4)
+		self.spamPolicyApply:EnableMouse(enabled)
+	end
+end
+
+function Config:ClearSpamPolicyPreview()
+	self.spamPolicyPreview = nil
+	self.spamPolicyPage = 1
+	self:RefreshSpamPolicyPreview()
+end
+
+function Config:RefreshSpamPolicyExport()
+	if not self.spamPolicyExport then return end
+	local transfer = addon.PolicyTransfer
+	if not transfer or type(transfer.Export) ~= "function" then
+		self.spamPolicyExport:SetText("")
+		self:SetSpamPolicyNotice("POLICY TRANSFER UNAVAILABLE / RELOAD UI", "danger")
+		return
+	end
+	local ok, text = pcall(transfer.Export, addon:GetSmartSettings())
+	if not ok or type(text) ~= "string" then
+		self.spamPolicyExport:SetText("")
+		self:SetSpamPolicyNotice("CURRENT POLICY CANNOT BE EXPORTED", "danger")
+		return
+	end
+	self.spamPolicyExport:SetText(text)
+	self:SetSpamPolicyNotice("SELECT ALL, THEN COPY. NO PRIVATE DATA IS INCLUDED.", "textMuted")
+end
+
+function Config:SetSpamPolicyMode(mode)
+	mode = mode == "import" and "import" or "export"
+	self.spamPolicyMode = mode
+	if self.spamPolicyExportPane then
+		if mode == "export" then self.spamPolicyExportPane:Show() else self.spamPolicyExportPane:Hide() end
+	end
+	if self.spamPolicyImportPane then
+		if mode == "import" then self.spamPolicyImportPane:Show() else self.spamPolicyImportPane:Hide() end
+	end
+	if self.spamPolicyExportModeButton then
+		setTabStyle(self.spamPolicyExportModeButton, mode == "export", "spam/3-policy", 1)
+	end
+	if self.spamPolicyImportModeButton then
+		setTabStyle(self.spamPolicyImportModeButton, mode == "import", "spam/3-policy", 2)
+	end
+	if mode == "export" then self:RefreshSpamPolicyExport() end
+end
+
+function Config:PreviewSpamPolicyImport()
+	self:ClearSpamPolicyPreview()
+	local transfer = addon.PolicyTransfer
+	if not transfer or type(transfer.Preview) ~= "function" then
+		self:SetSpamPolicyNotice("POLICY TRANSFER UNAVAILABLE / RELOAD UI", "danger")
+		return
+	end
+	local settings = addon:GetSmartSettings()
+	local ok, preview, err = pcall(transfer.Preview, settings,
+		self.spamPolicyImport and self.spamPolicyImport:GetText() or "")
+	if not ok or type(preview) ~= "table" then
+		local errors = {
+			["invalid-size"] = "POLICY TEXT IS MISSING OR OVER 8 KIB",
+			["invalid-header"] = "UNSUPPORTED POLICY FORMAT",
+			["invalid-policy-key"] = "UNKNOWN, DUPLICATE, OR MISORDERED POLICY FIELD",
+			["invalid-policy-value"] = "POLICY VALUE IS INVALID OR OUT OF RANGE",
+			["invalid-line-ending"] = "POLICY TEXT HAS INVALID LINE ENDINGS",
+		}
+		self:SetSpamPolicyNotice(errors[err] or "POLICY PREVIEW FAILED", "danger")
+		return
+	end
+	self.spamPolicyPreview = preview
+	self.spamPolicyPage = 1
+	self:RefreshSpamPolicyPreview()
+	self:SetSpamPolicyNotice(preview.count > 0 and "REVIEW CHANGES, THEN CLICK APPLY"
+		or "NO SETTINGS WOULD CHANGE", preview.count > 0 and "warning" or "textMuted")
+end
+
+function Config:RefreshSpamPolicyControls()
+	local settings = addon:GetSmartSettings()
+	local spam = settings and settings.spam
+	if type(spam) ~= "table" then return end
+	local duplicate = spam.duplicate or {}
+	local burst = spam.burst or {}
+	local ads = spam.repeatAds or {}
+	local escalation = spam.escalation or {}
+	local scopes = spam.scopes or {}
+	local function toggle(control, value)
+		if control then control:SetValue(value ~= false, true) end
+	end
+	local function number(control, value)
+		if control and value ~= nil then control:SetText(tostring(value)) end
+	end
+	toggle(self.spamMasterToggle, spam.enabled)
+	toggle(self.spamDuplicateToggle, duplicate.enabled)
+	toggle(self.spamBurstToggle, burst.enabled)
+	toggle(self.spamRepeatAdToggle, ads.enabled)
+	toggle(self.spamEscalationToggle, escalation.enabled)
+	for key, control in pairs(self.spamScopeToggles or {}) do
+		toggle(control, scopes[key == "localChat" and "local" or key])
+	end
+	local fields = self.spamNumberEdits or {}
+	number(fields.duplicateWindow, duplicate.window)
+	number(fields.allowedCopies, duplicate.allowedCopies)
+	number(fields.minimumLength, duplicate.minimumLength)
+	number(fields.muteAfter, duplicate.muteAfter)
+	number(fields.burstWindow, burst.window)
+	number(fields.messageLimit, burst.limit)
+	number(fields.muteDuration, burst.muteDuration)
+	local adFields = self.spamRepeatAdNumberEdits or {}
+	number(adFields.window, ads.window and ads.window / 3600)
+	number(adFields.maxCopies, ads.maxCopies)
+	number(adFields.minimumGap, ads.minimumGap and ads.minimumGap / 3600)
+	number(adFields.minimumLength, ads.minimumLength)
+	number(self.spamMutesToBanEdit, escalation.mutesBeforeBan)
+	number(self.spamStrikeWindowEdit, escalation.strikeWindow and escalation.strikeWindow / 60)
+	self:RefreshSpamStatus()
+end
+
+function Config:ApplySpamPolicyImport()
+	local preview = self.spamPolicyPreview
+	if not preview or preview.count <= 0 then
+		self:SetSpamPolicyNotice("PREVIEW CHANGES BEFORE APPLY", "warning")
+		return
+	end
+	local transfer = addon.PolicyTransfer
+	if not transfer or type(transfer.Apply) ~= "function" then
+		self:SetSpamPolicyNotice("POLICY TRANSFER UNAVAILABLE / RELOAD UI", "danger")
+		return
+	end
+	local settings = addon:GetSmartSettings()
+	local ok, applied, changed = pcall(transfer.Apply, settings, preview, "APPLY")
+	if not ok or not applied then
+		self:ClearSpamPolicyPreview()
+		local stale = changed == "stale-preview" or changed == "preview-required"
+		self:SetSpamPolicyNotice(stale and "SETTINGS CHANGED / PREVIEW AGAIN"
+			or "POLICY APPLY FAILED / PREVIEW AGAIN", "danger")
+		return
+	end
+	self:ClearSpamPolicyPreview()
+	self:RefreshSpamPolicyControls()
+	self:RefreshSpamPolicyExport()
+	local controller = addon.SpamControl
+	if not controller or type(controller.RefreshSettings) ~= "function" then
+		self:SetSpamPolicyNotice("SAVED / FIREWALL REFRESH UNAVAILABLE / RELOAD UI", "warning")
+		return
+	end
+	local refreshed, result = pcall(controller.RefreshSettings, controller)
+	self:RefreshSpamStatus()
+	self:SetSpamPolicyNotice(refreshed and result ~= false
+		and (tostring(changed) .. " POLICY SETTINGS APPLIED")
+		or "SAVED / FIREWALL REFRESH FAILED / RELOAD UI",
+		refreshed and result ~= false and "success" or "warning")
+end
+
 function Config:SetSpamSection(section)
 	section = section == "bans" and "bans" or "filters"
 	self.spamSection = section
 	if section ~= "bans" then
 		self:HideSpamBanReport()
+	else
+		self:ClearSpamPolicyPreview()
 	end
 	if self.spamFiltersPane then
 		if section == "filters" then self.spamFiltersPane:Show() else self.spamFiltersPane:Hide() end
@@ -6517,9 +7057,10 @@ function Config:SetSpamSection(section)
 end
 
 function Config:SetSpamFilterPane(mode)
-	if mode ~= "matching" and mode ~= "chats" and mode ~= "ads" then
+	if mode ~= "matching" and mode ~= "chats" and mode ~= "ads" and mode ~= "policy" then
 		mode = "protections"
 	end
+	if mode ~= "policy" then self:ClearSpamPolicyPreview() end
 	self.spamFilterMode = mode
 	for paneId, pane in pairs(self.spamFilterSubPanes or {}) do
 		if paneId == mode then pane:Show() else pane:Hide() end
@@ -6527,6 +7068,7 @@ function Config:SetSpamFilterPane(mode)
 	for paneId, button in pairs(self.spamFilterSubButtons or {}) do
 		setTabStyle(button, paneId == mode, "spam/2-filters")
 	end
+	if mode == "policy" then self:SetSpamPolicyMode(self.spamPolicyMode or "export") end
 end
 
 function Config:SetSpamBanPane(mode)
@@ -6861,6 +7403,7 @@ function Config:BuildSpamPage()
 	local escalation = settings.spam.escalation
 
 	local master = Theme:CreateCompactToggle(page, "SPAM FIREWALL", 166)
+	self.spamMasterToggle = master
 	master:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -52)
 	master:SetValue(spam.enabled ~= false, true)
 	master.OnValueChanged = function(_, value)
@@ -6910,6 +7453,12 @@ function Config:BuildSpamPage()
 	setActionStyle(adsButton, "choice", "Repeated sale ads",
 		"Limit the same seller's public advertisement across a rolling day.")
 	self.spamFilterSubButtons.ads = adsButton
+	local policyButton = Theme:CreateTightButton(filters, "POLICY", 20, false)
+	policyButton:SetPoint("LEFT", adsButton, "RIGHT", CONTROL_GAP, 0)
+	policyButton:SetScript("OnClick", function() Config:SetSpamFilterPane("policy") end)
+	setActionStyle(policyButton, "choice", "Policy transfer",
+		"Copy or paste only non-sensitive Spam Firewall settings; preview every change before applying.")
+	self.spamFilterSubButtons.policy = policyButton
 
 	local protectionsPane = CreateFrame("Frame", nil, filters)
 	protectionsPane:SetPoint("TOPLEFT", filters, "TOPLEFT", 0, -32)
@@ -6927,6 +7476,10 @@ function Config:BuildSpamPage()
 	adsPane:SetPoint("TOPLEFT", filters, "TOPLEFT", 0, -32)
 	adsPane:SetSize(PAGE_WIDTH, 300)
 	self.spamFilterSubPanes.ads = adsPane
+	local policyPane = CreateFrame("Frame", nil, filters)
+	policyPane:SetPoint("TOPLEFT", filters, "TOPLEFT", 0, -32)
+	policyPane:SetSize(PAGE_WIDTH, 300)
+	self.spamFilterSubPanes.policy = policyPane
 
 	local protectionsTitle = Theme:CreateText(protectionsPane, "GameFontNormalSmall", "gold")
 	protectionsTitle:SetPoint("TOPLEFT", protectionsPane, "TOPLEFT", 0, 0)
@@ -7062,6 +7615,110 @@ function Config:BuildSpamPage()
 		whisper = createSpamToggle(chatsPane, "WHISPERS", 0, 124, spam.scopes, "whisper"),
 		bnet = createSpamToggle(chatsPane, "BATTLE.NET", 230, 124, spam.scopes, "bnet"),
 	}
+
+	local policyTitle = Theme:CreateText(policyPane, "GameFontNormalSmall", "gold")
+	policyTitle:SetPoint("TOPLEFT", policyPane, "TOPLEFT", 8, 0)
+	policyTitle:SetText("SAFE FIREWALL POLICY TRANSFER")
+	local policyHint = Theme:CreateText(policyPane, "GameFontHighlightSmall", "textMuted")
+	policyHint:SetPoint("TOPLEFT", policyPane, "TOPLEFT", 8, -18)
+	policyHint:SetWidth(PAGE_WIDTH - 16)
+	policyHint:SetText("Only fixed firewall switches and limits. No messages, names, bans, blocked lists, or drafts.")
+	local exportMode = Theme:CreateButton(policyPane, "EXPORT", 90, 20, false)
+	exportMode:SetPoint("TOPLEFT", policyPane, "TOPLEFT", 8, -44)
+	exportMode:SetScript("OnClick", function() Config:SetSpamPolicyMode("export") end)
+	self.spamPolicyExportModeButton = exportMode
+	local importMode = Theme:CreateButton(policyPane, "IMPORT", 90, 20, false)
+	importMode:SetPoint("LEFT", exportMode, "RIGHT", 8, 0)
+	importMode:SetScript("OnClick", function() Config:SetSpamPolicyMode("import") end)
+	self.spamPolicyImportModeButton = importMode
+	self.spamPolicyNotice = Theme:CreateText(policyPane, "GameFontHighlightSmall", "textMuted")
+	self.spamPolicyNotice:SetPoint("TOPLEFT", policyPane, "TOPLEFT", 8, -73)
+	self.spamPolicyNotice:SetWidth(PAGE_WIDTH - 16)
+	self.spamPolicyNotice:SetHeight(18)
+	self.spamPolicyNotice:SetJustifyH("LEFT")
+
+	local exportPane = CreateFrame("Frame", nil, policyPane)
+	exportPane:SetPoint("TOPLEFT", policyPane, "TOPLEFT", 0, -100)
+	exportPane:SetSize(PAGE_WIDTH, 194)
+	self.spamPolicyExportPane = exportPane
+	local exportLabel = Theme:CreateText(exportPane, "GameFontNormalSmall", "gold")
+	exportLabel:SetPoint("TOPLEFT", exportPane, "TOPLEFT", 8, 0)
+	exportLabel:SetText("COPYABLE POLICY TEXT")
+	local selectExport = Theme:CreateButton(exportPane, "SELECT ALL", 100, 20, false)
+	selectExport:SetPoint("TOPRIGHT", exportPane, "TOPRIGHT", -8, 0)
+	selectExport:SetScript("OnClick", function()
+		if Config.spamPolicyExport then
+			Config.spamPolicyExport:SetFocus()
+			Config.spamPolicyExport:HighlightText()
+		end
+	end)
+	self.spamPolicySelectAll = selectExport
+	local exportEdit = Theme:CreateEditBox(exportPane, PAGE_WIDTH - 16, 136, true)
+	exportEdit:SetPoint("TOPLEFT", exportPane, "TOPLEFT", 8, -25)
+	exportEdit:SetMaxLetters(8192)
+	self.spamPolicyExport = exportEdit
+	local exportHint = Theme:CreateText(exportPane, "GameFontHighlightSmall", "textMuted")
+	exportHint:SetPoint("TOPLEFT", exportPane, "TOPLEFT", 8, -169)
+	exportHint:SetWidth(PAGE_WIDTH - 16)
+	exportHint:SetText("SELECT ALL, then Ctrl+C. This field is a copy surface, not an Apply control.")
+
+	local importPane = CreateFrame("Frame", nil, policyPane)
+	importPane:SetPoint("TOPLEFT", policyPane, "TOPLEFT", 0, -100)
+	importPane:SetSize(PAGE_WIDTH, 194)
+	self.spamPolicyImportPane = importPane
+	local importEdit = Theme:CreateEditBox(importPane, PAGE_WIDTH - 16, 65, true)
+	importEdit:SetPoint("TOPLEFT", importPane, "TOPLEFT", 8, 0)
+	-- One extra character makes an over-limit paste fail closed rather than
+	-- silently truncating to a potentially valid policy prefix.
+	importEdit:SetMaxLetters(8193)
+	importEdit:HookScript("OnTextChanged", function()
+		if Config.spamPolicyPreview then
+			Config:ClearSpamPolicyPreview()
+			Config:SetSpamPolicyNotice("IMPORT CHANGED / PREVIEW AGAIN", "warning")
+		end
+	end)
+	self.spamPolicyImport = importEdit
+	local previewButton = Theme:CreateButton(importPane, "PREVIEW", 100, 20, false)
+	previewButton:SetPoint("TOPLEFT", importPane, "TOPLEFT", 8, -72)
+	previewButton:SetScript("OnClick", function() Config:PreviewSpamPolicyImport() end)
+	self.spamPolicyPreviewButton = previewButton
+	self.spamPolicyPreviewCount = Theme:CreateText(importPane, "GameFontHighlightSmall", "gold")
+	self.spamPolicyPreviewCount:SetPoint("TOPLEFT", importPane, "TOPLEFT", 8, -101)
+	self.spamPolicyPreviewCount:SetWidth(354)
+	self.spamPolicyPreviewCount:SetJustifyH("LEFT")
+	local previous = Theme:CreateButton(importPane, "PREV", 72, 18, false)
+	previous:SetPoint("TOPLEFT", importPane, "TOPLEFT", 454, -99)
+	previous:SetScript("OnClick", function()
+		Config.spamPolicyPage = (Config.spamPolicyPage or 1) - 1
+		Config:RefreshSpamPolicyPreview()
+	end)
+	self.spamPolicyPrevious = previous
+	local nextButton = Theme:CreateButton(importPane, "NEXT", 72, 18, false)
+	nextButton:SetPoint("TOPLEFT", importPane, "TOPLEFT", 544, -99)
+	nextButton:SetScript("OnClick", function()
+		Config.spamPolicyPage = (Config.spamPolicyPage or 1) + 1
+		Config:RefreshSpamPolicyPreview()
+	end)
+	self.spamPolicyNext = nextButton
+	self.spamPolicyRows = {}
+	for index = 1, self.SPAM_POLICY_ROWS do
+		local row = Theme:CreateText(importPane, "GameFontHighlightSmall", "text")
+		row:SetPoint("TOPLEFT", importPane, "TOPLEFT", 8, -119 - (index - 1) * 17)
+		row:SetWidth(PAGE_WIDTH - 16)
+		row:SetHeight(15)
+		row:SetJustifyH("LEFT")
+		self.spamPolicyRows[index] = row
+	end
+	local applyButton = Theme:CreateButton(importPane, "APPLY PREVIEWED CHANGES", 220, 20, true)
+	applyButton:SetPoint("TOPLEFT", importPane, "TOPLEFT", 8, -171)
+	applyButton:SetScript("OnClick", function() Config:ApplySpamPolicyImport() end)
+	self.spamPolicyApply = applyButton
+	local applyHint = Theme:CreateText(importPane, "GameFontHighlightSmall", "textMuted")
+	applyHint:SetPoint("LEFT", applyButton, "RIGHT", 10, 0)
+	applyHint:SetWidth(360)
+	applyHint:SetText("No settings change until you click Apply.")
+	self:RefreshSpamPolicyPreview()
+	self:SetSpamPolicyMode("export")
 
 	local bansPane = CreateFrame("Frame", nil, page)
 	bansPane:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -85)
@@ -8417,7 +9074,7 @@ function Config:BuildAlertsPage()
 	setControlTooltip(self.alertGlobalEnabledToggle, "Enable alerts", "Turns the complete alert system on or off without deleting any rules.")
 	local masterHint = Theme:CreateText(work, "GameFontHighlightSmall", "textMuted")
 	masterHint:SetPoint("LEFT", self.alertGlobalEnabledToggle, "RIGHT", 8, 0)
-	masterHint:SetText("Rules stay saved when alerts are off. Global notification defaults are under GLOBAL.")
+	masterHint:SetText("Rules stay saved. Defaults: GLOBAL.")
 
 	local divider = work:CreateTexture(nil, "ARTWORK")
 	divider:SetTexture("Interface\\Buttons\\WHITE8x8")
@@ -10315,7 +10972,20 @@ function Config:RefreshHeldWhisperReview()
 		if summary then
 			row.heldId = summary.lastId
 			local sender = tostring(summary.sender or "Unknown player")
-			if #sender > 36 then sender = string.sub(sender, 1, 33) .. "..." end
+			-- Byte slicing can split a multibyte character in localized names.
+			local position, characters = 1, 0
+			while position <= #sender and characters < 33 do
+				local lead = string.byte(sender, position)
+				local bytes = lead < 128 and 1 or (lead < 224 and 2 or (lead < 240 and 3 or 4))
+				if position + bytes - 1 > #sender then break end
+				for offset = 1, bytes - 1 do
+					local nextByte = string.byte(sender, position + offset)
+					if nextByte < 128 or nextByte >= 192 then bytes = 1; break end
+				end
+				position = position + bytes
+				characters = characters + 1
+			end
+			if position <= #sender then sender = string.sub(sender, 1, position - 1) .. "..." end
 			row:SetLabel("REVIEW  " .. sender .. "  |  " .. tostring(summary.count) .. " held")
 			row:Show()
 		else
@@ -10367,6 +11037,11 @@ function Config:RefreshMessengerPage()
 	end
 	if self.messengerPersistReplyTargetsToggle then
 		self.messengerPersistReplyTargetsToggle:SetValue(settings.persistReplyTargets == true, true)
+	end
+	if self.messengerLinkPreviewToggle then
+		local smart = addon:GetSmartSettings()
+		self.messengerLinkPreviewToggle:SetValue(smart.conversations
+			and smart.conversations.hoverLinkPreviews == true, true)
 	end
 	if self.messengerChromeAutoHideToggle then
 		self.messengerChromeAutoHideToggle:SetValue(settings.chromeAutoHide == true, true)
@@ -10678,6 +11353,16 @@ function Config:BuildMessengerPage()
 	end)
 	setControlTooltip(self.messengerClearSavedStateButton, "Clear remembered Messenger state",
 		"Erases saved unsent replies and reply targets now. Current open tabs and their text stay visible; while a remember option stays on, later edits or tab changes can save them again.")
+
+	self.messengerLinkPreviewToggle = addTab(Theme:CreateCompactToggle(page, "PREVIEW ITEM + SPELL LINKS ON HOVER", PAGE_WIDTH))
+	self.messengerLinkPreviewToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -423)
+	self.messengerLinkPreviewToggle.OnValueChanged = function(_, value)
+		local smart = addon:GetSmartSettings()
+		smart.conversations = smart.conversations or {}
+		smart.conversations.hoverLinkPreviews = value and true or false
+	end
+	setControlTooltip(self.messengerLinkPreviewToggle, "Messenger link previews",
+		"OFF by default. Hover over an item or spell link in Messenger to see WoW's normal tooltip. Other links still work on click; no message text is saved for this feature.")
 
 	local visibilityControls = {}
 	local function addVisibility(control)
@@ -11680,6 +12365,33 @@ function Config:ApplySelectedKeywordColorScope(scopeType, step)
 	self:SetKeywordColorsStatus("Highlight scope updated for " .. (group.label or group.id) .. ".", "success")
 end
 
+function Config:FitKeywordScopeText(fontString, value, maximumWidth)
+	if not fontString then return end
+	local full = tostring(value or "")
+	fontString:SetText(full)
+	if fontString.SetMaxLines then fontString:SetMaxLines(1) end
+	local measure = fontString.GetUnboundedStringWidth or fontString.GetStringWidth
+	local current = full
+	local function isTooWide()
+		if type(measure) == "function" then
+			local ok, width = pcall(measure, fontString)
+			if ok and tonumber(width) then return width > maximumWidth end
+		end
+		return #tostring(fontString:GetText() or "") > 48
+	end
+	if not isTooWide() then return end
+	repeat
+		local last = #current
+		while last > 1 do
+			local code = string.byte(current, last)
+			if code < 128 or code >= 192 then break end
+			last = last - 1
+		end
+		current = string.sub(current, 1, last - 1)
+		fontString:SetText(current .. "...")
+	until current == "" or not isTooWide()
+end
+
 function Config:BeginKeywordColorGroupCreation()
 	if type(addon.CreateKeywordColorGroup) ~= "function" then
 		self:SetKeywordColorsStatus("Personal color groups are unavailable until Settings finishes loading.", "warning")
@@ -12376,12 +13088,11 @@ function Config:RefreshKeywordColorsPage(keepStatus)
 	setShown(self.keywordColorScopeTargetTitle, not drafting and scopeType ~= "all")
 	setShown(self.keywordColorScopePrevious, not drafting and scopeType ~= "all")
 	setShown(self.keywordColorScopeNext, not drafting and scopeType ~= "all")
-	if self.keywordColorScopeTargetLabel then self.keywordColorScopeTargetLabel:SetText(targetLabel) end
+	self:FitKeywordScopeText(self.keywordColorScopeTargetLabel, targetLabel, 344)
 	if self.keywordColorScopeTargetId then
 		local id = tostring(selectedGroup.scopeId or "not selected")
-		if #id > 44 then id = string.sub(id, 1, 41) .. "..." end
-		self.keywordColorScopeTargetId:SetText(scopeType == "all" and ""
-			or (targetPosition .. "ID: " .. id))
+		self:FitKeywordScopeText(self.keywordColorScopeTargetId,
+			scopeType == "all" and "" or (targetPosition .. "ID: " .. id), 414)
 	end
 	self:SetKeywordColorInspectorSection(self.keywordColorInspectorSection)
 	if not keepStatus then
@@ -13744,6 +14455,10 @@ function Config:RefreshSafetyPage()
 		local smart = addon:GetSmartSettings()
 		self.safetyConfirmIgnoreToggle:SetValue(smart.safety.confirmServerIgnore ~= false, true)
 	end
+	if self.safetyLinkPreviewToggle then
+		local smart = addon:GetSmartSettings()
+		self.safetyLinkPreviewToggle:SetValue(smart.dock and smart.dock.hoverLinkPreviews == true, true)
+	end
 end
 
 function Config:BuildSafetyPage()
@@ -13820,6 +14535,15 @@ function Config:BuildSafetyPage()
 	text:SetWidth(600)
 	text:SetJustifyH("LEFT")
 	text:SetText("CHATTY MUTE affects this addon only. WOW IGNORE changes WoW's list.\nWHISPER, INVITE, and ADD FRIEND run only when clicked.")
+
+	self.safetyLinkPreviewToggle = Theme:CreateCompactToggle(page, "PREVIEW ITEM + SPELL LINKS ON HOVER", PAGE_WIDTH)
+	self.safetyLinkPreviewToggle:SetPoint("TOPLEFT", panel, "BOTTOMLEFT", 0, -12)
+	self.safetyLinkPreviewToggle.OnValueChanged = function(_, value)
+		local dock = addon:GetSmartSettings().dock
+		dock.hoverLinkPreviews = value and true or false
+	end
+	setControlTooltip(self.safetyLinkPreviewToggle, "Smart Chat link previews",
+		"OFF by default. Hover over an item or spell link in Smart Chat to see WoW's normal tooltip. Other links still work on click; no message text is saved for this feature.")
 	self:RefreshSafetyPage()
 	return page
 end

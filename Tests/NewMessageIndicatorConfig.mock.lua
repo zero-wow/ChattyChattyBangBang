@@ -98,8 +98,10 @@ function Theme:CreateCompactToggle(parent, text, width)
 	end
 	return toggle
 end
-function Theme:CreateEditBox()
-	return frame()
+function Theme:CreateEditBox(_, width, height)
+	local edit = frame()
+	edit:SetSize(width or 120, height or 22)
+	return edit
 end
 function Theme:RegisterTexture() end
 function Theme:RegisterFrame() end
@@ -360,18 +362,18 @@ addon.MessageEngine = { GetHistoryStats = function() return { lines = 3250, sour
 config:RefreshDockPage()
 local footprint = config.dockHistoryFootprint
 assert(footprint:GetText():find("3250 lines across 5 sources", 1, true)
-	and footprint:GetText():find("5000 lines total", 1, true)
-	and footprint:GetText():find("new sources add more", 1, true)
+	and footprint:GetText():find("No total cap", 1, true)
+	and footprint:GetText():find("each source has its own limit", 1, true)
 	and footprint:GetText():find("Disk size varies", 1, true),
-	"history page hid aggregate growth or implied a misleading fixed disk size")
-assert(footprint.point[4] == 8 and footprint.point[5] == -303
-	and footprint.height == 48 and -303 - footprint.height > -474,
+	"history page hid the unlimited default or implied a fixed disk size")
+assert(footprint.point[4] == 8 and footprint.point[5] == -370
+	and footprint.height == 64 and -370 - footprint.height > -474,
 	"history footprint lost its side gutter or overlaps the status row")
 addon.MessageEngine.GetHistoryStats = function() return { lines = 0, sources = 0 } end
 settings.persistHistory = false
 config:RefreshDockPage()
 assert(footprint:GetText():find("This session: no lines yet", 1, true)
-	and footprint:GetText():find("no fixed total cap", 1, true),
+	and footprint:GetText():find("No total cap", 1, true),
 	"empty or session-only history implied that source growth was globally capped")
 settings.persistHistory = true
 addon.MessageEngine = previousHistoryEngine

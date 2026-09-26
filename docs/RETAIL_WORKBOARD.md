@@ -25,16 +25,16 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | A11 | 🟢 | Up to 100 retained-message bookmarks are saved as sequence references, not text copies; eviction, blocking, and clear remove stale references. Search UI and reload mocks pass. |
 | A12 | 🟢 | COPY exposes one selected message; EXPORT exposes up to 20 lines/8 KiB from the filtered current results page as selectable Ctrl+C text. Blocked/held/stale lines are excluded, and page export excludes private chat. Arbitrary multi-select/full archive export are not included. Mocks pass. |
 | A13 | 🟢 | Safe plain-text web addresses become copy-only links in displayed chat; saved text and WoW hyperlinks remain unchanged. Narrow-popup and link mocks pass. |
-| A14 | 🔴 | Optional hyperlink-hover previews in Smart Chat and Messenger. |
-| A15 | 🔴 | Invite-link actions in message text. |
+| A14 | 🟢 | Optional item/spell-only hyperlink-hover previews in Smart Chat and Messenger; malformed/custom/secret links are rejected and owner-scoped tooltip hide is tested. In-game hover remains unverified. |
+| A15 | 🟢 | Group Finder public messages show a click-only [INVITE] link that rechecks the retained, displayed, unblocked record before using the guarded player-invite path; focused mocks pass. In-game click remains unverified. |
 | A16 | 🟢 | Opt-in Messenger draft restore is off by default, limited to 12 recipients and 1,024 bytes per draft, and erased on disable/clear/close; privacy and layout mocks pass. |
 | A17 | 🟢 | Opt-in Messenger reply-target restore is off by default; it saves only whisper/Battle.net tab targets and selection, not arbitrary chat types or transcript bodies. Restore/layout mocks pass. |
 | A18 | 🟢 | Up/Down recalls 100 non-private Smart Chat sends with draft restoration; Alt+Up/Down remains Blizzard's command-history path. Mocks pass; Blizzard's separate history may retain outgoing whispers. |
-| A19 | 🔴 | Chat logging controls with private-channel exclusions. |
-| A20 | 🔴 | Different history limits per source. |
-| A21 | 🔴 | Privacy-specific whisper/Battle.net retention. |
-| A22 | 🔴 | Safe import/export of non-sensitive policies. |
-| A23 | 🔴 | Alert inbox linked to retained messages. |
+| A19 | 🟢 | Chatty's SavedVariables chat log now has per-source/total retention and separate future-save exclusions for WoW and Battle.net private chat. Native /chatlog is global and is never represented as privacy-filtered. Local tests pass; in-game behavior remains unverified. |
+| A20 | 🟢 | Each source can inherit the 1,000-line default or use an explicit 100–10,000-line limit (up to 128 overrides); old profiles keep their history, and focused runtime/SavedVariables/UI mocks pass. |
+| A21 | 🟢 | Chatty-owned WoW and Battle.net private-history saving can be disabled separately for future lines; older saved copies remain until a scoped two-click clear. Current-session Messenger stays visible; rebuild/reload privacy mocks pass. |
+| A22 | 🟢 | Spam Firewall POLICY tab exports only bounded scalar protections; import is strict data text with non-mutating preview, paged changes, explicit Apply, and runtime refresh. It excludes messages, identities, lists, drafts, and free text; mocks pass. |
+| A23 | 🟢 | FIND > ALERTS opens a session-only inbox of up to 100 retained-message IDs; blocked/evicted/held lines disappear, list rows omit bodies, and inbox copy/export is disabled. Focused mocks pass; in-game behavior remains unverified. |
 | A24 | 🔴 | User-entered alt-name associations. |
 | A25 | 🟢 | Advanced keyword groups can remain global or target one source/displayed tab; mirrored-view rendering uses the actual tab and legacy flat colors cannot leak scoped highlights. Messenger remains global-only. Mocks pass. |
 
@@ -76,7 +76,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | I02 | 🟢 | Blocked archive full-prunes on first use, expiry, bounds change, or explicit review rather than each blocked line; mocks pass. |
 | I03 | 🟢 | Messenger queries bounded 200-record pages from a per-partner rank index instead of scanning the full transcript; frozen-page and source-cap mocks pass. |
 | I04 | 🟢 | Per-partner history index updates on append, eviction, retroblock, and reclassification; Contents exclusions and reroutes retain view-membership parity in focused mocks. |
-| I05 | 🔴 | Add an aggregate history budget across sources. |
+| I05 | 🟢 | Optional aggregate history cap defaults off, applies oldest-global eviction only when chosen, and explains that it can reduce per-source retention; old SavedVariables are not silently pruned. Mocks pass. |
 | I06 | 🟢 | Short-lived memory-only social trust cache cuts repeat roster checks, invalidates on roster/profile changes, and fails closed when membership is unverified; whisper mocks pass. |
 | I07 | 🟢 | Messenger's 12-tab limit evicts only disposable inactive tabs; drafts, unread, NEW, and unresolved sends stay protected. If all tabs are protected, a bounded notice explains why a new tab was not opened; focused mocks pass. |
 | I08 | 🟢 | Engine and SmartDock now share route/Contents membership for displayed lines and unread counts, with blocked/local-ignore/held exclusions. Mirror and exclusion mocks pass. |

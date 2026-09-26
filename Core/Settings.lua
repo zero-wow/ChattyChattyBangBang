@@ -9,6 +9,10 @@ local CHAT_HISTORY_SETTINGS_SCHEMA = 1
 local CHAT_HISTORY_DEFAULT_LINES_PER_SOURCE = 1000
 local CHAT_HISTORY_MIN_LINES_PER_SOURCE = 100
 local CHAT_HISTORY_MAX_LINES_PER_SOURCE = 10000
+local CHAT_HISTORY_MIN_TOTAL_LINES = 100
+local CHAT_HISTORY_MAX_TOTAL_LINES = 1000000
+local CHAT_HISTORY_SUGGESTED_TOTAL_LINES = 50000
+local CHAT_HISTORY_MAX_SOURCE_OVERRIDES = 128
 local PLAYER_ACTION_AUTO_HIDE_DEFAULT_SECONDS = 10
 local PLAYER_ACTION_AUTO_HIDE_MIN_SECONDS = 1
 local PLAYER_ACTION_AUTO_HIDE_MAX_SECONDS = 120
@@ -3438,7 +3442,7 @@ end
 
 local function normalizeChatHistoryLinesPerSource(value)
 	local lines = tonumber(value)
-	if lines == nil then
+	if not lines or lines ~= lines or lines == math.huge or lines == -math.huge then
 		lines = CHAT_HISTORY_DEFAULT_LINES_PER_SOURCE
 	end
 	lines = math.floor(lines + 0.5)
@@ -4109,6 +4113,12 @@ function addon:GetSmartSettings()
 	return profile.smartChat
 end
 
+local function finiteChatHistoryNumber(value)
+	local number = tonumber(value)
+	return number and number == number and number ~= math.huge
+		and number ~= -math.huge and number or nil
+end
+
 local knownChannelTabSources = {
 	["channel:general"] = true,
 	["channel:zone"] = true,
@@ -4588,12 +4598,113 @@ end
 -- busy Trade traffic cannot evict Guild's independent retained history.
 function addon:GetChatHistorySettings()
 	local settings = self:GetSmartSettings()
+	local overrides = type(settings.historySourceLimits) == "table" and settings.historySourceLimits or {}
+	local overrideCount = 0
+	for _, limit in pairs(overrides) do
+		if finiteChatHistoryNumber(limit) then overrideCount = overrideCount + 1 end
+	end
+	local total = finiteChatHistoryNumber(settings.historyTotalCapacity)
 	return {
 		enabled = settings.persistHistory ~= false,
 		linesPerSource = normalizeChatHistoryLinesPerSource(settings.historyCapacity),
 		minimumLinesPerSource = CHAT_HISTORY_MIN_LINES_PER_SOURCE,
 		maximumLinesPerSource = CHAT_HISTORY_MAX_LINES_PER_SOURCE,
+		maximumSourceOverrides = CHAT_HISTORY_MAX_SOURCE_OVERRIDES,
+		aggregateCapacity = total and math.max(CHAT_HISTORY_MIN_TOTAL_LINES,
+			math.min(CHAT_HISTORY_MAX_TOTAL_LINES, math.floor(total + 0.5))) or nil,
+		minimumAggregateCapacity = CHAT_HISTORY_MIN_TOTAL_LINES,
+		maximumAggregateCapacity = CHAT_HISTORY_MAX_TOTAL_LINES,
+		suggestedAggregateCapacity = CHAT_HISTORY_SUGGESTED_TOTAL_LINES,
+		sourceOverrideCount = overrideCount,
 	}
+end
+
+function addon:GetChatHistorySourceLimit(sourceId)
+	local settings = self:GetSmartSettings()
+	local inherited = normalizeChatHistoryLinesPerSource(settings.historyCapacity)
+	local limits = type(settings.historySourceLimits) == "table" and settings.historySourceLimits or nil
+	local raw = limits and limits[sourceId] or nil
+	if not finiteChatHistoryNumber(raw) then return inherited, false end
+	return normalizeChatHistoryLinesPerSource(raw), true
+end
+
+function addon:SetChatHistorySourceLimit(sourceId, value)
+	if type(sourceId) ~= "string" or #sourceId < 1 or #sourceId > 96
+		or string.find(sourceId, "[%c%s]") then return false, "invalid-source" end
+	if value ~= nil and not finiteChatHistoryNumber(value) then return false, "invalid-lines" end
+	local settings = self:GetSmartSettings()
+	local previous = self:GetChatHistorySourceLimit(sourceId)
+	if value == nil then
+		if type(settings.historySourceLimits) == "table" then
+			settings.historySourceLimits[sourceId] = nil
+			if next(settings.historySourceLimits) == nil then settings.historySourceLimits = nil end
+		end
+	else
+		settings.historySourceLimits = type(settings.historySourceLimits) == "table"
+			and settings.historySourceLimits or {}
+		if settings.historySourceLimits[sourceId] == nil then
+			local count = 0
+			for _ in pairs(settings.historySourceLimits) do count = count + 1 end
+			if count >= CHAT_HISTORY_MAX_SOURCE_OVERRIDES then
+				return false, "too-many-sources"
+			end
+		end
+		settings.historySourceLimits[sourceId] = normalizeChatHistoryLinesPerSource(value)
+	end
+	local effective, overridden = self:GetChatHistorySourceLimit(sourceId)
+	local engine = self.MessageEngine
+	if engine and type(engine.SetHistorySourceLimit) == "function" then
+		engine:SetHistorySourceLimit(sourceId, effective, effective < previous)
+	end
+	return true, effective, overridden
+end
+
+function addon:SetChatHistoryAggregateCapacity(value)
+	if value ~= nil and not finiteChatHistoryNumber(value) then return false, "invalid-lines" end
+	local settings = self:GetSmartSettings()
+	local total = finiteChatHistoryNumber(value)
+	if total then
+		total = math.max(CHAT_HISTORY_MIN_TOTAL_LINES,
+			math.min(CHAT_HISTORY_MAX_TOTAL_LINES, math.floor(total + 0.5)))
+	end
+	settings.historyTotalCapacity = total
+	local engine = self.MessageEngine
+	if engine and type(engine.SetHistoryAggregateCapacity) == "function" then
+		engine:SetHistoryAggregateCapacity(total)
+	end
+	return true, total
+end
+
+-- These switches govern future Chatty SavedVariables writes only. Existing
+-- saved private lines remain until a separate confirmed clear action; current
+-- session Messenger/chat history continues to work in either setting.
+function addon:GetChatHistoryPrivacySettings()
+	local settings = self:GetSmartSettings()
+	return {
+		saveWhispers = settings.historySaveWhispers ~= false,
+		saveBattleNet = settings.historySaveBattleNet ~= false,
+	}
+end
+
+function addon:SetChatHistoryPrivateSaveEnabled(kind, enabled)
+	local key = kind == "whispers" and "historySaveWhispers"
+		or kind == "battleNet" and "historySaveBattleNet" or nil
+	if not key then return false, "invalid-kind" end
+	if type(enabled) ~= "boolean" then return false, "invalid-enabled" end
+	local settings = self:GetSmartSettings()
+	settings[key] = enabled
+	return true, settings[key]
+end
+
+function addon:ClearSavedPrivateChatHistory(kind)
+	if kind ~= "whispers" and kind ~= "battleNet" and kind ~= "all" then
+		return false, "invalid-kind"
+	end
+	local engine = self.MessageEngine
+	if not engine or type(engine.ClearSavedPrivateHistory) ~= "function" then
+		return false, "unavailable"
+	end
+	return true, engine:ClearSavedPrivateHistory(kind)
 end
 
 function addon:SetChatHistoryPersistenceEnabled(enabled)
@@ -4618,7 +4729,7 @@ function addon:SetChatHistoryPersistenceEnabled(enabled)
 end
 
 function addon:SetChatHistoryLinesPerSource(value)
-	if tonumber(value) == nil then
+	if not finiteChatHistoryNumber(value) then
 		return false, "invalid-lines"
 	end
 	local settings = self:GetSmartSettings()

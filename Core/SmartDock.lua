@@ -1580,7 +1580,8 @@ function Dock:RefreshSearchDrawerLayout(topInset, height)
 		if width > 0 then left = math.min(left, math.max(37, width - 170)) end
 		self.searchTextEdit:ClearAllPoints()
 		self.searchTextEdit:SetPoint("LEFT", self.searchQueryRow, "LEFT", left, 0)
-		self.searchTextEdit:SetPoint("RIGHT", self.searchExportButton or self.searchGoButton, "LEFT", -4, 0)
+		self.searchTextEdit:SetPoint("RIGHT",
+			self.searchAlertButton or self.searchExportButton or self.searchGoButton, "LEFT", -4, 0)
 	end
 	if self.searchCopyMode then self:RefreshSearchCopyHeight() end
 end
@@ -3461,6 +3462,7 @@ function Dock:RefreshDisplayWidthPresentation()
 end
 
 function Dock:FormatDisplayRecord(record)
+	record = self:GetInviteDisplayRecord(record)
 	local sourceWidth = self.activeSourceColumnWidth
 	local senderWidth = self.activeSenderColumnWidth
 	local senderSpacing = self.activeSenderColumnAlignmentSpacing
@@ -4522,6 +4524,40 @@ local function setAnalysisRowText(row, value)
 	if row.analysisHit then
 		row.analysisHit.analysisFullText = string.sub(value, 1, 1200)
 	end
+end
+
+function Dock:IsInviteLinkRecordEligible(record)
+	local ok, eligible = pcall(function()
+		if type(record) ~= "table" or record.view ~= "groupFinder" or record.isBNet
+			or record.blockedByBlockControl or type(record.id) ~= "number"
+			or type(record.text) ~= "string" or type(record.sender) ~= "string"
+			or record.sender == "" or #record.sender > 96
+			or string.find(record.sender, "[%c|]")
+			or (record.event ~= "CHAT_MSG_CHANNEL" and record.event ~= "CHAT_MSG_SAY"
+				and record.event ~= "CHAT_MSG_YELL") then return false end
+		if issecretvalue and (issecretvalue(record.sender) or issecretvalue(record.text)) then
+			return false
+		end
+		return true
+	end)
+	return ok and eligible == true
+end
+
+function Dock:GetInviteDisplayRecord(record)
+	if self.activeView ~= "groupFinder" or not self:IsInviteLinkRecordEligible(record) then
+		return record
+	end
+	-- This token is never sent or stored in message history.  It separates
+	-- locally authored action links from arbitrary hyperlink markup in chat.
+	if not self.inviteLinkKey then
+		self.inviteLinkKey = string.format("%08x%08x", math.random(0, 2147483647),
+			math.random(0, 2147483647))
+	end
+	local decorated = {}
+	for key, value in pairs(record) do decorated[key] = value end
+	decorated.text = "|Hccbbinvite:" .. tostring(record.id) .. ":" .. self.inviteLinkKey
+		.. "|h[INVITE]|h " .. record.text
+	return decorated
 end
 
 local analysisViewLabels = {
@@ -7379,6 +7415,7 @@ function Dock:DiscardPartialBuild()
 	self.searchOlderButton = nil
 	self.searchNewerButton = nil
 	self.searchFilterButton = nil
+	self.searchAlertButton = nil
 	self.searchBookmarkButton = nil
 	self.searchExportButton = nil
 	self.searchCopyButton = nil
@@ -7408,6 +7445,7 @@ function Dock:DiscardPartialBuild()
 	self.searchSelectedRecord = nil
 	self.searchFilterMode = nil
 	self.searchBookmarksOnly = nil
+	self.searchAlertMode = nil
 	self.searchCopyMode = nil
 	self.searchCopyText = nil
 	self.searchCopyKind = nil
@@ -8172,6 +8210,23 @@ function Dock:ShowPlayerActions(record)
 end
 
 function Dock:HandleHyperlink(link, text, button)
+	if type(link) == "string" and string.match(link, "^ccbbinvite:") then
+		local id, key = string.match(link, "^ccbbinvite:(%d+):([%x]+)$")
+		if button ~= "LeftButton" or not id or key ~= self.inviteLinkKey
+			or self.activeView ~= "groupFinder" then return end
+		local engine = addon.MessageEngine
+		local record = engine and engine.GetMessageById and engine:GetMessageById(id)
+		if not self:IsInviteLinkRecordEligible(record)
+			or not self:IsRecordVisibleInView(self.activeView, record, addon:GetSmartSettings()) then return end
+		local displayed = false
+		for _, entry in ipairs(self.displayRecords or {}) do
+			if entry.record == record then displayed = true; break end
+		end
+		if displayed and addon.Compatibility and addon.Compatibility.InvitePlayer then
+			addon.Compatibility:InvitePlayer(record.sender)
+		end
+		return
+	end
 	local recordId = string.match(link or "", "^ccbbplayer:(%d+)$")
 	if recordId then
 		self:ShowPlayerActions(addon.MessageEngine:GetMessageById(recordId))
@@ -8795,6 +8850,7 @@ function Dock:OpenSearchCopy(records, includePrivate, kind)
 end
 
 function Dock:CopySelectedSearchMessage()
+	if self.searchAlertMode then return false, "unavailable" end
 	if not self.searchSelectedRecord then return false, "no-selection" end
 	-- Clicking the exact preview is an explicit private-message scope. The
 	-- normal multi-line page export below never opts into private transcript.
@@ -8802,12 +8858,14 @@ function Dock:CopySelectedSearchMessage()
 end
 
 function Dock:ExportSearchResultPage()
+	if self.searchAlertMode then return false, "unavailable" end
 	local result = self.searchResult
 	return self:OpenSearchCopy(result and result.records or {}, false, "page")
 end
 
 function Dock:RefreshSearchAfterHistoryMutation()
 	if not self.searchOpen or not self.searchResult then return false end
+	if self.searchAlertMode then return self:RefreshAlertInbox() end
 	local engine = addon.MessageEngine
 	if not engine or type(engine.byId) ~= "table" then return false end
 	local stale = self.searchGeneration ~= engine.historyGeneration
@@ -8828,6 +8886,21 @@ function Dock:RefreshSearchAfterHistoryMutation()
 	end
 	if stale then self:RunSearch(nil, false) end
 	return stale
+end
+
+function Dock:RefreshAlertInbox()
+	if not self.searchOpen or not self.searchAlertMode then return false end
+	local alerts = addon.AlertEngine
+	if not alerts or type(alerts.GetInboxRecords) ~= "function" then return false end
+	local selected = self.searchSelectedRecord
+	self.searchResult = { records = alerts:GetInboxRecords(), hasMore = false }
+	if selected and not alerts:IsInboxRecord(selected) then
+		self.searchSelectedRecord = nil
+	end
+	self.searchResultIndex = math.max(1, math.min(tonumber(self.searchResultIndex) or 1,
+		#self.searchResult.records))
+	self:RefreshSearchDrawer()
+	return true
 end
 
 function Dock:RefreshSearchDrawer()
@@ -8860,8 +8933,13 @@ function Dock:RefreshSearchDrawer()
 	end
 	if self.searchCopyHint then self.searchCopyHint:Hide() end
 	if self.searchCopyScroll then self.searchCopyScroll:Hide() end
-	local filtering = self.searchFilterMode == true
+	local filtering = self.searchFilterMode == true and not self.searchAlertMode
 	local selected = self.searchSelectedRecord
+	if selected and self.searchAlertMode and addon.AlertEngine
+		and not addon.AlertEngine:IsInboxRecord(selected) then
+		selected = nil
+		self.searchSelectedRecord = nil
+	end
 	local result = self.searchResult or { records = {} }
 	local records = result.records or {}
 	local index = math.max(1, math.floor(tonumber(self.searchResultIndex) or 1))
@@ -8889,11 +8967,14 @@ function Dock:RefreshSearchDrawer()
 						local sender = searchSingleLine(rowRecord.sender)
 						local prefix = (rowRecord.timestamp or "") .. "  " .. source
 						if sender ~= "" then prefix = prefix .. " · " .. sender end
-						summary = prefix .. "  " .. searchSingleLine(rowRecord.text)
+						summary = prefix .. (self.searchAlertMode and "  · alert match"
+							or "  " .. searchSingleLine(rowRecord.text))
 					elseif result.error == "invalid-date" then summary = "Use YYYY-MM-DD for the date filter."
 					elseif result.error == "stale-cursor" then summary = "History changed. Search again."
 					elseif result.hasMore then summary = "No match in this slice. Try older history."
-					else summary = self.searchBookmarksOnly and "No saved messages match." or "No matching retained messages." end
+					else summary = self.searchAlertMode and "No alerts retained this session."
+						or self.searchBookmarksOnly and "No saved messages match."
+						or "No matching retained messages." end
 					setSearchButtonLabel(button, summary)
 					button:Show()
 				else button:Hide() end
@@ -8916,7 +8997,8 @@ function Dock:RefreshSearchDrawer()
 			self.searchPreview:Show()
 			local saved = addon.MessageEngine and addon.MessageEngine.IsBookmarked
 				and addon.MessageEngine:IsBookmarked(selected)
-			self.searchPreviewMeta:SetText(saved and "Saved · preview only"
+			self.searchPreviewMeta:SetText(self.searchAlertMode and "Session-only alert · preview"
+				or saved and "Saved · preview only"
 				or "Preview only · chat tab unchanged")
 			if self.searchCopyButton then
 				self.searchPreviewMeta:ClearAllPoints()
@@ -8930,14 +9012,15 @@ function Dock:RefreshSearchDrawer()
 		end
 	end
 	if self.searchCopyButton then
-		if selected and not filtering then self.searchCopyButton:Show()
+		if selected and not filtering and not self.searchAlertMode then self.searchCopyButton:Show()
 		else self.searchCopyButton:Hide() end
 	end
 	if self.searchBackButton then
 		if filtering or selected then self.searchBackButton:Show() else self.searchBackButton:Hide() end
 	end
 	if self.searchFilterButton then
-		if filtering or selected then self.searchFilterButton:Hide() else self.searchFilterButton:Show() end
+		if filtering or selected or self.searchAlertMode then self.searchFilterButton:Hide()
+		else self.searchFilterButton:Show() end
 	end
 	if self.searchBookmarkButton then
 		self.searchBookmarkButton:ClearAllPoints()
@@ -8949,6 +9032,8 @@ function Dock:RefreshSearchDrawer()
 				and addon.MessageEngine:IsBookmarked(selected)
 			setSearchButtonLabel(self.searchBookmarkButton, saved and "UNSAVE" or "SAVE")
 			self.searchBookmarkButton:Show()
+		elseif self.searchAlertMode then
+			self.searchBookmarkButton:Hide()
 		else
 			self.searchBookmarkButton:SetPoint("RIGHT", self.searchFilterButton, "LEFT", -4, 0)
 			setSearchButtonLabel(self.searchBookmarkButton, self.searchBookmarksOnly and "ALL" or "SAVED")
@@ -8977,11 +9062,31 @@ function Dock:RefreshSearchDrawer()
 			else
 				self.searchTitle:SetPoint("RIGHT", self.searchDrawer, "RIGHT", -144, 0)
 			end
-			self.searchTitle:SetText(self.searchSenderHistory
+			self.searchTitle:SetText(self.searchAlertMode
+				and (record and ("ALERT INBOX " .. tostring(index) .. "/" .. tostring(#records))
+					or "ALERT INBOX") or self.searchSenderHistory
 				and ("HISTORY: " .. searchSingleLine(self.searchSenderEdit
 					and self.searchSenderEdit:GetText() or self.searchSenderHistory))
 				or (record and ("FIND " .. tostring(index) .. "/" .. tostring(#records)) or "FIND"))
 		end
+	end
+	if self.searchQueryLabel then
+		self.searchQueryLabel:SetText(self.searchAlertMode and "INBOX" or "TEXT")
+	end
+	if self.searchTextEdit then
+		if self.searchAlertMode then self.searchTextEdit:Hide() else self.searchTextEdit:Show() end
+	end
+	if self.searchGoButton then
+		if self.searchAlertMode then self.searchGoButton:Hide() else self.searchGoButton:Show() end
+	end
+	if self.searchExportButton then
+		if self.searchAlertMode then self.searchExportButton:Hide()
+		else self.searchExportButton:Show() end
+	end
+	if self.searchAlertButton then
+		setSearchButtonLabel(self.searchAlertButton, self.searchAlertMode and "FIND" or "ALERTS")
+		if selected or filtering then self.searchAlertButton:Hide()
+		else self.searchAlertButton:Show() end
 	end
 	setSearchButtonLabel(self.searchTabOnlyButton, self.searchCurrentTabOnly and "TAB" or "ALL")
 end
@@ -8992,7 +9097,13 @@ function Dock:RunSearch(cursor, preservePages)
 	if not preservePages then self.searchPageStack = {} end
 	self.searchSelectedRecord = nil
 	self.searchFilterMode = false
-	self.searchResult = addon.MessageEngine:SearchHistory(self:GetSearchQuery(cursor))
+	if self.searchAlertMode then
+		local alerts = addon.AlertEngine
+		self.searchResult = { records = alerts and alerts.GetInboxRecords
+			and alerts:GetInboxRecords() or {}, hasMore = false }
+	else
+		self.searchResult = addon.MessageEngine:SearchHistory(self:GetSearchQuery(cursor))
+	end
 	self:ClearSearchCopy()
 	self.searchGeneration = addon.MessageEngine.historyGeneration
 	self.searchResultIndex = 1
@@ -9049,6 +9160,7 @@ function Dock:ToggleSearchDrawer(forceClosed)
 	self.searchSelectedRecord = nil
 	self.searchFilterMode = false
 	if not open then
+		self.searchAlertMode = false
 		self:ClearSearchFocus()
 		self:ClearSearchCopy()
 		if self.searchSenderHistory and self.searchSenderEdit then
@@ -9080,6 +9192,7 @@ function Dock:OpenSenderHistory(record)
 	if self.searchDateEdit then self.searchDateEdit:SetText("") end
 	self.searchCurrentTabOnly = false
 	self.searchBookmarksOnly = false
+	self.searchAlertMode = false
 	self:ClearSearchCopy()
 	self.searchOpen = true
 	self.searchSelectedRecord = nil
@@ -9171,9 +9284,18 @@ function Dock:BuildSearchDrawer()
 	self.searchExportButton = export
 	self:BindDockControlTooltip(export, "Export current results",
 		"Select and copy up to 20 current search results. Private conversations and blocked messages are excluded.")
+	local alertInbox = Theme:CreateButton(queryRow, "ALERTS", 54, 20, false)
+	alertInbox:SetPoint("RIGHT", export, "LEFT", -4, 0)
+	alertInbox:SetScript("OnClick", function()
+		Dock.searchAlertMode = not Dock.searchAlertMode
+		Dock:RunSearch(nil, false)
+	end)
+	self.searchAlertButton = alertInbox
+	self:BindDockControlTooltip(alertInbox, "Alert inbox",
+		"This-session inbox for up to 100 alert matches still retained in normal history. It clears on reload; private text appears only after you select a result.")
 	local query = Theme:CreateEditBox(queryRow, 100, 20, false)
 	query:SetPoint("LEFT", queryRow, "LEFT", 37, 0)
-	query:SetPoint("RIGHT", export, "LEFT", -4, 0)
+	query:SetPoint("RIGHT", alertInbox, "LEFT", -4, 0)
 	query:SetScript("OnEnterPressed", function(self)
 		self:ClearFocus()
 		Dock:RunSearch(nil, false)
@@ -9368,6 +9490,7 @@ function Dock:Build()
 	end)
 	frame:SetScript("OnHide", function()
 		Dock.searchOpen = false
+		Dock.searchAlertMode = false
 		Dock.searchSelectedRecord = nil
 		Dock:ClearSearchFocus()
 		Dock:ClearSearchCopy()
@@ -9735,17 +9858,34 @@ function Dock:Build()
 		Dock:ScheduleMessageBlockActionRefresh()
 	end)
 	display:SetScript("OnHyperlinkClick", function(_, link, text, button)
+		if addon.ConversationWindows and addon.ConversationWindows.HideNativeLinkPreview then
+			addon.ConversationWindows:HideNativeLinkPreview(display)
+		end
 		Dock:HideDisplayHoverHint()
 		Dock:HandleHyperlink(link, text, button)
 	end)
 	display:SetScript("OnHyperlinkEnter", function(_, link)
 		Dock:HideDisplayHoverHint()
 		Dock.hoveredHyperlink = link or true
+		local manager = addon.ConversationWindows
+		if manager and manager.ShowNativeLinkPreview then
+			local settings = addon:GetSmartSettings()
+			manager:ShowNativeLinkPreview(display, link,
+				settings.dock and settings.dock.hoverLinkPreviews)
+		end
 		Dock:ScheduleMessageBlockActionRefresh()
 	end)
 	display:SetScript("OnHyperlinkLeave", function()
 		Dock.hoveredHyperlink = nil
+		if addon.ConversationWindows and addon.ConversationWindows.HideNativeLinkPreview then
+			addon.ConversationWindows:HideNativeLinkPreview(display)
+		end
 		Dock:ScheduleMessageBlockActionRefresh()
+	end)
+	display:HookScript("OnHide", function()
+		if addon.ConversationWindows and addon.ConversationWindows.HideNativeLinkPreview then
+			addon.ConversationWindows:HideNativeLinkPreview(display)
+		end
 	end)
 	self.display = display
 	-- Apply the global/default Smart Chat face immediately. SelectView reapplies

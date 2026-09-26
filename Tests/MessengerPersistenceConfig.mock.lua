@@ -66,6 +66,12 @@ function Theme:CreateCompactToggle(parent, label, width)
 	toggle.label:SetText(label)
 	return toggle
 end
+function Theme:CreateToggle(parent, label)
+	local toggle = frame(parent, 100, 20)
+	toggle.label = frame(toggle)
+	toggle.label:SetText(label)
+	return toggle
+end
 function Theme:RegisterFrame() end
 function Theme:RegisterTexture() end
 function Theme:ApplyFrame() end
@@ -92,7 +98,9 @@ local function bounds(widget)
 end
 local draftTop, draftBottom = bounds(config.messengerPersistDraftsToggle)
 local targetTop, targetBottom = bounds(config.messengerPersistReplyTargetsToggle)
-local clearTop = bounds(config.messengerClearSavedStateButton)
+local clearTop, clearBottom = bounds(config.messengerClearSavedStateButton)
+local previewTop, previewBottom = bounds(config.messengerLinkPreviewToggle)
+local statusTop = bounds(config.messengerStatus)
 local memoryTitle, memoryDetail
 for _, control in ipairs(config.messengerSectionGroups.tabs) do
 	if control:GetText() == "AFTER RELOAD — OPTIONAL" then memoryTitle = control end
@@ -107,6 +115,8 @@ assert(targetTop - draftBottom >= 8 and clearTop - targetBottom >= 8,
 assert(titleTop - nameDetailBottom >= 8 and draftTop - titleBottom >= 8
 	and detailTop - targetBottom >= 8 and clearTop - detailBottom >= 8,
 	"Messenger text, toggles, and clear action need visible vertical gutters")
+assert(previewTop - clearBottom >= 8 and statusTop - previewBottom >= 8,
+	"Messenger link preview toggle needs gutters above and below at minimum size")
 assert(config.messengerPersistDraftsToggle:IsShown()
 	and config.messengerPersistReplyTargetsToggle:IsShown()
 	and config.messengerClearSavedStateButton:IsShown(),
@@ -115,6 +125,17 @@ assert(config.messengerPersistDraftsToggle.tooltipBody
 	and config.messengerPersistReplyTargetsToggle.tooltipBody
 	and config.messengerClearSavedStateButton.tooltipBody,
 	"private persistence controls need clear explanatory tooltips")
+assert(config.messengerLinkPreviewToggle:IsShown() and config.messengerLinkPreviewToggle.tooltipBody,
+	"optional Messenger link previews must be explained in TABS")
+
+assert(not config.messengerLinkPreviewToggle.checked and not addon:GetSmartSettings().conversations.hoverLinkPreviews,
+	"Messenger link previews must default off")
+config.messengerLinkPreviewToggle:SetValue(true)
+assert(addon:GetSmartSettings().conversations.hoverLinkPreviews == true,
+	"Messenger link preview setting did not save")
+config.messengerLinkPreviewToggle:SetValue(false)
+assert(addon:GetSmartSettings().conversations.hoverLinkPreviews == false,
+	"Messenger link previews did not turn off")
 
 local stored = addon:GetSmartSettings().conversations
 assert(not config.messengerPersistDraftsToggle.checked
@@ -142,7 +163,45 @@ assert(not stored.persistDrafts and not stored.persistReplyTargets
 config:SetMessengerSection("opening")
 assert(not config.messengerPersistDraftsToggle:IsShown()
 	and not config.messengerPersistReplyTargetsToggle:IsShown()
-	and not config.messengerClearSavedStateButton:IsShown(),
+	and not config.messengerClearSavedStateButton:IsShown()
+	and not config.messengerLinkPreviewToggle:IsShown(),
 	"TABS controls leaked into another Messenger subpage")
+
+config:BuildSafetyPage()
+local smartPreview = config.safetyLinkPreviewToggle
+assert(smartPreview and smartPreview.parent == config.pages.safety
+	and smartPreview.width == 636 and smartPreview.height == 20,
+	"Smart Chat link preview switch escaped its settings page")
+local safetyPanel = smartPreview.point[2]
+assert(smartPreview.point[1] == "TOPLEFT" and smartPreview.point[3] == "BOTTOMLEFT"
+	and smartPreview.point[5] <= -8 and safetyPanel:GetHeight() == 60,
+	"Smart Chat link preview switch needs a gutter below action-scope text")
+local ignoreToggle = config.safetyConfirmIgnoreToggle
+local playerPanel = ignoreToggle.point[2]
+local previewY = -playerPanel.point[5] + playerPanel.height - ignoreToggle.point[5]
+	+ ignoreToggle.height - safetyPanel.point[5] + safetyPanel.height - smartPreview.point[5]
+assert(playerPanel.point[4] == 8 and smartPreview.width + playerPanel.point[4] <= 644
+	and previewY >= 8 and previewY + smartPreview.height <= 500,
+	"Smart Chat link preview switch clips the 700x500 settings viewport")
+assert(not smartPreview.checked and smartPreview.tooltipBody,
+	"Smart Chat link preview setting must default off with an explanation")
+smartPreview:SetValue(true)
+assert(addon:GetSmartSettings().dock.hoverLinkPreviews == true,
+	"Smart Chat link preview choice did not save")
+config:RefreshSafetyPage()
+assert(smartPreview.checked, "Smart Chat link preview choice did not survive refresh")
+smartPreview:SetValue(false)
+assert(addon:GetSmartSettings().dock.hoverLinkPreviews == false,
+	"Smart Chat link previews did not turn off")
+
+addon.WhisperGuard = {
+	GetStatus = function() return { enabled = true, entries = 1, filterActive = true } end,
+	GetSummaries = function()
+		return { { lastId = 7, sender = string.rep("Ж", 34), count = 2 } }
+	end,
+}
+config:RefreshHeldWhisperReview()
+assert(string.find(config.messengerHeldRows[1]:GetText(), string.rep("Ж", 33) .. "...", 1, true),
+	"held-sender preview cut a multibyte name in the middle of a character")
 
 print("MessengerPersistenceConfig.mock.lua: PASS")

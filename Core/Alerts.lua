@@ -9,6 +9,7 @@ local MAX_TERM_LENGTH = 80
 local MAX_NAME_LENGTH = 40
 local MAX_SOURCE_ID_LENGTH = 96
 local MAX_SOURCES = 128
+local MAX_INBOX_ENTRIES = 100
 
 -- Variables are stored in a deliberately small, explicit syntax.  They are
 -- resolved only while matching a received record, so [PLAYER_NAME] always
@@ -866,11 +867,80 @@ function AlertEngine:ProcessRecord(record)
 	end
 	if matchedRecord then
 		self.stats.matchedRecords = self.stats.matchedRecords + 1
+		self:RememberInboxRecord(record)
 		if shouldSound then
 			playAlertSound()
 		end
 	end
 	return matchedRecord
+end
+
+-- The inbox is only an index into current normal history. Runtime IDs are not
+-- stable across profile reloads, and retaining record tables here would keep
+-- private message bodies alive after history has evicted or blocked them.
+function AlertEngine:IsInboxRecord(record)
+	self:PruneInbox()
+	local engine = addon.MessageEngine
+	if type(record) ~= "table" or type(record.id) ~= "number"
+		or record.blockedByBlockControl or not engine or not engine.byId
+		or engine.byId[record.id] ~= record then
+		return false
+	end
+	return self.inboxIds and self.inboxIds[record.id] == true or false
+end
+
+function AlertEngine:PruneInbox()
+	local ids = self.inboxOrder or {}
+	local engine = addon.MessageEngine
+	local generation = engine and engine.historyGeneration
+	if self.inboxGeneration ~= generation then
+		ids = {}
+		self.inboxGeneration = generation
+	end
+	local retained = engine and engine.byId or nil
+	local kept, membership = {}, {}
+	for index = 1, #ids do
+		local id = ids[index]
+		local record = retained and retained[id]
+		if type(id) == "number" and type(record) == "table"
+			and not record.blockedByBlockControl and type(record.alerts) == "table"
+			and next(record.alerts) ~= nil and not membership[id] then
+			kept[#kept + 1] = id
+			membership[id] = true
+		end
+	end
+	self.inboxOrder = kept
+	self.inboxIds = membership
+	return kept
+end
+
+function AlertEngine:RememberInboxRecord(record)
+	local engine = addon.MessageEngine
+	if type(record) ~= "table" or type(record.id) ~= "number"
+		or record.blockedByBlockControl or not engine or not engine.byId
+		or engine.byId[record.id] ~= record then return false end
+	local ids = self:PruneInbox()
+	if self.inboxIds[record.id] then return false end
+	ids[#ids + 1] = record.id
+	self.inboxIds[record.id] = true
+	if #ids > MAX_INBOX_ENTRIES then
+		self.inboxIds[table.remove(ids, 1)] = nil
+	end
+	local dock = addon.SmartDock
+	if dock and type(dock.RefreshAlertInbox) == "function" then
+		dock:RefreshAlertInbox()
+	end
+	return true
+end
+
+function AlertEngine:GetInboxRecords()
+	local ids = self:PruneInbox()
+	local records = {}
+	local byId = addon.MessageEngine and addon.MessageEngine.byId or {}
+	for index = #ids, 1, -1 do
+		records[#records + 1] = byId[ids[index]]
+	end
+	return records
 end
 
 function AlertEngine:GetStats()
@@ -895,6 +965,9 @@ function AlertEngine:ResetStats()
 end
 
 function AlertEngine:ResetForProfile()
+	self.inboxOrder = {}
+	self.inboxIds = {}
+	self.inboxGeneration = addon.MessageEngine and addon.MessageEngine.historyGeneration
 	self.compiledRevision = nil
 	self.compiledAllSources = {}
 	self.compiledBySource = {}

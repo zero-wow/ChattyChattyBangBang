@@ -104,6 +104,40 @@ delegated = nil
 dock:HandleHyperlink("ccbburl:not-a-valid-url", "invalid", "LeftButton")
 assert(delegated == nil, "Chatty copy link was sent to Blizzard's SetItemRef path")
 
+-- Group Finder invite links are authored locally from retained public records.
+local recruit = { id = 88, sender = "GroupLead", text = "LFM healer",
+	view = "groupFinder", event = "CHAT_MSG_CHANNEL" }
+addon.MessageEngine.GetMessageById = function(_, id)
+	return tonumber(id) == recruit.id and recruit or nil
+end
+addon.GetSmartSettings = function() return { safety = { localIgnores = {} } } end
+addon.Compatibility = { InvitePlayer = function(_, name) addon.invitedName = name end }
+dock.IsRecordVisibleInView = function(_, _, record) return record == recruit and not record.blockedByBlockControl end
+dock.activeView = "groupFinder"
+dock.displayRecords = { { record = recruit } }
+local decorated = dock:GetInviteDisplayRecord(recruit)
+assert(decorated ~= recruit and decorated.text:find("|Hccbbinvite:88:", 1, true)
+	and recruit.text == "LFM healer", "invite affordance modified stored chat text")
+local inviteLink = decorated.text:match("|H([^|]+)|h")
+dock:HandleHyperlink(inviteLink, "[INVITE]", "RightButton")
+assert(not addon.invitedName, "right-click invited a player")
+dock:HandleHyperlink("ccbbinvite:88:forged", "[INVITE]", "LeftButton")
+assert(not addon.invitedName and delegated == nil, "forged invite link reached an action")
+dock:HandleHyperlink(inviteLink, "[INVITE]", "LeftButton")
+assert(addon.invitedName == "GroupLead", "record-backed invite did not use existing guarded API")
+addon.invitedName = nil
+recruit.blockedByBlockControl = true
+dock:HandleHyperlink(inviteLink, "[INVITE]", "LeftButton")
+recruit.blockedByBlockControl = nil
+recruit.event = "CHAT_MSG_WHISPER"
+dock:HandleHyperlink(inviteLink, "[INVITE]", "LeftButton")
+recruit.event = "CHAT_MSG_CHANNEL"
+dock.displayRecords = {}
+dock:HandleHyperlink(inviteLink, "[INVITE]", "LeftButton")
+assert(not addon.invitedName, "blocked, private, or stale invite link acted")
+dock.activeView = "general"
+assert(dock:GetInviteDisplayRecord(recruit) == recruit, "invite link leaked into General")
+
 local source = assert(io.open("Core/SmartDock.lua", "rb")):read("*a"):gsub("\r\n", "\n")
 for _, label in ipairs({ "WHISPER", "HISTORY", "INVITE", "ADD FRIEND", "CHATTY MUTE", "WOW IGNORE" }) do
 	assert(string.find(source, 'label = "' .. label .. '"', 1, true), "missing explicit action label: " .. label)

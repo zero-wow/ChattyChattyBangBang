@@ -438,6 +438,11 @@ assert(config.keywordColorScopePrevious.point.x == 0
 	and config.keywordColorScopeNext.point.x == 0
 	and config.keywordColorScopeTargetLabel.width <= 426,
 	"scope target selector escaped compact inspector bounds")
+config:FitKeywordScopeText(config.keywordColorScopeTargetLabel, string.rep("é", 40), 344)
+local fittedScopeLabel = config.keywordColorScopeTargetLabel:GetText()
+assert(#fittedScopeLabel <= 48 and fittedScopeLabel:sub(-3) == "..."
+	and fittedScopeLabel:sub(1, -4):gsub("é", "") == "",
+	"long Unicode scope target was clipped or split at a byte boundary")
 config:SetKeywordColorInspectorSection("words")
 
 assert(#config.keywordColorGroupRows == 12, "group list did not use compact paging")

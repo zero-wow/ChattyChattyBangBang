@@ -899,6 +899,8 @@ local HISTORY_SCHEMA = 2
 local HISTORY_DEFAULT_LINES_PER_SOURCE = 1000
 local HISTORY_MIN_LINES_PER_SOURCE = 100
 local HISTORY_MAX_LINES_PER_SOURCE = 10000
+local HISTORY_MIN_TOTAL_LINES = 100
+local HISTORY_MAX_TOTAL_LINES = 1000000
 local HISTORY_BOOKMARK_LIMIT = 100
 local HISTORY_EXPORT_MAX_LINES = 20
 local HISTORY_EXPORT_MAX_BYTES = 8192
@@ -931,7 +933,7 @@ end
 
 local function normalizeHistoryLinesPerSource(value)
 	local lines = tonumber(value)
-	if lines == nil then
+	if not lines or lines ~= lines or lines == math.huge or lines == -math.huge then
 		lines = HISTORY_DEFAULT_LINES_PER_SOURCE
 	end
 	lines = math.floor(lines + 0.5)
@@ -941,6 +943,41 @@ local function normalizeHistoryLinesPerSource(value)
 		lines = HISTORY_MAX_LINES_PER_SOURCE
 	end
 	return lines
+end
+
+-- Private retention is independent of live Messenger visibility. This marker
+-- stays session-local; no second body or saved flag is written per line.
+local function privateHistoryKind(record)
+	if type(record) ~= "table" then return nil end
+	local event, sourceId = record.event, record.sourceId
+	if event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_WHISPER_INFORM"
+		or sourceId == "conversation:whisper" then return "whispers" end
+	if event == "CHAT_MSG_BN_WHISPER" or event == "CHAT_MSG_BN_WHISPER_INFORM"
+		or event == "CHAT_MSG_BN_CONVERSATION"
+		or sourceId == "conversation:bnet-whisper"
+		or sourceId == "conversation:bnet-conversation" then return "battleNet" end
+	return nil
+end
+
+local function privateHistorySaveEnabled(settings, kind)
+	return kind == "whispers" and settings.historySaveWhispers ~= false
+		or kind == "battleNet" and settings.historySaveBattleNet ~= false
+end
+
+local function effectiveHistorySourceLimit(settings, sourceId, inherited)
+	local limits = type(settings.historySourceLimits) == "table" and settings.historySourceLimits or nil
+	local selected = limits and limits[sourceId] or nil
+	local number = tonumber(selected)
+	return number and number == number and number ~= math.huge
+		and number ~= -math.huge and normalizeHistoryLinesPerSource(number)
+		or normalizeHistoryLinesPerSource(inherited or settings.historyCapacity)
+end
+
+local function normalizeHistoryTotalLimit(value)
+	local limit = tonumber(value)
+	if not limit or limit ~= limit or limit == math.huge or limit == -math.huge then return nil end
+	return math.max(HISTORY_MIN_TOTAL_LINES,
+		math.min(HISTORY_MAX_TOTAL_LINES, math.floor(limit + 0.5)))
 end
 
 local function getRingRecords(ring, maximumRecords)
@@ -1002,12 +1039,13 @@ local function createPersistentHistory(linesPerSource)
 	}
 end
 
-local function appendPersistentRecord(history, record)
+local function appendPersistentRecord(history, record, sourceLimits)
 	if type(history) ~= "table" or type(record) ~= "table" then
 		return
 	end
-	local capacity = normalizeHistoryLinesPerSource(history.linesPerSource)
 	local sourceId = getHistorySourceId(record)
+	local capacity = effectiveHistorySourceLimit({ historySourceLimits = sourceLimits,
+		historyCapacity = history.linesPerSource }, sourceId)
 	local sources = history.sources
 	if type(sources) ~= "table" then
 		sources = {}
@@ -1036,14 +1074,36 @@ local function appendPersistentRecord(history, record)
 	end
 end
 
-local function getPersistentHistoryRecords(history, maximumPerSource)
+-- A global eviction is also the oldest line of its physical source. Remove it
+-- from that source's SavedVariables ring in O(1), without rebuilding all rings
+-- after every new line at a saturated aggregate cap.
+local function removeOldestPersistentRecord(history, record)
+	if type(history) ~= "table" or type(history.sources) ~= "table" then return false end
+	local ring = history.sources[getHistorySourceId(record)]
+	if type(ring) ~= "table" then return false end
+	local capacity = math.floor(tonumber(ring.capacity) or 0)
+	local count = math.floor(tonumber(ring.count) or 0)
+	if capacity < 1 or count < 1 then return false end
+	local index = ((math.floor(tonumber(ring.writeIndex) or 1) - count - 1) % capacity) + 1
+	local oldest = ring.records and ring.records[index]
+	if type(oldest) ~= "table" or oldest.historySequence ~= record.historySequence then
+		return false -- the per-source wrap already removed this exact line
+	end
+	ring.records[index] = nil
+	ring.count = count - 1
+	if ring.count == 0 then history.sources[getHistorySourceId(record)] = nil end
+	return true
+end
+
+local function getPersistentHistoryRecords(history, maximumPerSource, sourceLimits)
 	local entries = {}
 	local order = 0
 	local isSourceSchema = type(history) == "table" and history.schema == HISTORY_SCHEMA
 		and type(history.sources) == "table"
 	if isSourceSchema then
-		local limit = normalizeHistoryLinesPerSource(maximumPerSource or history.linesPerSource)
-		for _, ring in pairs(history.sources) do
+		for sourceId, ring in pairs(history.sources) do
+			local limit = effectiveHistorySourceLimit({ historySourceLimits = sourceLimits,
+				historyCapacity = maximumPerSource or history.linesPerSource }, sourceId)
 			local records = getRingRecords(ring, limit)
 			for index = 1, #records do
 				order = order + 1
@@ -1113,10 +1173,10 @@ local function ensurePersistentHistory(settings, linesPerSource)
 		current.nextSequence = math.max(1, math.floor(tonumber(current.nextSequence) or 1))
 		return current
 	end
-	local records, nextSequence = getPersistentHistoryRecords(current, capacity)
+	local records, nextSequence = getPersistentHistoryRecords(current, capacity, settings.historySourceLimits)
 	local rebuilt = createPersistentHistory(capacity)
 	for index = 1, #records do
-		appendPersistentRecord(rebuilt, records[index])
+		appendPersistentRecord(rebuilt, records[index], settings.historySourceLimits)
 	end
 	rebuilt.nextSequence = math.max(tonumber(rebuilt.nextSequence) or 1, nextSequence or 1)
 	settings.history = rebuilt
@@ -2634,14 +2694,22 @@ function Engine:Normalize(event, ...)
 	return record
 end
 
-function Engine:Persist(record)
+function Engine:Persist(record, evicted)
 	local settings = addon:GetSmartSettings()
 	if not settings.persistHistory or self.loadingPersistence then
 		return
 	end
 	local history = ensurePersistentHistory(settings, self.capacity)
 	history.bookmarks = self.bookmarks or {}
-	appendPersistentRecord(history, record)
+	local kind = privateHistoryKind(record)
+	if not kind or record._historyPrivateExcluded ~= true
+		and privateHistorySaveEnabled(settings, kind) then
+		appendPersistentRecord(history, record, settings.historySourceLimits)
+		if kind then record._historySavedPrivate = true end
+	end
+	for index = 1, #(evicted or {}) do
+		removeOldestPersistentRecord(history, evicted[index])
+	end
 end
 
 local function clearRuntimeHistory(engine)
@@ -2836,7 +2904,8 @@ local function unlinkRuntimeRecord(engine, record)
 	engine.count = math.max(0, (tonumber(engine.count) or 1) - 1)
 end
 
-local function appendRuntimeRecord(engine, record)
+local function appendRuntimeRecord(engine, record, settings)
+	local evicted = {}
 	local sourceId = getHistorySourceId(record)
 	record.sourceId = record.sourceId or sourceId
 	record._historySourceId = sourceId
@@ -2870,19 +2939,31 @@ local function appendRuntimeRecord(engine, record)
 		record._conversationKey = conversationKey
 		conversationAppend(conversation, record)
 	end
-	while source.count > engine.capacity and source.head do
-		unlinkRuntimeRecord(engine, source.head)
+	local sourceLimit = effectiveHistorySourceLimit(settings, sourceId, engine.capacity)
+	while source.count > sourceLimit and source.head do
+		local oldest = source.head
+		evicted[#evicted + 1] = oldest
+		unlinkRuntimeRecord(engine, oldest)
 	end
+	local aggregateLimit = normalizeHistoryTotalLimit(settings.historyTotalCapacity)
+	while aggregateLimit and engine.count > aggregateLimit and engine.historyHead do
+		local oldest = engine.historyHead
+		evicted[#evicted + 1] = oldest
+		unlinkRuntimeRecord(engine, oldest)
+	end
+	return evicted
 end
 
 function Engine:PruneHistoryToSourceLimit(linesPerSource)
 	local capacity = normalizeHistoryLinesPerSource(linesPerSource)
 	self.capacity = capacity
+	local settings = addon:GetSmartSettings()
 	local sourceIds = {}
 	for sourceId in pairs(self.sourceHistories or {}) do sourceIds[#sourceIds + 1] = sourceId end
 	for index = 1, #sourceIds do
 		local source = self.sourceHistories[sourceIds[index]]
-		while source.count > capacity and source.head do
+		local sourceCapacity = effectiveHistorySourceLimit(settings, sourceIds[index], capacity)
+		while source.count > sourceCapacity and source.head do
 			unlinkRuntimeRecord(self, source.head)
 		end
 	end
@@ -2898,7 +2979,11 @@ function Engine:RebuildPersistence()
 	local history = createPersistentHistory(self.capacity or settings.historyCapacity)
 	local record = self.historyHead
 	while record do
-		appendPersistentRecord(history, record)
+		local kind = privateHistoryKind(record)
+		if not kind or record._historyPrivateExcluded ~= true then
+			appendPersistentRecord(history, record, settings.historySourceLimits)
+			if kind then record._historySavedPrivate = true end
+		end
 		record = record._historyNext
 	end
 	history.nextSequence = math.max(tonumber(history.nextSequence) or 1, tonumber(self.nextHistorySequence) or 1)
@@ -2910,7 +2995,102 @@ end
 function Engine:ClearPersistentHistory()
 	local settings = addon:GetSmartSettings()
 	settings.history = nil
+	local record = self.historyHead
+	while record do
+		record._historySavedPrivate = nil
+		record = record._historyNext
+	end
 	return true
+end
+
+function Engine:GetSavedPrivateHistoryStats()
+	local counts = { whispers = 0, battleNet = 0 }
+	local record = self.historyHead
+	while record do
+		local kind = privateHistoryKind(record)
+		if kind and record._historySavedPrivate == true then
+			counts[kind] = counts[kind] + 1
+		end
+		record = record._historyNext
+	end
+	return counts
+end
+
+function Engine:ClearSavedPrivateHistory(kind)
+	if kind ~= "whispers" and kind ~= "battleNet" and kind ~= "all" then
+		return 0
+	end
+	local cleared = 0
+	local record = self.historyHead
+	while record do
+		local recordKind = privateHistoryKind(record)
+		if (kind == "all" or kind == recordKind)
+			and recordKind and record._historySavedPrivate == true then
+			record._historySavedPrivate = nil
+			record._historyPrivateExcluded = true
+			cleared = cleared + 1
+		end
+		record = record._historyNext
+	end
+	-- Rebuild from the in-memory membership/markers now. Kept session lines
+	-- remain visible but are never silently saved again on a later rebuild.
+	if addon:GetSmartSettings().persistHistory then self:RebuildPersistence() end
+	return cleared
+end
+
+-- Only explicit history-limit changes use this bounded-on-demand accounting.
+-- A limit may remove lines that still carry an inactive tab's unread badge or
+-- the active tab's NEW marker; capture those exact tail records before pruning.
+local function captureHistoryUnreadTails(engine)
+	local dock = addon.SmartDock
+	if not dock then return nil end
+	local settings = addon:GetSmartSettings()
+	local tails = { unread = {}, pending = nil }
+	local function tail(viewId, count)
+		count = math.max(0, math.floor(tonumber(count) or 0))
+		if count == 0 then return nil end
+		local messages = engine:GetMessages(viewId)
+		local visible = {}
+		for index = 1, #messages do
+			local record = messages[index]
+			if not dock.IsLocallyIgnored or not dock:IsLocallyIgnored(record, settings) then
+				visible[#visible + 1] = record
+			end
+		end
+		local selected = {}
+		for index = math.max(1, #visible - count + 1), #visible do
+			selected[visible[index]] = true
+		end
+		return selected
+	end
+	for viewId, count in pairs(dock.unread or {}) do
+		if type(viewId) == "string" then tails.unread[viewId] = tail(viewId, count) end
+	end
+	if type(dock.activeView) == "string" then
+		tails.pending = tail(dock.activeView, dock.pendingVisible)
+	end
+	return tails
+end
+
+local function reconcileHistoryUnreadTails(tails, removed)
+	local dock = addon.SmartDock
+	if not dock or not tails or #removed == 0 then return end
+	for viewId, selected in pairs(tails.unread) do
+		local count = 0
+		for index = 1, #removed do
+			if selected[removed[index]] then count = count + 1 end
+		end
+		dock.unread[viewId] = math.max(0, (tonumber(dock.unread[viewId]) or 0) - count)
+	end
+	if tails.pending then
+		local count = 0
+		for index = 1, #removed do
+			if tails.pending[removed[index]] then count = count + 1 end
+		end
+		dock.pendingVisible = math.max(0, (tonumber(dock.pendingVisible) or 0) - count)
+	end
+	if type(dock.RefreshRailState) == "function" then dock:RefreshRailState() end
+	if type(dock.RefreshNewMessageIndicator) == "function" then dock:RefreshNewMessageIndicator() end
 end
 
 function Engine:SetHistoryLinesPerSource(linesPerSource)
@@ -2954,13 +3134,61 @@ function Engine:ClearHistory()
 	return true
 end
 
+function Engine:SetHistorySourceLimit(sourceId, effectiveLimit, lowered)
+	if type(sourceId) ~= "string" or sourceId == "" then return false end
+	local source = self.sourceHistories and self.sourceHistories[sourceId]
+	local removed = 0
+	local removedRecords = {}
+	local unreadTails = lowered and source and captureHistoryUnreadTails(self) or nil
+	if lowered and source then
+		local limit = normalizeHistoryLinesPerSource(effectiveLimit)
+		while source.count > limit and source.head do
+			local oldest = source.head
+			removedRecords[#removedRecords + 1] = oldest
+			unlinkRuntimeRecord(self, oldest)
+			removed = removed + 1
+		end
+	end
+	if removed > 0 then
+		reconcileHistoryUnreadTails(unreadTails, removedRecords)
+		self:RebuildPersistence()
+		if addon.SmartDock and addon.SmartDock.RebuildActiveView then
+			addon.SmartDock:RebuildActiveView()
+		end
+	end
+	return removed
+end
+
+function Engine:SetHistoryAggregateCapacity(value)
+	local limit = normalizeHistoryTotalLimit(value)
+	local removed = 0
+	local removedRecords = {}
+	local unreadTails = limit and self.count > limit and captureHistoryUnreadTails(self) or nil
+	while limit and self.count > limit and self.historyHead do
+		local oldest = self.historyHead
+		removedRecords[#removedRecords + 1] = oldest
+		unlinkRuntimeRecord(self, oldest)
+		removed = removed + 1
+	end
+	if removed > 0 then
+		reconcileHistoryUnreadTails(unreadTails, removedRecords)
+		self:RebuildPersistence()
+		if addon.SmartDock and addon.SmartDock.RebuildActiveView then
+			addon.SmartDock:RebuildActiveView()
+		end
+	end
+	return removed
+end
+
 function Engine:GetHistoryStats()
 	local sourceCount = 0
 	for _ in pairs(self.sourceHistories or {}) do sourceCount = sourceCount + 1 end
+	local settings = addon:GetSmartSettings()
 	return {
 		lines = tonumber(self.count) or 0,
 		sources = sourceCount,
 		linesPerSource = normalizeHistoryLinesPerSource(self.capacity),
+		aggregateCapacity = normalizeHistoryTotalLimit(settings.historyTotalCapacity),
 	}
 end
 
@@ -3012,6 +3240,13 @@ end
 
 function Engine:Store(record)
 	local settings = addon:GetSmartSettings()
+	local kind = privateHistoryKind(record)
+	if kind and record._historySavedPrivate ~= true
+		and not privateHistorySaveEnabled(settings, kind) then
+		-- A later master-history rebuild must not save a line captured while
+		-- this private category was opted out, even if the opt-out changes.
+		record._historyPrivateExcluded = true
+	end
 	local capacity = normalizeHistoryLinesPerSource(settings.historyCapacity)
 	if self.capacity ~= capacity then
 		self:PruneHistoryToSourceLimit(capacity)
@@ -3024,8 +3259,8 @@ function Engine:Store(record)
 	end
 	record.historySequence = math.floor(sequence)
 	self.nextHistorySequence = record.historySequence + 1
-	appendRuntimeRecord(self, record)
-	self:Persist(record)
+	local evicted = appendRuntimeRecord(self, record, settings)
+	self:Persist(record, evicted)
 end
 
 function Engine:ResetForProfile()
@@ -3044,11 +3279,13 @@ function Engine:ResetForProfile()
 	if settings.persistHistory then
 		local savedBookmarks = type(settings.history) == "table"
 			and type(settings.history.bookmarks) == "table" and settings.history.bookmarks or nil
-		local savedRecords = getPersistentHistoryRecords(settings.history, self.capacity)
+		local savedRecords = getPersistentHistoryRecords(settings.history, self.capacity,
+			settings.historySourceLimits)
 		self.loadingPersistence = true
 		for index = 1, #savedRecords do
 			local record = copyRecordForPersistence(savedRecords[index])
 			if type(record.text) == "string" and type(record.event) == "string" then
+				if privateHistoryKind(record) then record._historySavedPrivate = true end
 				record.id = self.nextId
 				record.time = 0
 				record.normalized = record.normalized or string.lower(record.text)
