@@ -8591,6 +8591,12 @@ function Config:GetSemanticRouteEnabled(routeId)
 end
 
 function Config:SetSemanticRouteEnabled(routeId, enabled)
+	if self.semanticRouteBatchDraft then
+		self.semanticRouteBatchDraft[routeId] = enabled and true or false
+		self:RefreshSemanticRoutesPage(true)
+		self:SetSemanticRoutesStatus("Change staged. APPLY ROUTES sorts retained messages once; CANCEL discards.", "warning")
+		return true
+	end
 	local called, saved = semanticRouteCall("SetSemanticRouteEnabled", routeId, enabled and true or false)
 	if called and saved ~= false then
 		self:SetSemanticRoutesStatus(semanticRouteLabel(routeId) .. (enabled and " inference enabled." or " inference disabled; direct chat routes are unchanged."), "success")
@@ -8600,6 +8606,76 @@ function Config:SetSemanticRouteEnabled(routeId, enabled)
 	self:SetSemanticRoutesStatus("Semantic route controls are unavailable until the classifier loads.", "warning")
 	self:RefreshSemanticRoutesPage(true)
 	return false
+end
+
+function Config:BeginSemanticRouteBatch()
+	if type(addon.ApplySemanticRouteChanges) ~= "function" then
+		self:SetSemanticRoutesStatus("Batch editing needs the current routing engine; single switches still work.", "warning")
+		return false
+	end
+	local draft = {}
+	for index = 1, #SEMANTIC_ROUTE_OPTIONS do
+		local routeId = SEMANTIC_ROUTE_OPTIONS[index].id
+		local enabled, supported = self:GetSemanticRouteEnabled(routeId)
+		if not supported then
+			self:SetSemanticRoutesStatus("Wait for every route switch to load before batch editing.", "warning")
+			return false
+		end
+		draft[routeId] = enabled
+	end
+	self.semanticRouteBatchDraft = draft
+	self.semanticRouteBatchBaseline = {
+		groupFinder = draft.groupFinder, trade = draft.trade, pvp = draft.pvp,
+	}
+	self:RefreshSemanticRoutesPage(true)
+	self:SetSemanticRoutesStatus("Batch edit on. Choose routes, then APPLY ROUTES once or CANCEL.", "textMuted")
+	return true
+end
+
+function Config:CancelSemanticRouteBatch()
+	self.semanticRouteBatchDraft = nil
+	self.semanticRouteBatchBaseline = nil
+	self:RefreshSemanticRoutesPage(true)
+	self:SetSemanticRoutesStatus("Batch discarded. Individual route switches apply immediately again.", "textMuted")
+end
+
+function Config:ApplySemanticRouteBatch()
+	local draft = self.semanticRouteBatchDraft
+	if type(draft) ~= "table" then return false end
+	local changes, count = {}, 0
+	for index = 1, #SEMANTIC_ROUTE_OPTIONS do
+		local routeId = SEMANTIC_ROUTE_OPTIONS[index].id
+		local current, supported = self:GetSemanticRouteEnabled(routeId)
+		if not supported then
+			self:SetSemanticRoutesStatus("Routing changed while editing; CANCEL and try again.", "warning")
+			return false
+		end
+		if current ~= (self.semanticRouteBatchBaseline or {})[routeId] then
+			self:SetSemanticRoutesStatus("A route changed elsewhere. CANCEL and start a fresh batch.", "warning")
+			return false
+		end
+		if current ~= draft[routeId] then
+			changes[routeId] = draft[routeId]
+			count = count + 1
+		end
+	end
+	if count == 0 then
+		self.semanticRouteBatchDraft = nil
+		self.semanticRouteBatchBaseline = nil
+		self:RefreshSemanticRoutesPage(true)
+		self:SetSemanticRoutesStatus("No route changes to apply.", "textMuted")
+		return true
+	end
+	local ok, applied = pcall(addon.ApplySemanticRouteChanges, addon, changes)
+	if not ok or applied ~= true then
+		self:SetSemanticRoutesStatus("Could not apply the batch; previous routes are intact. Retry or CANCEL.", "warning")
+		return false
+	end
+	self.semanticRouteBatchDraft = nil
+	self.semanticRouteBatchBaseline = nil
+	self:RefreshSemanticRoutesPage(true)
+	self:SetSemanticRoutesStatus(tostring(count) .. " inference routes applied; retained chat sorted once.", "success")
+	return true
 end
 
 function Config:SetSemanticRoutesStatus(text, colorName)
@@ -8666,18 +8742,32 @@ function Config:RefreshSemanticRoutesPage(keepStatus)
 		available = available or supported
 		local toggle = self.semanticRouteToggles and self.semanticRouteToggles[option.id]
 		if toggle then
+			if self.semanticRouteBatchDraft then
+				enabled = self.semanticRouteBatchDraft[option.id]
+			end
 			toggle:SetValue(enabled, true)
 			toggle:EnableMouse(supported)
 			toggle:SetAlpha(supported and 1 or 0.45)
 		end
 	end
+	local batching = self.semanticRouteBatchDraft ~= nil
+	if self.semanticRouteBatchButton then
+		if batching then self.semanticRouteBatchButton:Hide() else self.semanticRouteBatchButton:Show() end
+	end
+	for _, button in ipairs({ self.semanticRouteApplyButton, self.semanticRouteCancelButton }) do
+		if button then if batching then button:Show() else button:Hide() end end
+	end
 	if self.semanticRoutesAvailability then
-		self.semanticRoutesAvailability:SetText(available
+		self.semanticRoutesAvailability:SetText(batching
+			and "Staged switches affect nothing until APPLY ROUTES. ANALYZE shows current live routes."
+			or available
 			and "Inference is optional. Defense, LookingForGroup, and GuildRecruitment sources remain direct."
 			or "Waiting for the semantic classifier. Direct event and channel routes continue normally.")
 	end
 	if not keepStatus then
-		self:SetSemanticRoutesStatus(available
+		self:SetSemanticRoutesStatus(batching
+			and "Batch edit on. Choose routes, then APPLY ROUTES once or CANCEL."
+			or available
 			and "Higher-confidence combinations route automatically; inspect any live line with Shift > ANALYZE."
 			or "Classifier controls will appear automatically when the routing engine is available.", available and "textMuted" or "warning")
 	end
@@ -8690,36 +8780,53 @@ function Config:BuildSemanticRoutesPage()
 
 	local work = createQuietShellPanel(page, "surface")
 	work:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -PAGE_TOP)
-	work:SetSize(PAGE_WIDTH, 214)
+	work:SetSize(PAGE_WIDTH, 352)
 
 	local routeTitle = Theme:CreateText(work, "GameFontNormalSmall", "gold")
 	routeTitle:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -7)
 	routeTitle:SetText("AUTOMATIC INFERENCE")
 	self.semanticRouteToggles = {}
+	local routeLayout = {
+		{ x = 8, width = 190, descriptionWidth = 190 },
+		{ x = 210, width = 142, descriptionWidth = 142 },
+		{ x = 370, width = 100, descriptionWidth = 220 },
+	}
 	for index = 1, #SEMANTIC_ROUTE_OPTIONS do
 		local option = SEMANTIC_ROUTE_OPTIONS[index]
-		local toggle = Theme:CreateCompactToggle(work, option.label, 158)
-		toggle:SetPoint("TOPLEFT", work, "TOPLEFT", 8 + ((index - 1) * 166), -28)
+		local layout = routeLayout[index]
+		local toggle = Theme:CreateCompactToggle(work, option.label, layout.width)
+		toggle:SetPoint("TOPLEFT", work, "TOPLEFT", layout.x, -28)
 		toggle.OnValueChanged = function(_, value)
 			Config:SetSemanticRouteEnabled(option.id, value)
 		end
 		self.semanticRouteToggles[option.id] = toggle
 		local description = Theme:CreateText(work, "GameFontHighlightSmall", "textMuted")
 		description:SetPoint("TOPLEFT", toggle, "BOTTOMLEFT", 0, -1)
-		description:SetWidth(154)
+		description:SetWidth(layout.descriptionWidth)
 		description:SetJustifyH("LEFT")
 		description:SetText(option.description)
 	end
+	self.semanticRouteBatchButton = Theme:CreateTightButton(work, "BATCH EDIT", 22, false)
+	self.semanticRouteBatchButton:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -124)
+	self.semanticRouteBatchButton:SetScript("OnClick", function() Config:BeginSemanticRouteBatch() end)
+	setControlTooltip(self.semanticRouteBatchButton, "Batch semantic routes",
+		"Stage Trade, Group Finder, and PVP inference switches, then re-sort retained messages once. Shift > ANALYZE manual corrections remain immediate.")
+	self.semanticRouteApplyButton = Theme:CreateTightButton(work, "APPLY ROUTES", 22, true)
+	self.semanticRouteApplyButton:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -124)
+	self.semanticRouteApplyButton:SetScript("OnClick", function() Config:ApplySemanticRouteBatch() end)
+	self.semanticRouteCancelButton = Theme:CreateTightButton(work, "CANCEL", 22, false)
+	self.semanticRouteCancelButton:SetPoint("TOPLEFT", work, "TOPLEFT", 187, -124)
+	self.semanticRouteCancelButton:SetScript("OnClick", function() Config:CancelSemanticRouteBatch() end)
 	self.semanticRoutesAvailability = Theme:CreateText(work, "GameFontHighlightSmall", "textMuted")
-	self.semanticRoutesAvailability:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -80)
+	self.semanticRoutesAvailability:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -160)
 	self.semanticRoutesAvailability:SetWidth(PAGE_WIDTH - 16)
 	self.semanticRoutesAvailability:SetJustifyH("LEFT")
 
 	local testTitle = Theme:CreateText(work, "GameFontNormalSmall", "gold")
-	testTitle:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -106)
+	testTitle:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -194)
 	testTitle:SetText("TEST A MESSAGE")
 	self.semanticRoutesTestInput = Theme:CreateEditBox(work, 452, 22, false)
-	self.semanticRoutesTestInput:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -125)
+	self.semanticRoutesTestInput:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -218)
 	self.semanticRoutesTestInput:SetMaxLetters(240)
 	self.semanticRoutesTestInput:SetText("LF tank / DPS [Keystone: example]")
 	self.semanticRoutesTestInput:HookScript("OnEnterPressed", function(self)
@@ -8732,13 +8839,13 @@ function Config:BuildSemanticRoutesPage()
 	analyze:SetScript("OnClick", function() Config:AnalyzeSemanticRouteText() end)
 
 	self.semanticRoutesResult = Theme:CreateText(work, "GameFontNormalSmall", "goldBright")
-	self.semanticRoutesResult:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -153)
+	self.semanticRoutesResult:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -251)
 	self.semanticRoutesEvidence = Theme:CreateText(work, "GameFontHighlightSmall", "text")
-	self.semanticRoutesEvidence:SetPoint("TOPLEFT", self.semanticRoutesResult, "BOTTOMLEFT", 0, -2)
+	self.semanticRoutesEvidence:SetPoint("TOPLEFT", self.semanticRoutesResult, "BOTTOMLEFT", 0, -8)
 	self.semanticRoutesEvidence:SetWidth(PAGE_WIDTH - 16)
 	self.semanticRoutesEvidence:SetJustifyH("LEFT")
 	self.semanticRoutesStatus = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-	self.semanticRoutesStatus:SetPoint("TOPLEFT", work, "BOTTOMLEFT", 2, -6)
+	self.semanticRoutesStatus:SetPoint("TOPLEFT", work, "BOTTOMLEFT", 2, -10)
 	self.semanticRoutesStatus:SetWidth(PAGE_WIDTH - 4)
 	self.semanticRoutesStatus:SetJustifyH("LEFT")
 
@@ -14459,6 +14566,43 @@ function Config:RefreshSafetyPage()
 		local smart = addon:GetSmartSettings()
 		self.safetyLinkPreviewToggle:SetValue(smart.dock and smart.dock.hoverLinkPreviews == true, true)
 	end
+	self:RefreshAltNamesPage()
+end
+
+function Config:RefreshAltNamesPage()
+	if not self.altNameRows then return end
+	local aliases = addon.AltNames
+	local groups = aliases and aliases.GetGroups and aliases:GetGroups() or {}
+	local totalPages = math.max(1, math.ceil(#groups / #self.altNameRows))
+	self.altNamePageIndex = math.max(1, math.min(totalPages, self.altNamePageIndex or 1))
+	local first = (self.altNamePageIndex - 1) * #self.altNameRows + 1
+	for index, row in ipairs(self.altNameRows) do
+		local group = groups[first + index - 1]
+		if group then
+			local preview = {}
+			for member = 1, math.min(3, #group.names) do preview[#preview + 1] = group.names[member] end
+			self:FitKeywordScopeText(row.label,
+				table.concat(preview, ", ") .. (#group.names > 3
+					and (" (and " .. (#group.names - 3) .. " more)") or ""),
+				PAGE_WIDTH - 110)
+			row.id = group.id
+			row.remove:Show()
+			row.label:Show()
+			setControlTooltip(row.remove, "Remove this whole name group",
+				"Linked names: " .. table.concat(group.names, ", ") .. ". Only saved history grouping changes.")
+		else
+			row.id = nil
+			row.label:Hide()
+			row.remove:Hide()
+		end
+	end
+	self.altNamePager:SetText(self.altNamePageIndex .. " / " .. totalPages
+		.. "  ·  " .. #groups .. " of 32 groups")
+	if self.altNamePageIndex > 1 then self.altNamePrevious:Enable() else self.altNamePrevious:Disable() end
+	if self.altNamePageIndex < totalPages then self.altNameNext:Enable() else self.altNameNext:Disable() end
+	if self.activePage == "safety" and self.content and self.content.SetHeight then
+		self.content:SetHeight(math.max(CONFIG_CONTENT_HEIGHT, 650))
+	end
 end
 
 function Config:BuildSafetyPage()
@@ -14544,6 +14688,94 @@ function Config:BuildSafetyPage()
 	end
 	setControlTooltip(self.safetyLinkPreviewToggle, "Smart Chat link previews",
 		"OFF by default. Hover over an item or spell link in Smart Chat to see WoW's normal tooltip. Other links still work on click; no message text is saved for this feature.")
+
+	local aliasesPanel = CreateFrame("Frame", nil, page)
+	aliasesPanel:SetPoint("TOPLEFT", self.safetyLinkPreviewToggle, "BOTTOMLEFT", 0, -18)
+	aliasesPanel:SetSize(PAGE_WIDTH, 292)
+	local aliasesTitle = Theme:CreateText(aliasesPanel, "GameFontNormal", "gold")
+	aliasesTitle:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 0, 0)
+	aliasesTitle:SetText("ALT NAMES · HISTORY ONLY")
+	local aliasesDetail = Theme:CreateText(aliasesPanel, "GameFontHighlightSmall", "textMuted")
+	aliasesDetail:SetPoint("TOPLEFT", aliasesTitle, "BOTTOMLEFT", 0, -3)
+	aliasesDetail:SetWidth(PAGE_WIDTH)
+	aliasesDetail:SetJustifyH("LEFT")
+	aliasesDetail:SetText("Link characters you enter so HISTORY can show their messages together. This never shares trust, whisper approval, mutes, blocks, or WoW Ignore.")
+	local firstLabel = Theme:CreateText(aliasesPanel, "GameFontHighlightSmall", "textMuted")
+	firstLabel:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 0, -57)
+	firstLabel:SetText("CHARACTER")
+	local secondLabel = Theme:CreateText(aliasesPanel, "GameFontHighlightSmall", "textMuted")
+	secondLabel:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 254, -57)
+	secondLabel:SetText("OTHER CHARACTER / ALT")
+	self.altNameFirstEdit = Theme:CreateEditBox(aliasesPanel, 240, 22, false)
+	self.altNameFirstEdit:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 0, -75)
+	self.altNameFirstEdit:SetMaxLetters(80)
+	self.altNameSecondEdit = Theme:CreateEditBox(aliasesPanel, 232, 22, false)
+	self.altNameSecondEdit:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 254, -75)
+	self.altNameSecondEdit:SetMaxLetters(80)
+	local link = Theme:CreateButton(aliasesPanel, "LINK NAMES", 128, 22, false)
+	self.altNameLinkButton = link
+	link:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 500, -75)
+	link:SetScript("OnClick", function()
+		local manager = addon.AltNames
+		if not manager then return end
+		local ok, reason = manager:Link(Config.altNameFirstEdit:GetText(), Config.altNameSecondEdit:GetText())
+		Config.altNameStatus:SetText(ok and "Linked for history only." or reason)
+		if ok then Config.altNamePageIndex = 1; Config:RefreshAltNamesPage() end
+	end)
+	setControlTooltip(link, "Link history names", "Enter both character names exactly as they appear in chat, including a realm when shown. No safety decision changes.")
+	local unlink = Theme:CreateButton(aliasesPanel, "UNLINK NAME", 126, 22, false)
+	self.altNameUnlinkButton = unlink
+	unlink:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 0, -108)
+	unlink:SetScript("OnClick", function()
+		local manager = addon.AltNames
+		if not manager then return end
+		local name = Config.altNameFirstEdit:GetText()
+		if name == "" then name = Config.altNameSecondEdit:GetText() end
+		local ok, reason = manager:Unlink(name)
+		Config.altNameStatus:SetText(ok and "Name unlinked from history grouping." or reason)
+		if ok then Config:RefreshAltNamesPage() end
+	end)
+	local unlinkHint = Theme:CreateText(aliasesPanel, "GameFontHighlightSmall", "textMuted")
+	unlinkHint:SetPoint("LEFT", unlink, "RIGHT", 10, 0)
+	unlinkHint:SetWidth(PAGE_WIDTH - 140)
+	unlinkHint:SetText("To remove one name, put it in CHARACTER and click UNLINK NAME.")
+	self.altNameRows = {}
+	for index = 1, 3 do
+		local row = {}
+		row.label = Theme:CreateText(aliasesPanel, "GameFontHighlightSmall", "textNormal")
+		row.label:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 0, -144 - (index - 1) * 27)
+		row.label:SetWidth(PAGE_WIDTH - 102)
+		row.label:SetJustifyH("LEFT")
+		if row.label.SetWordWrap then row.label:SetWordWrap(false) end
+		row.remove = Theme:CreateButton(aliasesPanel, "REMOVE", 80, 20, false)
+		row.remove:SetPoint("TOPRIGHT", aliasesPanel, "TOPRIGHT", -8, -141 - (index - 1) * 27)
+		row.remove:SetScript("OnClick", function()
+			if addon.AltNames and row.id and addon.AltNames:RemoveGroup(row.id) then
+				Config.altNameStatus:SetText("Name group removed. Safety rules were unchanged.")
+				Config:RefreshAltNamesPage()
+			end
+		end)
+		self.altNameRows[index] = row
+	end
+	self.altNamePrevious = Theme:CreateButton(aliasesPanel, "<", 26, 20, false)
+	self.altNamePrevious:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 0, -230)
+	self.altNamePrevious:SetScript("OnClick", function()
+		Config.altNamePageIndex = math.max(1, (Config.altNamePageIndex or 1) - 1)
+		Config:RefreshAltNamesPage()
+	end)
+	self.altNamePager = Theme:CreateText(aliasesPanel, "GameFontHighlightSmall", "textMuted")
+	self.altNamePager:SetPoint("LEFT", self.altNamePrevious, "RIGHT", 8, 0)
+	self.altNamePager:SetWidth(180)
+	self.altNameNext = Theme:CreateButton(aliasesPanel, ">", 26, 20, false)
+	self.altNameNext:SetPoint("LEFT", self.altNamePager, "RIGHT", 8, 0)
+	self.altNameNext:SetScript("OnClick", function()
+		Config.altNamePageIndex = (Config.altNamePageIndex or 1) + 1
+		Config:RefreshAltNamesPage()
+	end)
+	self.altNameStatus = Theme:CreateText(aliasesPanel, "GameFontHighlightSmall", "textMuted")
+	self.altNameStatus:SetPoint("TOPLEFT", aliasesPanel, "TOPLEFT", 0, -262)
+	self.altNameStatus:SetWidth(PAGE_WIDTH)
+	self.altNameStatus:SetText("Exact names only; no automatic account detection or safety-rule sharing.")
 	self:RefreshSafetyPage()
 	return page
 end
@@ -15825,6 +16057,11 @@ function Config:ReloadProfile()
 	self.messengerAppearanceResetButton = nil
 	self.semanticRoutesPage = nil
 	self.semanticRouteToggles = nil
+	self.semanticRouteBatchDraft = nil
+	self.semanticRouteBatchBaseline = nil
+	self.semanticRouteBatchButton = nil
+	self.semanticRouteApplyButton = nil
+	self.semanticRouteCancelButton = nil
 	self.semanticRoutesAvailability = nil
 	self.semanticRoutesTestInput = nil
 	self.semanticRoutesResult = nil

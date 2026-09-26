@@ -35,7 +35,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | A21 | 🟢 | Chatty-owned WoW and Battle.net private-history saving can be disabled separately for future lines; older saved copies remain until a scoped two-click clear. Current-session Messenger stays visible; rebuild/reload privacy mocks pass. |
 | A22 | 🟢 | Spam Firewall POLICY tab exports only bounded scalar protections; import is strict data text with non-mutating preview, paged changes, explicit Apply, and runtime refresh. It excludes messages, identities, lists, drafts, and free text; mocks pass. |
 | A23 | 🟢 | FIND > ALERTS opens a session-only inbox of up to 100 retained-message IDs; blocked/evicted/held lines disappear, list rows omit bodies, and inbox copy/export is disabled. Focused mocks pass; in-game behavior remains unverified. |
-| A24 | 🔴 | User-entered alt-name associations. |
+| A24 | 🟢 | Advanced Player Actions can link exact character names into bounded history-only groups (32 groups, 8 names each). A player HISTORY click reads those exact names together; ordinary FIND and all block, ignore, trust, and whisper-approval rules stay separate. Mocks pass. |
 | A25 | 🟢 | Advanced keyword groups can remain global or target one source/displayed tab; mirrored-view rendering uses the actual tab and legacy flat colors cannot leak scoped highlights. Messenger remains global-only. Mocks pass. |
 
 ## Fix — incorrect behavior and safety risks
@@ -80,7 +80,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | I06 | 🟢 | Short-lived memory-only social trust cache cuts repeat roster checks, invalidates on roster/profile changes, and fails closed when membership is unverified; whisper mocks pass. |
 | I07 | 🟢 | Messenger's 12-tab limit evicts only disposable inactive tabs; drafts, unread, NEW, and unresolved sends stay protected. If all tabs are protected, a bounded notice explains why a new tab was not opened; focused mocks pass. |
 | I08 | 🟢 | Engine and SmartDock now share route/Contents membership for displayed lines and unread counts, with blocked/local-ignore/held exclusions. Mirror and exclusion mocks pass. |
-| I09 | 🔴 | Batch route edits before retained-history reclassification. |
+| I09 | 🟢 | Semantic Routes offers opt-in BATCH EDIT for Trade/LFG/PvP toggles: staged edits apply with one history reclassification, stale drafts are refused, and failure rolls back routes, membership, and unread state. Single switches and Shift > ANALYZE corrections stay immediate; mocks pass. |
 | I10 | 🟢 | Theme/chat-color repaint bursts coalesce to one next-frame redraw; new messages, tab changes, paging, and resize remain synchronous, with combat fallback. Redraw mocks pass. |
 | I11 | 🟢 | Periodic global cleanup avoids full sweeps on every line while the observed term keeps exact rolling expiry; focused threshold and sweep-count mocks pass. |
 | I12 | 🟢 | The 64 learned sources favor recent use and protect explicit tab choices; persisted recency is sampled, not rewritten per line. Retention mocks pass. |

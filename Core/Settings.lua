@@ -4978,13 +4978,68 @@ function addon:SetSemanticRouteEnabled(routeId, enabled)
 	if type(enabled) ~= "boolean" then
 		return false, "boolean-required"
 	end
-	local settings = self:GetSmartSettings()
-	if type(settings.semanticRoutes) ~= "table" then
-		settings.semanticRoutes = {}
-	end
-	settings.semanticRoutes[routeId] = enabled
-	refreshMessageRouteOverridePresentation(self)
+	local ok, reason = self:ApplySemanticRouteChanges({ [routeId] = enabled })
+	if not ok then return false, reason end
 	return true, enabled
+end
+
+-- Explicit Semantic Routes batch only. Validate every edit before replacing
+-- the SavedVariables map; one retained-history pass then applies the final
+-- policy. A failed pass restores the original map and derived memberships.
+-- Shift > ANALYZE's exact-message corrections remain immediate and separate.
+function addon:ApplySemanticRouteChanges(changes)
+	if type(changes) ~= "table" then return false, "table-required" end
+	local requested = 0
+	for routeId, enabled in pairs(changes) do
+		if not semanticRouteIds[routeId] then return false, "invalid-route" end
+		if type(enabled) ~= "boolean" then return false, "boolean-required" end
+		requested = requested + 1
+	end
+	if requested == 0 then return true, 0 end
+	local settings = self:GetSmartSettings()
+	local previous = type(settings.semanticRoutes) == "table" and settings.semanticRoutes or nil
+	local candidate = copy(previous or {})
+	local changed = 0
+	for routeId, enabled in pairs(changes) do
+		if (candidate[routeId] ~= false) ~= enabled then
+			candidate[routeId] = enabled
+			changed = changed + 1
+		end
+	end
+	if changed == 0 then return true, 0 end
+	local engine, dock = self.MessageEngine, self.SmartDock
+	local unreadSnapshot
+	if engine and type(engine.CaptureRouteUnread) == "function" then
+		local captured, snapshot = pcall(engine.CaptureRouteUnread, engine)
+		if not captured then return false, "unread-snapshot-failed" end
+		unreadSnapshot = snapshot
+	end
+	settings.semanticRoutes = candidate
+	local ok = true
+	if engine and type(engine.ReclassifyAll) == "function" then
+		ok = pcall(engine.ReclassifyAll, engine)
+	end
+	if ok and dock and type(dock.RebuildActiveView) == "function" then
+		ok = pcall(dock.RebuildActiveView, dock)
+	end
+	if ok and unreadSnapshot and engine and type(engine.ReconcileRouteUnread) == "function" then
+		ok = pcall(engine.ReconcileRouteUnread, engine, unreadSnapshot)
+	end
+	if not ok then
+		settings.semanticRoutes = previous
+		local restored = true
+		if engine and type(engine.ReclassifyAll) == "function" then
+			restored = pcall(engine.ReclassifyAll, engine)
+		end
+		if unreadSnapshot and engine and type(engine.RestoreRouteUnread) == "function" then
+			pcall(engine.RestoreRouteUnread, engine, unreadSnapshot)
+		end
+		if dock and type(dock.RebuildActiveView) == "function" then
+			pcall(dock.RebuildActiveView, dock)
+		end
+		return false, restored and "apply-failed" or "rollback-failed"
+	end
+	return true, changed
 end
 
 local function refreshNewMessageIndicator(owner)

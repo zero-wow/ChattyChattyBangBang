@@ -3045,7 +3045,8 @@ local function captureHistoryUnreadTails(engine)
 	local dock = addon.SmartDock
 	if not dock then return nil end
 	local settings = addon:GetSmartSettings()
-	local tails = { unread = {}, pending = nil }
+	local tails = { unread = {}, pending = nil, originalUnread = {},
+		originalPending = dock.pendingVisible, activeView = dock.activeView }
 	local function tail(viewId, count)
 		count = math.max(0, math.floor(tonumber(count) or 0))
 		if count == 0 then return nil end
@@ -3064,12 +3065,67 @@ local function captureHistoryUnreadTails(engine)
 		return selected
 	end
 	for viewId, count in pairs(dock.unread or {}) do
-		if type(viewId) == "string" then tails.unread[viewId] = tail(viewId, count) end
+		if type(viewId) == "string" then
+			tails.originalUnread[viewId] = count
+			tails.unread[viewId] = tail(viewId, count)
+		end
 	end
 	if type(dock.activeView) == "string" then
 		tails.pending = tail(dock.activeView, dock.pendingVisible)
 	end
 	return tails
+end
+
+-- Semantic batch edits use the same unread tail snapshot as explicit history
+-- pruning. An old message only keeps an unread badge on a view where it still
+-- belongs after the final route policy; explicit Contents mirrors count too.
+function Engine:CaptureRouteUnread()
+	return captureHistoryUnreadTails(self)
+end
+
+function Engine:ReconcileRouteUnread(tails)
+	local dock = addon.SmartDock
+	if not dock or not tails or type(dock.unread) ~= "table" then return end
+	local settings = addon:GetSmartSettings()
+	local function visible(viewId, record)
+		if not (record and self.byId and self.byId[record.id] == record) then return false end
+		if type(dock.IsRecordVisibleInView) == "function" then
+			return dock:IsRecordVisibleInView(viewId, record, settings)
+		end
+		return self:RecordBelongsToView(record, viewId, settings)
+	end
+	for viewId, selected in pairs(tails.unread or {}) do
+		local count = 0
+		for record in pairs(selected) do
+			if visible(viewId, record) then count = count + 1 end
+		end
+		dock.unread[viewId] = count
+	end
+	if tails.activeView == dock.activeView and tails.pending then
+		local count = 0
+		for record in pairs(tails.pending) do
+			if visible(dock.activeView, record) then count = count + 1 end
+		end
+		dock.pendingVisible = count
+	end
+	if type(dock.RefreshRailState) == "function" then dock:RefreshRailState() end
+	if type(dock.RefreshNewMessageIndicator) == "function" then
+		dock:RefreshNewMessageIndicator()
+	end
+end
+
+function Engine:RestoreRouteUnread(tails)
+	local dock = addon.SmartDock
+	if not dock or not tails then return end
+	local unread = type(dock.unread) == "table" and dock.unread or {}
+	for viewId in pairs(unread) do unread[viewId] = nil end
+	for viewId, count in pairs(tails.originalUnread or {}) do unread[viewId] = count end
+	dock.unread = unread
+	dock.pendingVisible = tails.originalPending
+	if type(dock.RefreshRailState) == "function" then dock:RefreshRailState() end
+	if type(dock.RefreshNewMessageIndicator) == "function" then
+		dock:RefreshNewMessageIndicator()
+	end
 end
 
 local function reconcileHistoryUnreadTails(tails, removed)
@@ -3492,12 +3548,28 @@ local function boundedSearchNumber(value, defaultValue, maximum)
 	return math.max(1, math.min(maximum, math.floor(number)))
 end
 
+-- Explicit player HISTORY may include a small user-entered alt group. The
+-- list is never consulted for ordinary FIND, identity, trust, or block rules.
+local function exactHistorySenderSet(names, baseNeedle)
+	if type(names) ~= "table" or baseNeedle == "" then return nil end
+	local selected = {}
+	for index = 1, math.min(#names, 8) do
+		local name = names[index]
+		if type(name) == "string" and #name <= 80 and not string.find(name, "[%c|]") then
+			local needle = searchNeedle(name)
+			if needle ~= "" then selected[needle] = true end
+		end
+	end
+	return selected[baseNeedle] and selected or nil
+end
+
 function Engine:SearchHistory(query)
 	query = type(query) == "table" and query or {}
 	local result = { records = {}, scanned = 0, hasMore = false, nextCursor = nil }
 	local textNeedle = searchNeedle(query.text)
 	local senderNeedle = searchNeedle(query.sender)
 	local exactSender = query.exactSender == true
+	local exactSenders = exactSender and exactHistorySenderSet(query.senderNames, senderNeedle) or nil
 	local sourceNeedle = searchNeedle(query.source)
 	local onDate = trim(query.date)
 	if onDate ~= "" and not string.match(onDate, "^%d%d%d%d%-%d%d%-%d%d$") then
@@ -3542,7 +3614,8 @@ function Engine:SearchHistory(query)
 		local senderMatches
 		if exactSender then
 			senderMatches = senderNeedle ~= "" and type(record.sender) == "string"
-				and string.lower(record.sender) == senderNeedle
+				and (exactSenders and exactSenders[string.lower(record.sender)] == true
+					or not exactSenders and string.lower(record.sender) == senderNeedle)
 		else
 			senderMatches = containsSearchNeedle(record.sender, senderNeedle)
 		end

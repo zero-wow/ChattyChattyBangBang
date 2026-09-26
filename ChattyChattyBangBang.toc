@@ -36,6 +36,7 @@ ChattyChattyBangBang.lua
 Core\ClientAPI.lua
 Core\Settings.lua
 Core\PolicyTransfer.lua
+Core\AltNames.lua
 Core\ModuleCatalog.lua
 Core\Theme.lua
 Core\ChatColors.lua

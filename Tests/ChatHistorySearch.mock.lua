@@ -136,4 +136,17 @@ expect(#engine:SearchHistory({ sender = "ADA" }).records == 3
 	and #engine:SearchHistory({ sender = "", exactSender = true }).records == 0,
 	"ordinary sender substring search changed or empty exact sender exposed the full transcript")
 
+-- Only an explicit exact-sender HISTORY query can include a bounded linked
+-- name set. Ordinary FIND must ignore a caller-supplied alt-name list.
+search = engine:SearchHistory({ sender = "ADA", exactSender = true,
+	senderNames = { "Ada", "Adaline" } })
+expect(#search.records == 3 and search.records[1] == adaAgain,
+	"linked exact-sender history did not include both retained names")
+expect(#engine:SearchHistory({ sender = "Ada", exactSender = true,
+	senderNames = { "Adaline" } }).records == 2,
+	"a linked-name list without the selected sender bypassed the exact boundary")
+expect(#engine:SearchHistory({ sender = "Ada", exactSender = false,
+	senderNames = { "Seller-B" } }).records == 3,
+	"ordinary FIND adopted a linked-name override")
+
 print("Chat history search mock tests passed")

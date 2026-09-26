@@ -7451,6 +7451,7 @@ function Dock:DiscardPartialBuild()
 	self.searchCopyKind = nil
 	self.searchOpen = nil
 	self.searchSenderHistory = nil
+	self.searchSenderHistoryLinkedNames = nil
 	self.historyPager = nil
 	self.historyOlderButton = nil
 	self.historyNewerButton = nil
@@ -8764,10 +8765,16 @@ local function searchSingleLine(value)
 end
 
 function Dock:GetSearchQuery(cursor)
+	local sender = self.searchSenderEdit and self.searchSenderEdit:GetText() or ""
+	local exactHistorySender = self.searchSenderHistory ~= nil
+		and sender == self.searchSenderHistory
 	return {
 		text = self.searchTextEdit and self.searchTextEdit:GetText() or "",
-		sender = self.searchSenderEdit and self.searchSenderEdit:GetText() or "",
-		exactSender = self.searchSenderHistory ~= nil,
+		sender = sender,
+		exactSender = exactHistorySender,
+		-- Only the explicit player HISTORY action may expand this read-only
+		-- query. Ordinary FIND and manually edited BY filters stay unchanged.
+		senderNames = exactHistorySender and self.searchSenderHistoryLinkedNames or nil,
 		bookmarked = self.searchBookmarksOnly == true,
 		source = self.searchSourceEdit and self.searchSourceEdit:GetText() or "",
 		date = self.searchDateEdit and self.searchDateEdit:GetText() or "",
@@ -9065,7 +9072,8 @@ function Dock:RefreshSearchDrawer()
 			self.searchTitle:SetText(self.searchAlertMode
 				and (record and ("ALERT INBOX " .. tostring(index) .. "/" .. tostring(#records))
 					or "ALERT INBOX") or self.searchSenderHistory
-				and ("HISTORY: " .. searchSingleLine(self.searchSenderEdit
+				and ((self.searchSenderHistoryLinkedNames and "ALT HISTORY: " or "HISTORY: ")
+					.. searchSingleLine(self.searchSenderEdit
 					and self.searchSenderEdit:GetText() or self.searchSenderHistory))
 				or (record and ("FIND " .. tostring(index) .. "/" .. tostring(#records)) or "FIND"))
 		end
@@ -9167,6 +9175,7 @@ function Dock:ToggleSearchDrawer(forceClosed)
 			self.searchSenderEdit:SetText("")
 		end
 		self.searchSenderHistory = nil
+		self.searchSenderHistoryLinkedNames = nil
 	end
 	if open then
 		self:HideChatHelpMenu(false)
@@ -9185,8 +9194,16 @@ function Dock:OpenSenderHistory(record)
 	-- A player action opens the existing bounded retained-history reader. It is
 	-- a preview, never a tab switch, and cannot pull from the separate blocked
 	-- or held-whisper stores. Clear stale filters so this means that player only.
-	self.searchSenderHistory = record.sender
 	self.searchSenderEdit:SetText(record.sender)
+	self.searchSenderHistory = record.sender
+	self.searchSenderHistoryLinkedNames = nil
+	if not record.isBNet and addon.AltNames
+		and type(addon.AltNames.GetHistorySenderNames) == "function" then
+		local names = addon.AltNames:GetHistorySenderNames(record.sender)
+		if type(names) == "table" and #names > 1 then
+			self.searchSenderHistoryLinkedNames = names
+		end
+	end
 	if self.searchTextEdit then self.searchTextEdit:SetText("") end
 	if self.searchSourceEdit then self.searchSourceEdit:SetText("") end
 	if self.searchDateEdit then self.searchDateEdit:SetText("") end
@@ -9346,6 +9363,14 @@ function Dock:BuildSearchDrawer()
 	local sender = Theme:CreateEditBox(filterRows, 80, 19, false)
 	sender:SetPoint("TOPLEFT", filterRows, "TOPLEFT", 37, 0)
 	self.searchSenderEdit = sender
+	if sender.HookScript then
+		sender:HookScript("OnTextChanged", function()
+			if Dock.searchSenderHistory and sender:GetText() ~= Dock.searchSenderHistory then
+				Dock.searchSenderHistory = nil
+				Dock.searchSenderHistoryLinkedNames = nil
+			end
+		end)
+	end
 	self:BindDockControlTooltip(sender, "Sender", "Only messages from names containing this text.")
 	local sourceLabel = Theme:CreateText(filterRows, "GameFontNormalSmall", "textMuted")
 	sourceLabel:SetPoint("LEFT", sender, "RIGHT", 6, 0)
@@ -9498,6 +9523,7 @@ function Dock:Build()
 			Dock.searchSenderEdit:SetText("")
 		end
 		Dock.searchSenderHistory = nil
+		Dock.searchSenderHistoryLinkedNames = nil
 		if Dock.searchDrawer then Dock.searchDrawer:Hide() end
 		Dock:RestoreNativeChat()
 		Dock:CancelHeaderHoverRefresh()

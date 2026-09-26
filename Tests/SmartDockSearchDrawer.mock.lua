@@ -239,6 +239,25 @@ assert(dock.searchTitle.text == "HISTORY: Mira"
 assert(not dock:ToggleSearchDrawer(true) and dock.searchSenderHistory == nil
 	and dock.searchSenderEdit.text == "",
 	"closing player HISTORY left a sticky exact-sender filter in ordinary FIND")
+addon.AltNames = {
+	GetHistorySenderNames = function(_, sender)
+		return sender == "Mira" and { "Mira", "Neri" } or { sender }
+	end,
+}
+assert(dock:OpenSenderHistory({ sender = "Mira" })
+	and lastQuery.exactSender and #lastQuery.senderNames == 2
+	and lastQuery.senderNames[2] == "Neri"
+	and dock.searchTitle.text == "ALT HISTORY: Mira",
+	"linked player HISTORY did not request and clearly label its read-only name group")
+dock.searchSenderEdit:SetText("different")
+assert(not dock:GetSearchQuery().exactSender and dock:GetSearchQuery().senderNames == nil,
+	"manually edited FIND sender inherited the linked-name group")
+assert(not dock:ToggleSearchDrawer(true) and dock.searchSenderHistoryLinkedNames == nil,
+	"closing linked HISTORY left its name group attached")
+assert(dock:OpenSenderHistory({ sender = "Mira", isBNet = true })
+	and lastQuery.senderNames == nil,
+	"Battle.net sender inherited character alt associations")
+assert(not dock:ToggleSearchDrawer(true))
 
 -- One compact header control filters saved results or saves a previewed line.
 -- Reanchoring it leaves a visible four-pixel gutter from its neighbor and
