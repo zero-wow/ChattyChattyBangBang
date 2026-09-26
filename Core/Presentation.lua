@@ -511,6 +511,173 @@ local function formatTrustedTemplate(text, args)
 	return table.concat(output)
 end
 
+-- Plain web addresses are presentation-only links.  Never rewrite the stored
+-- record or Blizzard's existing |H...|h hyperlinks, and accept only a small
+-- ASCII URL alphabet so untrusted chat cannot inject WoW hyperlink markup.
+local URL_LINK_PREFIX = "ccbburl:"
+local MAX_COPY_URL_BYTES = 512
+local safeURLPunctuation = {}
+for index = 1, #"-._~:/?#[]@!$&'()*+,;=%" do
+	safeURLPunctuation[byte("-._~:/?#[]@!$&'()*+,;=%", index)] = true
+end
+
+local function isSafeCopyURL(url)
+	if type(url) ~= "string" or #url < 8 or #url > MAX_COPY_URL_BYTES then return false end
+	local normalized = lower(url)
+	local authority
+	if sub(normalized, 1, 7) == "http://" then
+		authority = sub(url, 8):match("^[^/?#]+")
+	elseif sub(normalized, 1, 8) == "https://" then
+		authority = sub(url, 9):match("^[^/?#]+")
+	elseif sub(normalized, 1, 4) == "www." then
+		authority = url:match("^[^/?#]+")
+	else
+		return false
+	end
+	if not authority or find(authority, "@", 1, true) then return false end
+	local host, port = authority:match("^([^:]+):?(%d*)$")
+	if not host or (port ~= "" and (tonumber(port) or 0) > 65535) then return false end
+	if not host:match("^[%w%-%.]+$") or not find(host, ".", 1, true)
+		or find(host, "..", 1, true) or sub(host, 1, 1) == "." or sub(host, -1) == "." then
+		return false
+	end
+	for label in host:gmatch("[^%.]+") do
+		if sub(label, 1, 1) == "-" or sub(label, -1) == "-" then return false end
+	end
+	local tld = host:match("%.([^%.]+)$")
+	if not tld or not (tld:match("^%a%a+$") or tld:match("^xn%-%-[%w%-]+$")) then return false end
+	for position = 1, #url do
+		local character = byte(url, position)
+		if not ((character >= 48 and character <= 57)
+			or (character >= 65 and character <= 90)
+			or (character >= 97 and character <= 122)
+			or safeURLPunctuation[character]) then
+			return false
+		end
+	end
+	return true
+end
+
+local function trimURLCandidate(candidate)
+	while #candidate > 0 do
+		local last = sub(candidate, -1)
+		local plainPunctuation = find(".,!?;:", last, 1, true)
+		local unmatchedBracket = false
+		if last == ")" or last == "]" then
+			local opening, closing = last == ")" and "%(" or "%[", last == ")" and "%)" or "%]"
+			local _, openingCount = candidate:gsub(opening, "")
+			local _, closingCount = candidate:gsub(closing, "")
+			unmatchedBracket = closingCount > openingCount
+		end
+		if not plainPunctuation and not unmatchedBracket and last ~= "}" then break end
+		candidate = sub(candidate, 1, -2)
+	end
+	return candidate
+end
+
+function Presentation:ColorizePlainTextWithURLs(text)
+	if type(text) ~= "string" or text == "" then return self:ColorizePlainText(text or "") end
+	local lowered = lower(text)
+	local output, cursor = {}, 1
+	while cursor <= #text do
+		local protocolAt = find(lowered, "https?://", cursor)
+		local wwwAt = find(lowered, "www%.", cursor)
+		local startAt
+		if protocolAt and wwwAt then startAt = min(protocolAt, wwwAt)
+		else startAt = protocolAt or wwwAt end
+		if not startAt then
+			output[#output + 1] = self:ColorizePlainText(sub(text, cursor))
+			break
+		end
+		local previous = startAt > 1 and sub(text, startAt - 1, startAt - 1) or ""
+		if previous:match("[%w_@]") then
+			output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt))
+			cursor = startAt + 1
+		else
+			local finish = startAt
+			while finish <= #text do
+				local character = sub(text, finish, finish)
+				if character:match("%s") or character == "|" or character == "<"
+					or character == ">" or character == '"' then break end
+				finish = finish + 1
+			end
+			local candidate = trimURLCandidate(sub(text, startAt, finish - 1))
+			if isSafeCopyURL(candidate) then
+				if startAt > cursor then
+					output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt - 1))
+				end
+				output[#output + 1] = self:Color("|H" .. URL_LINK_PREFIX .. candidate .. "|h" .. candidate .. "|h", "accent")
+				cursor = startAt + #candidate
+			else
+				output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt))
+				cursor = startAt + 1
+			end
+		end
+	end
+	return table.concat(output)
+end
+
+function Presentation:HandleCopyURLHyperlink(link)
+	if type(link) ~= "string" or sub(link, 1, #URL_LINK_PREFIX) ~= URL_LINK_PREFIX then return false end
+	local url = sub(link, #URL_LINK_PREFIX + 1)
+	if isSafeCopyURL(url) then self:ShowURLCopy(url) end
+	-- Even malformed Chatty links must never fall through to SetItemRef.
+	return true
+end
+
+function Presentation:ShowURLCopy(url)
+	if not isSafeCopyURL(url) or not _G.UIParent or not _G.CreateFrame then return false end
+	local popup = self.urlCopyPopup
+	if not popup then
+		popup = Theme:CreatePanel(UIParent, "surfaceRaised", "accent")
+		popup:SetFrameStrata("DIALOG")
+		popup:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+		popup:SetHeight(114)
+		popup:EnableMouse(true)
+		if popup.SetClampedToScreen then popup:SetClampedToScreen(true) end
+		local title = Theme:CreateText(popup, "GameFontNormalSmall", "goldBright")
+		title:SetPoint("TOPLEFT", popup, "TOPLEFT", 12, -12)
+		local close = Theme:CreateButton(popup, "X", 24, 24, false)
+		close:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -10, -8)
+		close:SetScript("OnClick", function() popup:Hide() end)
+		title:SetPoint("TOPRIGHT", close, "TOPLEFT", -8, 0)
+		if title.SetWordWrap then title:SetWordWrap(false) end
+		local hint = Theme:CreateText(popup, "GameFontNormalSmall", "textMuted")
+		hint:SetPoint("TOPLEFT", popup, "TOPLEFT", 12, -34)
+		hint:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -12, -34)
+		hint:SetHeight(26)
+		hint:SetJustifyH("LEFT")
+		local editBox = Theme:CreateEditBox(popup, 432, 30, false)
+		editBox:SetPoint("TOPLEFT", popup, "TOPLEFT", 12, -68)
+		editBox:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -12, -68)
+		editBox:SetMaxLetters(MAX_COPY_URL_BYTES)
+		editBox:SetScript("OnTextChanged", function(self, userInput)
+			if userInput and self:GetText() ~= popup.url then
+				self:SetText(popup.url or "")
+				self:HighlightText()
+			end
+		end)
+		editBox:SetScript("OnEscapePressed", function() popup:Hide() end)
+		editBox:SetScript("OnEnterPressed", function() popup:Hide() end)
+		popup:SetScript("OnHide", function() editBox:ClearFocus() end)
+		popup.editBox = editBox
+		popup.title = title
+		popup.hint = hint
+		self.urlCopyPopup = popup
+	end
+	local available = UIParent.GetWidth and tonumber(UIParent:GetWidth()) or nil
+	popup:SetWidth(max(160, min(460, (available or 500) - 32)))
+	popup.title:SetText(popup:GetWidth() < 280 and "COPY URL" or "COPY WEB ADDRESS")
+	popup.hint:SetText(popup:GetWidth() < 350 and "Ctrl+C to copy.\nNo auto-open."
+		or "Ctrl+C to copy. Chatty never opens web links.")
+	popup.url = url
+	popup.editBox:SetText(url)
+	popup:Show()
+	popup.editBox:SetFocus()
+	popup.editBox:HighlightText()
+	return true
+end
+
 local function nativeOutMessageFormat(chatType)
 	local util = _G.ChatFrameUtil
 	if type(util) ~= "table" or type(util.GetOutMessageFormatKey) ~= "function" then
@@ -684,7 +851,7 @@ function Presentation:ColorizePlainSegment(text, skipExpressionReplacement)
 			return self:ColorizeMessage(replaced, true)
 		end
 	end
-	return self:ColorizePlainText(text)
+	return self:ColorizePlainTextWithURLs(text)
 end
 
 local controlSequences = {

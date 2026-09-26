@@ -15,15 +15,25 @@ GetRealmName = function() return "Home Realm" end
 GetTime = function() return now end
 time = function() return 1700000000 + math.floor(now) end
 date = function() return "12:00" end
+local friendPresent = true
+local friendRosterReads, friendGuidReads, guildMemberReads = 0, 0, 0
 C_FriendList = {
-	IsFriend = function(guid) return guid == "Friend-GUID" end,
-	GetNumFriends = function() return 1 end,
-	GetFriendInfoByIndex = function() return { name = "Friend" } end,
+	IsFriend = function(guid)
+		friendGuidReads = friendGuidReads + 1
+		return friendPresent and guid == "Friend-GUID"
+	end,
+	GetNumFriends = function() return friendPresent and 1 or 0 end,
+	GetFriendInfoByIndex = function()
+		friendRosterReads = friendRosterReads + 1
+		return { name = "Friend" }
+	end,
 }
-IsInGuild = function() return true end
+local guildPresent = true
+IsInGuild = function() return guildPresent end
 GetNumGuildMembers = function() return 1 end
 local guildRosterRequests, legacyRosterReads, legacyRosterRequests = 0, 0, 0
 local guildRosterReady = false
+local guildMemberPresent = true
 GetGuildRosterInfo = function()
 	legacyRosterReads = legacyRosterReads + 1
 	return "LegacyGuildie"
@@ -31,16 +41,21 @@ end
 C_GuildInfo = {
 	GuildRoster = function() guildRosterRequests = guildRosterRequests + 1 end,
 	MemberExistsByName = function(name)
-		return name == "Guildie" or (guildRosterReady and name == "LoadingGuildie")
+		guildMemberReads = guildMemberReads + 1
+		return (guildMemberPresent and name == "Guildie")
+			or (guildRosterReady and name == "LoadingGuildie")
 	end,
 }
 GuildRoster = function() legacyRosterRequests = legacyRosterRequests + 1 end
+local socialEventFrame
 CreateFrame = function()
-	return {
+	local frame = {
 		SetScript = function(self, name, callback) self[name] = callback end,
-		RegisterEvent = function() return true end,
+		RegisterEvent = function(self, event) self[event] = true end,
 		UnregisterAllEvents = function() return true end,
 	}
+	if not socialEventFrame then socialEventFrame = frame end
+	return frame
 end
 ChatFrame_AddMessageEventFilter = function(event, filter)
 	filters[event] = filter
@@ -59,7 +74,12 @@ dofile("Core/MessageEngine.lua")
 local guard = ChattyChattyBangBang.WhisperGuard
 local engine = ChattyChattyBangBang.MessageEngine
 guard:Initialize()
+socialEventFrame = guard.socialEventFrame
 assert(guildRosterRequests == 1, "Retail guild roster was not requested at startup")
+assert(socialEventFrame and socialEventFrame.FRIENDLIST_UPDATE
+	and socialEventFrame.GUILD_ROSTER_UPDATE and socialEventFrame.PLAYER_GUILD_UPDATE,
+	"social roster invalidation events were not registered")
+socialEventFrame.OnEvent(socialEventFrame, "GUILD_ROSTER_UPDATE")
 engine:Initialize()
 engine:SetEnabled(true)
 assert(filters.CHAT_MSG_WHISPER and guard:GetStatus().filterActive,
@@ -99,12 +119,77 @@ assert(incoming("Friend", "friend hello", 2) == false, "friend was quarantined")
 assert(incoming("Guildie", "guild hello", 3) == false, "guild member was quarantined")
 assert(#engine:GetMessages() == 2 and legacyRosterReads == 0,
 	"trusted social whispers did not use Retail guild membership")
+local friendReadsBeforeRepeat, guildReadsBeforeRepeat = friendRosterReads, guildMemberReads
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "again", "Friend") == false
+	and filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "again", "Guildie") == false
+	and friendRosterReads == friendReadsBeforeRepeat
+	and guildMemberReads == guildReadsBeforeRepeat,
+	"repeat trusted whispers rescanned unchanged friend or guild rosters")
+local strangerFriendReads, strangerGuildReads = friendRosterReads, guildMemberReads
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "again", "Stranger") == true
+	and friendRosterReads == strangerFriendReads
+	and guildMemberReads == strangerGuildReads,
+	"repeat stranger whispers rescanned unchanged social rosters")
 assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "hello", "LoadingGuildie") == true,
 	"guild sender was trusted before the Retail roster was ready")
 guildRosterReady = true
+socialEventFrame.OnEvent(socialEventFrame, "GUILD_ROSTER_UPDATE")
 assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "hello", "LoadingGuildie") == false,
 	"guild sender was not trusted after the Retail roster became ready")
 assert(guildRosterRequests == 1, "guild roster request was not throttled")
+friendPresent = false
+socialEventFrame.OnEvent(socialEventFrame, "FRIENDLIST_UPDATE")
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "removed", "Friend") == true,
+	"removed friend stayed trusted after the friend roster changed")
+friendPresent = true
+socialEventFrame.OnEvent(socialEventFrame, "FRIENDLIST_UPDATE")
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "restored", "Friend") == false,
+	"added friend was not trusted after the friend roster changed")
+guildPresent = false
+socialEventFrame.OnEvent(socialEventFrame, "PLAYER_GUILD_UPDATE")
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "left guild", "Guildie") == true,
+	"guildmate stayed trusted after leaving the guild")
+guildPresent = true
+socialEventFrame.OnEvent(socialEventFrame, "PLAYER_GUILD_UPDATE")
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "rejoined", "Guildie") == false,
+	"guildmate was not trusted after rejoining the guild")
+local originalGuildMember = C_GuildInfo.MemberExistsByName
+C_GuildInfo.MemberExistsByName = function() error("guild roster unavailable") end
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "unavailable", "Guildie") == true,
+	"cached guild trust survived loss of the membership API")
+C_GuildInfo.MemberExistsByName = originalGuildMember
+socialEventFrame.OnEvent(socialEventFrame, "GUILD_ROSTER_UPDATE")
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "available", "Guildie") == false,
+	"guild lookup did not recover after the roster returned")
+guildMemberPresent = false
+socialEventFrame.OnEvent(socialEventFrame, "GUILD_ROSTER_UPDATE")
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "removed", "Guildie") == true,
+	"removed guild member stayed trusted after the guild roster changed")
+guildMemberPresent = true
+socialEventFrame.OnEvent(socialEventFrame, "GUILD_ROSTER_UPDATE")
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "restored", "Guildie") == false,
+	"restored guild member was not trusted after the guild roster changed")
+local originalFriendCount = C_FriendList.GetNumFriends
+C_FriendList.GetNumFriends = function() error("friend roster unavailable") end
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "unavailable", "Friend") == true,
+	"cached friend trust survived loss of the friend roster API")
+C_FriendList.GetNumFriends = originalFriendCount
+socialEventFrame.OnEvent(socialEventFrame, "FRIENDLIST_UPDATE")
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "available", "Friend") == false,
+	"friend lookup did not recover after the roster returned")
+local guidWhisper = { "hello", "GuidFriend" }
+guidWhisper[12] = "Friend-GUID"
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", unpack(guidWhisper, 1, 12)) == false,
+	"verified friend GUID was not trusted")
+guidWhisper[12] = "Unknown-GUID"
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", unpack(guidWhisper, 1, 12)) == true
+	and friendGuidReads >= 2,
+	"friend GUID cache was reused for a different sender identity")
+now = 103
+local expiredFriendReads = friendRosterReads
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "after TTL", "Friend") == false
+	and friendRosterReads > expiredFriendReads,
+	"trusted social cache did not expire after its short TTL")
 assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "hello", "LegacyGuildie") == true
 	and legacyRosterReads == 0,
 	"a negative Retail membership result was overridden by stale legacy roster data")
@@ -124,6 +209,27 @@ assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "hello", "UnknownGuildi
 	"unavailable legacy guild roster falsely trusted a sender")
 GetNumGuildMembers = function() return 1 end
 C_GuildInfo = retailGuildInfo
+socialEventFrame.OnEvent(socialEventFrame, "GUILD_ROSTER_UPDATE")
+for index = 1, 270 do
+	assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "bounded", "CacheStranger" .. index) == true,
+		"stranger was trusted while populating social cache")
+end
+assert(guard.socialCacheCount <= 256, "social cache exceeded its bounded capacity")
+local evictedFriendReads = friendRosterReads
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "evicted", "CacheStranger1") == true
+	and friendRosterReads > evictedFriendReads and guard.socialCacheCount <= 256,
+	"FIFO cache did not recheck an evicted sender within its fixed capacity")
+local cacheBeforeReset = guard.socialCacheCount
+assert(cacheBeforeReset > 0 and settings.whisperGuard.socialCache == nil,
+	"social cache was empty or persisted private roster data")
+guard:ResetForProfile()
+assert(guard.socialCacheCount == 0 and next(guard.socialCache) == nil,
+	"profile switch retained social cache entries")
+local pendingGuildReads = guildMemberReads
+assert(filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "pending", "RosterPending") == true
+	and filters.CHAT_MSG_WHISPER(nil, "CHAT_MSG_WHISPER", "pending", "RosterPending") == true
+	and guildMemberReads == pendingGuildReads + 2,
+	"a negative guild result was cached before its roster was ready")
 
 engine:Capture("CHAT_MSG_WHISPER_INFORM", "my inquiry", "Customer")
 assert(incoming("Customer", "answer", 4) == false,

@@ -94,6 +94,12 @@ local delegated
 ChatFrame_OnHyperlinkShow = function(_, link) delegated = link end
 dock:HandleHyperlink("item:123", "[Item]", "LeftButton")
 assert(delegated == "item:123", "non-player hyperlink no longer delegates to Blizzard")
+addon.Presentation.HandleCopyURLHyperlink = function(_, link)
+	return type(link) == "string" and link:match("^ccbburl:") ~= nil
+end
+delegated = nil
+dock:HandleHyperlink("ccbburl:not-a-valid-url", "invalid", "LeftButton")
+assert(delegated == nil, "Chatty copy link was sent to Blizzard's SetItemRef path")
 
 local source = assert(io.open("Core/SmartDock.lua", "rb")):read("*a"):gsub("\r\n", "\n")
 for _, label in ipairs({ "WHISPER", "INVITE", "ADD FRIEND", "CHATTY MUTE", "WOW IGNORE" }) do

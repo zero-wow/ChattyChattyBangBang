@@ -6,7 +6,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. Purple is for work that cannot be considered locally complete until Zero validates it in-game.
 
-**Progress:** 50/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+**Progress:** 57/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
 ## Add — missing capabilities
 
@@ -24,7 +24,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | A10 | 🔴 | Sender-history view from player actions. |
 | A11 | 🔴 | Bookmarks for retained messages. |
 | A12 | 🔴 | Copy one message and bounded transcript selection/export. |
-| A13 | 🔴 | Plain-text URL detection and copy affordance. |
+| A13 | 🟢 | Safe plain-text web addresses become copy-only links in displayed chat; saved text and WoW hyperlinks remain unchanged. Narrow-popup and link mocks pass. |
 | A14 | 🔴 | Optional hyperlink-hover previews in Smart Chat and Messenger. |
 | A15 | 🔴 | Invite-link actions in message text. |
 | A16 | 🔴 | Optional persistent unsent Messenger drafts. |
@@ -77,7 +77,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | I03 | 🟢 | Messenger queries bounded 200-record pages from a per-partner rank index instead of scanning the full transcript; frozen-page and source-cap mocks pass. |
 | I04 | 🟢 | Per-partner history index updates on append, eviction, retroblock, and reclassification; Contents exclusions and reroutes retain view-membership parity in focused mocks. |
 | I05 | 🔴 | Add an aggregate history budget across sources. |
-| I06 | 🔴 | Cache friend/guild membership for whisper decisions. |
+| I06 | 🟢 | Short-lived memory-only social trust cache cuts repeat roster checks, invalidates on roster/profile changes, and fails closed when membership is unverified; whisper mocks pass. |
 | I07 | 🟢 | Messenger's 12-tab limit evicts only disposable inactive tabs; drafts, unread, NEW, and unresolved sends stay protected. If all tabs are protected, a bounded notice explains why a new tab was not opened; focused mocks pass. |
 | I08 | 🔴 | Unify message visibility and unread-count membership logic. |
 | I09 | 🔴 | Batch route edits before retained-history reclassification. |
@@ -110,11 +110,11 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | P06 | 🟢 | Shared settings-control gap increased to 6px; existing right-gutter and viewport bounds mocks pass. |
 | P07 | 🟡 | Fixed-width labels now recheck clipping after font changes and reveal full text in tooltips; safe expansion/wrapping remains. |
 | P08 | 🟡 | Selected tabs now have a distinct hover state; keyboard-focus navigation and visible focus remain. |
-| P09 | 🔴 | Show Start Here's seven steps as a progress map. |
-| P10 | 🔴 | Use actual chat typography/colors/bands in Start Here preview. |
-| P11 | 🔴 | Let the Start Here preview grow when text wraps. |
-| P12 | 🔴 | Let Start Here warnings/notes grow with copy. |
-| P13 | 🔴 | Size Start Here option rows to their content. |
+| P09 | 🟢 | Start Here has seven clickable numbered steps in a compact two-row map; 700×500 bounds mocks pass. |
+| P10 | 🟢 | Start Here preview uses live chat typography/source colors and the chosen message-band treatment; appearance mocks pass. |
+| P11 | 🟢 | Wrapped preview lines grow their transcript surface and scrollable page; long-copy mocks pass. |
+| P12 | 🟢 | Hints, warnings, and notes grow with their copy instead of clipping; long-copy mocks pass. |
+| P13 | 🟢 | Option rows measure toggle labels and explanations, keeping the footer below them; wide-font layout mocks pass. |
 | P14 | 🔴 | Replace repeated explanatory prefixes with cleaner hierarchy. |
 | P15 | 🟢 | Messenger's Go to Bottom arrow has a 16×18 target in its own 26px right lane; compact-window layout mocks pass. |
 | P16 | 🔴 | Add units and breathing room to sale-ad numeric settings. |

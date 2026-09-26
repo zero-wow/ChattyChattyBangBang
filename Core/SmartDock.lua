@@ -7919,6 +7919,8 @@ function Dock:HandleHyperlink(link, text, button)
 		self:ShowPlayerActions(addon.MessageEngine:GetMessageById(recordId))
 		return
 	end
+	if Presentation and Presentation.HandleCopyURLHyperlink
+		and Presentation:HandleCopyURLHyperlink(link) then return end
 	if ChatFrame_OnHyperlinkShow then
 		ChatFrame_OnHyperlinkShow(self.display, link, text, button)
 	elseif SetItemRef then

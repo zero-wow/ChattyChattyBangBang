@@ -2227,6 +2227,8 @@ function Manager:BuildWindow()
 		window:RefreshMessageScrollbar(true)
 	end)
 	display:SetScript("OnHyperlinkClick", function(_, link, text, button)
+		if Presentation and Presentation.HandleCopyURLHyperlink
+			and Presentation:HandleCopyURLHyperlink(link) then return end
 		if ChatFrame_OnHyperlinkShow then
 			ChatFrame_OnHyperlinkShow(display, link, text, button)
 		elseif SetItemRef then

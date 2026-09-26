@@ -11,9 +11,16 @@ local MAX_TEXT = 512
 local MAX_TRUSTED = 512
 local MAX_BLOCKED = 512
 local RETENTION_SECONDS = 7 * 86400
+local MAX_SOCIAL_CACHE = 256
+local TRUSTED_CACHE_SECONDS = 2
+local STRANGER_CACHE_SECONDS = 5
 
 local function epoch()
 	return time and (tonumber(time()) or 0) or 0
+end
+
+local function socialClock()
+	return GetTime and (tonumber(GetTime()) or epoch()) or epoch()
 end
 
 local function trim(value, limit)
@@ -125,33 +132,41 @@ local function isFriend(name, guid)
 	if type(guid) == "string" and guid ~= "" and _G.C_FriendList
 		and type(_G.C_FriendList.IsFriend) == "function" then
 		local ok, result = pcall(_G.C_FriendList.IsFriend, guid)
-		if ok and result == true then return true end
+		if ok and result == true then return true, true end
 	end
 	if _G.C_FriendList and type(_G.C_FriendList.GetNumFriends) == "function"
 		and type(_G.C_FriendList.GetFriendInfoByIndex) == "function" then
 		local ok, count = pcall(_G.C_FriendList.GetNumFriends)
-		if ok then
+		if ok and type(count) == "number" and count >= 0 then
 			local target = normalizedName(name)
-			for index = 1, math.min(tonumber(count) or 0, 500) do
+			local complete = count <= 500
+			for index = 1, math.min(count, 500) do
 				local success, info = pcall(_G.C_FriendList.GetFriendInfoByIndex, index)
-				if success and type(info) == "table" and normalizedName(info.name) == target then
-					return true
+				local candidate = success and type(info) == "table" and normalizedName(info.name)
+				if candidate and candidate == target then
+					return true, true
 				end
+				if not candidate then complete = false end
 			end
+			if complete then return false, true end
 		end
 	end
 	if type(_G.GetNumFriends) == "function" and type(_G.GetFriendInfo) == "function" then
 		local ok, count = pcall(_G.GetNumFriends)
-		if ok then
+		if ok and type(count) == "number" and count >= 0 then
 			local target = normalizedName(name)
-			for index = 1, math.min(tonumber(count) or 0, 500) do
+			local complete = count <= 500
+			for index = 1, math.min(count, 500) do
 				local success, info = pcall(_G.GetFriendInfo, index)
 				local candidate = type(info) == "table" and info.name or info
-				if success and normalizedName(candidate) == target then return true end
+				candidate = success and normalizedName(candidate)
+				if candidate and candidate == target then return true, true end
+				if not candidate then complete = false end
 			end
+			if complete then return false, true end
 		end
 	end
-	return false
+	return false, false
 end
 
 local function inGuild()
@@ -172,26 +187,106 @@ local function requestGuildRoster(self)
 end
 
 local function isGuildmate(self, name)
-	if not inGuild() then return false end
+	if not inGuild() then return false, true end
 	requestGuildRoster(self)
 	local guildInfo = _G.C_GuildInfo
 	if guildInfo and type(guildInfo.MemberExistsByName) == "function" then
 		local ok, exists = pcall(guildInfo.MemberExistsByName, name)
 		-- An unavailable or still-loading roster is not proof of membership.
-		return ok and exists == true
+		return ok and exists == true,
+			ok and type(exists) == "boolean" and (exists == true or self.guildRosterSeen == true)
 	end
 	-- Older clients expose only the indexed guild roster globals.
 	if type(_G.GetNumGuildMembers) ~= "function" or type(_G.GetGuildRosterInfo) ~= "function" then
-		return false
+		return false, false
 	end
 	local target = normalizedName(name)
 	local ok, count = pcall(_G.GetNumGuildMembers)
-	if not ok then return false end
-	for index = 1, math.min(tonumber(count) or 0, 1000) do
+	if not ok or type(count) ~= "number" or count < 0 then return false, false end
+	local complete = count > 0 and count <= 1000
+	for index = 1, math.min(count, 1000) do
 		local success, candidate = pcall(_G.GetGuildRosterInfo, index)
-		if success and normalizedName(candidate) == target then return true end
+		candidate = success and normalizedName(candidate)
+		if candidate and candidate == target then return true, true end
+		if not candidate then complete = false end
 	end
-	return false
+	return false, complete and self.guildRosterSeen == true
+end
+
+local SOCIAL_API_FIELDS = {
+	"friendList", "isFriend", "friendCount", "friendInfo", "legacyFriendCount",
+	"legacyFriendInfo", "guildInfo", "isInGuild", "guildMember", "guildCount", "guildRosterInfo",
+}
+
+local function socialApis()
+	local friends, guild = _G.C_FriendList, _G.C_GuildInfo
+	return {
+		friendList = friends, isFriend = friends and friends.IsFriend,
+		friendCount = friends and friends.GetNumFriends,
+		friendInfo = friends and friends.GetFriendInfoByIndex,
+		legacyFriendCount = _G.GetNumFriends, legacyFriendInfo = _G.GetFriendInfo,
+		guildInfo = guild, isInGuild = _G.IsInGuild,
+		guildMember = guild and guild.MemberExistsByName,
+		guildCount = _G.GetNumGuildMembers, guildRosterInfo = _G.GetGuildRosterInfo,
+	}
+end
+
+local function sameSocialApis(left, right)
+	if not left or not right then return false end
+	for _, field in ipairs(SOCIAL_API_FIELDS) do
+		if left[field] ~= right[field] then return false end
+	end
+	return true
+end
+
+function Guard:InvalidateSocialCache()
+	self.socialCache = {}
+	self.socialCacheCount = 0
+	self.socialCacheOrder = {}
+	self.socialCacheCursor = 0
+	self.socialCacheApis = nil
+end
+
+local function cachedSocialTrust(self, name, guid, key)
+	local apis = socialApis()
+	if not sameSocialApis(self.socialCacheApis, apis) then
+		self:InvalidateSocialCache()
+		self.socialCacheApis = apis
+	end
+	local cache = self.socialCache
+	local cacheKey = key .. "\001" .. (type(guid) == "string" and guid or "")
+	local now = socialClock()
+	local entry = cache[cacheKey]
+	if entry then
+		local ttl = entry.trusted and TRUSTED_CACHE_SECONDS or STRANGER_CACHE_SECONDS
+		if now >= entry.at and now - entry.at < ttl
+			and (entry.kind ~= "guild" or inGuild()) then
+			return entry.trusted
+		end
+		cache[cacheKey] = nil
+		self.socialCacheCount = self.socialCacheCount - 1
+	end
+	local friend, friendReady = isFriend(name, guid)
+	local guild, guildReady = false, false
+	if not friend then guild, guildReady = isGuildmate(self, name) end
+	local trusted = friend or guild
+	-- Never cache a negative decision made from an unavailable or partial
+	-- roster. Positive entries are short-lived and roster events invalidate them.
+	if trusted or (friendReady and guildReady) then
+		local slot = self.socialCacheCursor % MAX_SOCIAL_CACHE + 1
+		local displaced = self.socialCacheOrder[slot]
+		if displaced and cache[displaced] and cache[displaced].slot == slot then
+			cache[displaced] = nil
+			self.socialCacheCount = self.socialCacheCount - 1
+		end
+		self.socialCacheCursor = slot
+		self.socialCacheOrder[slot] = cacheKey
+		cache[cacheKey] = { trusted = trusted and true or false,
+			kind = friend and "friend" or (guild and "guild" or nil),
+			at = now, slot = slot }
+		self.socialCacheCount = self.socialCacheCount + 1
+	end
+	return trusted
 end
 
 local function remember(guard, message, sender, key, event, accountId, lineId)
@@ -233,9 +328,7 @@ local function shouldHoldIncoming(self, message, sender, guid)
 	if not key or type(message) ~= "string" then return false end
 	if guard.blocked[key] then return true, "blocked", key end
 	if guard.trusted[key] then return false end
-	local ok, trustedSocial = pcall(function()
-		return isFriend(sender, guid) or isGuildmate(self, sender)
-	end)
+	local ok, trustedSocial = pcall(cachedSocialTrust, self, sender, guid, key)
 	if ok and trustedSocial then return false end
 	return true, "quarantine", key
 end
@@ -363,6 +456,7 @@ end
 function Guard:SetEnabled(enabled)
 	local shouldEnable = enabled and true or false
 	if shouldEnable == self.enabled then return true end
+	self:InvalidateSocialCache()
 	if shouldEnable then
 		local addFilter, removeFilter = messageFilterAPI()
 		if type(addFilter) ~= "function" then
@@ -411,12 +505,39 @@ end
 function Guard:Initialize()
 	settings()
 	self.unreadable = 0
+	self:InvalidateSocialCache()
+	self.guildRosterSeen = false
+	if type(_G.CreateFrame) == "function" and not self.socialEventFrame then
+		local ok, frame = pcall(_G.CreateFrame, "Frame")
+		if ok and frame and type(frame.SetScript) == "function"
+			and type(frame.RegisterEvent) == "function" then
+			frame:SetScript("OnEvent", function(_, event)
+				Guard:InvalidateSocialCache()
+				if event == "GUILD_ROSTER_UPDATE" then
+					Guard.guildRosterSeen = true
+				elseif event == "PLAYER_GUILD_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
+					Guard.guildRosterSeen = false
+				end
+				if event == "PLAYER_GUILD_UPDATE" and inGuild() then
+					requestGuildRoster(Guard)
+				end
+			end)
+			for _, event in ipairs({ "FRIENDLIST_UPDATE", "GUILD_ROSTER_UPDATE",
+			"PLAYER_GUILD_UPDATE", "PLAYER_ENTERING_WORLD" }) do
+				pcall(frame.RegisterEvent, frame, event)
+			end
+			self.socialEventFrame = frame
+		end
+	end
 	if inGuild() then requestGuildRoster(self) end
 	return true
 end
 
 function Guard:ResetForProfile()
 	settings()
+	self:InvalidateSocialCache()
+	self.guildRosterSeen = false
+	self.guildRosterRequestAt = nil
 	return true
 end
 

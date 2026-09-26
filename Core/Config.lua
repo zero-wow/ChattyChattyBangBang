@@ -13505,6 +13505,91 @@ local function getDeskTabOptions()
 	return result
 end
 
+local deskStepLabels = {
+	"1  START", "2  TABS", "3  SORT", "4  SPAM",
+	"5  PRIVATE", "6  ALERTS", "7  LOOK",
+}
+
+-- Start Here's FontStrings have a fixed reading width, not a fixed height.
+-- GetStringHeight includes the live WoW font and wrapping; the fallback keeps
+-- stripped clients and no-client layout tests safe when it is unavailable.
+local function measureDeskText(fontString, minimum)
+	minimum = minimum or 16
+	if fontString.SetHeight then fontString:SetHeight(1000) end
+	local height = fontString.GetStringHeight and tonumber(fontString:GetStringHeight()) or nil
+	if not height or height <= 0 then
+		local width = fontString.GetWidth and tonumber(fontString:GetWidth()) or PAGE_WIDTH
+		local size
+		if fontString.GetFont then local _, measuredSize = fontString:GetFont(); size = measuredSize end
+		local glyph = math.max(6, (tonumber(size) or 12) * 0.58)
+		local lines = 0
+		for segment in (tostring(fontString:GetText() or "") .. "\n"):gmatch("([^\n]*)\n") do
+			lines = lines + math.max(1, math.ceil(#segment * glyph / math.max(1, width)))
+		end
+		height = lines * minimum
+	end
+	height = math.max(minimum, math.ceil(height + 2))
+	if fontString.SetHeight then fontString:SetHeight(height) end
+	return height
+end
+
+local function placeDeskTopLeft(region, parent, x, top)
+	region:ClearAllPoints()
+	region:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -top)
+end
+
+local function applyDeskPreviewAppearance(config, settings, taskId)
+	local display = addon.SmartDock and addon.SmartDock.display
+	local fontPath, fontSize, fontFlags
+	if display and display.GetFont then
+		fontPath, fontSize, fontFlags = display:GetFont()
+	end
+	local liveFont = fontPath ~= nil
+	if not fontPath then
+		if _G.ChatFontNormal and _G.ChatFontNormal.GetFont then
+			fontPath, fontSize, fontFlags = _G.ChatFontNormal:GetFont()
+		end
+	end
+	if not liveFont and type(addon.GetSmartChatTextAppearance) == "function" then
+		local ok, appearance = pcall(addon.GetSmartChatTextAppearance, addon, "global")
+		if ok and type(appearance) == "table" then
+			local chosenSize = tonumber(appearance.size) or 0
+			if chosenSize > 0 then fontSize = chosenSize end
+			if appearance.font and type(addon.ResolveSmartChatTextFont) == "function" then
+				local resolved, path = pcall(addon.ResolveSmartChatTextFont, addon, appearance.font)
+				if resolved and path then fontPath = path end
+			end
+		end
+	end
+	if fontPath then
+		for _, line in ipairs({ config.deskPreviewFirst, config.deskPreviewSecond }) do
+			if line.SetFont then pcall(line.SetFont, line, fontPath, fontSize or 12, fontFlags or "") end
+		end
+	end
+
+	local events = taskId == "deskPrivate" and { "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER" }
+		or { "CHAT_MSG_CHANNEL", taskId == "desk" and "CHAT_MSG_SYSTEM" or "CHAT_MSG_CHANNEL" }
+	for index, line in ipairs({ config.deskPreviewFirst, config.deskPreviewSecond }) do
+		local r, g, b
+		if type(addon.GetChatColorForRecord) == "function" then
+			local ok, red, green, blue = pcall(addon.GetChatColorForRecord, addon, { event = events[index] })
+			if ok then r, g, b = red, green, blue end
+		end
+		if not r then r, g, b = Theme:GetColor(index == 1 and "text" or "textMuted") end
+		line:SetTextColor(r, g, b, 1)
+	end
+	local bands = settings.dock and settings.dock.messageBands or {}
+	local color = type(bands.color) == "table" and bands.color or nil
+	local r, g, b = 0.085, 0.112, 0.158
+	if color and (color.theme or color.colorway) then
+		r, g, b = Theme:GetColor(color.theme or color.colorway)
+	elseif color then
+		r, g, b = tonumber(color.r) or r, tonumber(color.g) or g, tonumber(color.b) or b
+	end
+	config.deskPreviewBand:SetVertexColor(r, g, b, math.max(0, math.min(1, tonumber(bands.alpha) or 0.5)))
+	if bands.enabled == true then config.deskPreviewBand:Show() else config.deskPreviewBand:Hide() end
+end
+
 function Config:RefreshDeskPage()
 	if not self.deskPage then return end
 	local taskId = self.deskTask or "desk"
@@ -13519,6 +13604,14 @@ function Config:RefreshDeskPage()
 	self.deskHint:SetText(task.hint)
 	self.deskTaskCount:SetText(taskId == "deskTabs" and ("TABS  " .. self.deskTabPage .. " / " .. pageCount)
 		or ("STEP  " .. (function() for i = 1, #deskTaskOrder do if deskTaskOrder[i] == taskId then return i end end return 1 end)() .. " / " .. #deskTaskOrder))
+	local hintHeight = measureDeskText(self.deskHint, 18)
+	local stepsTop = 29 + hintHeight + 8
+	for index, button in ipairs(self.deskSteps) do
+		local column = (index - 1) % 4
+		local row = math.floor((index - 1) / 4)
+		placeDeskTopLeft(button, self.deskPage, PAGE_GUTTER + column * 160, stepsTop + row * 28)
+		setChoiceStyle(button, deskTaskOrder[index] == taskId, "textMuted")
+	end
 	for index = 1, #self.deskRows do
 		local row = self.deskRows[index]
 		local option = options[first + index - 1]
@@ -13580,6 +13673,7 @@ function Config:RefreshDeskPage()
 	}
 	self.deskPreviewFirst:SetText(preview[taskId][1])
 	self.deskPreviewSecond:SetText(preview[taskId][2])
+	applyDeskPreviewAppearance(self, settings, taskId)
 	local deskNote = "Changes apply immediately. These examples show the effect of your current choices, not actual chat messages."
 	if taskId == "desk" then
 		deskNote = "For restricted lines, Chatty tries to reveal Blizzard chat briefly. Some lines can still be missed; saved history cannot recreate lines never received."
@@ -13597,6 +13691,40 @@ function Config:RefreshDeskPage()
 		end
 	end
 	self.deskNote:SetText(deskNote)
+	if Theme.RegisterText then Theme:RegisterText(self.deskNote, taskId == "desk" and "warning" or "textMuted") end
+	local previewTop = stepsTop + 2 * 28 + 8
+	placeDeskTopLeft(self.deskTranscript, self.deskPage, PAGE_GUTTER, previewTop)
+	local firstTop = 28
+	local firstHeight = measureDeskText(self.deskPreviewFirst, 18)
+	local secondTop = firstTop + firstHeight + 4
+	placeDeskTopLeft(self.deskPreviewSecond, self.deskTranscript, 10, secondTop)
+	local secondHeight = measureDeskText(self.deskPreviewSecond, 18)
+	local transcriptHeight = math.max(84, secondTop + secondHeight + 10)
+	self.deskTranscript:SetHeight(transcriptHeight)
+	self.deskPreviewBand:ClearAllPoints()
+	self.deskPreviewBand:SetPoint("TOPLEFT", self.deskTranscript, "TOPLEFT", 6, -(secondTop - 2))
+	self.deskPreviewBand:SetWidth(PAGE_WIDTH - 12)
+	self.deskPreviewBand:SetHeight(secondHeight + 4)
+	local noteTop = previewTop + transcriptHeight + 12
+	placeDeskTopLeft(self.deskNote, self.deskPage, PAGE_GUTTER, noteTop)
+	local noteHeight = measureDeskText(self.deskNote, 18)
+	local rowTop = noteTop + noteHeight + 12
+	for index, row in ipairs(self.deskRows) do
+		if row.option then
+			placeDeskTopLeft(row, self.deskPage, PAGE_GUTTER, rowTop)
+			local toggleHeight = math.max(20, measureDeskText(row.toggle.label, 18) + 2)
+			row.toggle:SetHeight(toggleHeight)
+			local doesTop = 8 + toggleHeight + 7
+			placeDeskTopLeft(row.does, row, 26, doesTop)
+			local doesHeight = measureDeskText(row.does, 16)
+			local noticesTop = doesTop + doesHeight + 3
+			placeDeskTopLeft(row.notices, row, 26, noticesTop)
+			local noticesHeight = measureDeskText(row.notices, 16)
+			local rowHeight = math.max(70, noticesTop + noticesHeight + 9)
+			row:SetHeight(rowHeight)
+			rowTop = rowTop + rowHeight + 4
+		end
+	end
 	self.deskAdvancedButton:SetLabel("MORE " .. (task.advanced == "colorways" and "THEMES" or "OPTIONS"))
 	if self.deskReviewButton then
 		if taskId == "deskPrivate" then
@@ -13627,6 +13755,16 @@ function Config:RefreshDeskPage()
 			and "FINISH SETUP" or "BACK TO START"
 	end
 	self.deskNext:SetLabel(nextLabel)
+	local actionsTop = rowTop + 8
+	placeDeskTopLeft(self.deskReviewButton, self.deskPage, PAGE_GUTTER, actionsTop)
+	self.deskAdvancedButton:ClearAllPoints()
+	self.deskAdvancedButton:SetPoint("TOPRIGHT", self.deskPage, "TOPRIGHT", -PAGE_GUTTER, -actionsTop)
+	placeDeskTopLeft(self.deskPrevious, self.deskPage, PAGE_GUTTER, actionsTop + 32)
+	self.deskNext:ClearAllPoints()
+	self.deskNext:SetPoint("TOPRIGHT", self.deskPage, "TOPRIGHT", -PAGE_GUTTER, -(actionsTop + 32))
+	if self.activePage == "desk" and self.content and self.content.SetHeight then
+		self.content:SetHeight(math.max(CONFIG_CONTENT_HEIGHT, actionsTop + 32 + 22 + 14))
+	end
 	self:RefreshNavigation()
 end
 
@@ -13646,31 +13784,54 @@ function Config:BuildDeskPage()
 	local hint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
 	hint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -29)
 	hint:SetWidth(PAGE_WIDTH)
+	hint:SetJustifyH("LEFT")
+	if hint.SetWordWrap then hint:SetWordWrap(true) end
 	self.deskHint = hint
+	self.deskSteps = {}
+	for index, taskId in ipairs(deskTaskOrder) do
+		local button = Theme:CreateButton(page, deskStepLabels[index], 154, 22, false)
+		local column = (index - 1) % 4
+		local row = math.floor((index - 1) / 4)
+		button:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER + column * 160, -55 - row * 28)
+		setActionStyle(button, "choice", deskTasks[taskId].title, deskTasks[taskId].hint)
+		button:SetScript("OnClick", function() Config:ShowPage(taskId) end)
+		self.deskSteps[index] = button
+	end
 
 	local transcript = createQuietShellPanel(page, "inset")
-	transcript:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -PAGE_TOP)
+	transcript:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -119)
 	transcript:SetSize(PAGE_WIDTH, 84)
+	self.deskTranscript = transcript
 	local transcriptLabel = Theme:CreateText(transcript, "GameFontNormalSmall", "gold")
 	transcriptLabel:SetPoint("TOPLEFT", transcript, "TOPLEFT", 10, -8)
 	transcriptLabel:SetText("SETTING PREVIEW  /  EXAMPLE CHAT")
 	self.deskPreviewFirst = Theme:CreateText(transcript, "GameFontHighlightSmall", "text")
 	self.deskPreviewFirst:SetPoint("TOPLEFT", transcript, "TOPLEFT", 10, -29)
 	self.deskPreviewFirst:SetWidth(PAGE_WIDTH - 20)
+	self.deskPreviewFirst:SetJustifyH("LEFT")
+	if self.deskPreviewFirst.SetWordWrap then self.deskPreviewFirst:SetWordWrap(true) end
 	self.deskPreviewSecond = Theme:CreateText(transcript, "GameFontHighlightSmall", "textMuted")
 	self.deskPreviewSecond:SetPoint("TOPLEFT", transcript, "TOPLEFT", 10, -49)
 	self.deskPreviewSecond:SetWidth(PAGE_WIDTH - 20)
+	self.deskPreviewSecond:SetJustifyH("LEFT")
+	if self.deskPreviewSecond.SetWordWrap then self.deskPreviewSecond:SetWordWrap(true) end
+	local previewBand = transcript:CreateTexture(nil, "BACKGROUND")
+	previewBand:SetTexture("Interface\\Buttons\\WHITE8x8")
+	previewBand:Hide()
+	self.deskPreviewBand = previewBand
 
 	local instruction = Theme:CreateText(page, "GameFontHighlightSmall", "warning")
-	instruction:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -140)
-	instruction:SetSize(PAGE_WIDTH, 30)
+	instruction:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -215)
+	instruction:SetWidth(PAGE_WIDTH)
 	instruction:SetJustifyH("LEFT")
+	if instruction.SetJustifyV then instruction:SetJustifyV("TOP") end
+	if instruction.SetWordWrap then instruction:SetWordWrap(true) end
 	self.deskNote = instruction
 	self.deskRows = {}
 	for index = 1, 4 do
 		local row = CreateFrame("Frame", nil, page)
-		row:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -174 - ((index - 1) * 66))
-		row:SetSize(PAGE_WIDTH, 64)
+		row:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -260 - ((index - 1) * 74))
+		row:SetSize(PAGE_WIDTH, 70)
 		local separator = row:CreateTexture(nil, "ARTWORK")
 		separator:SetTexture("Interface\\Buttons\\WHITE8x8")
 		separator:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
@@ -13680,6 +13841,8 @@ function Config:BuildDeskPage()
 		row.toggle = Theme:CreateCompactToggle(row, "", PAGE_WIDTH - 12)
 		row.toggle:SetPoint("TOPLEFT", row, "TOPLEFT", 6, -8)
 		row.toggle:SetHeight(18)
+		if row.toggle.label.SetWordWrap then row.toggle.label:SetWordWrap(true) end
+		if row.toggle.label.SetJustifyV then row.toggle.label:SetJustifyV("MIDDLE") end
 		row.toggle.OnValueChanged = function(_, value)
 			if row.option then row.option.set(value, addon:GetSmartSettings()) end
 			Config:RefreshDeskPage()
@@ -13687,13 +13850,19 @@ function Config:BuildDeskPage()
 		row.does = Theme:CreateText(row, "GameFontHighlightSmall", "textMuted")
 		row.does:SetPoint("TOPLEFT", row, "TOPLEFT", 26, -32)
 		row.does:SetWidth(PAGE_WIDTH - 36)
+		row.does:SetJustifyH("LEFT")
+		if row.does.SetJustifyV then row.does:SetJustifyV("TOP") end
+		if row.does.SetWordWrap then row.does:SetWordWrap(true) end
 		row.notices = Theme:CreateText(row, "GameFontHighlightSmall", "text")
 		row.notices:SetPoint("TOPLEFT", row, "TOPLEFT", 26, -47)
 		row.notices:SetWidth(PAGE_WIDTH - 36)
+		row.notices:SetJustifyH("LEFT")
+		if row.notices.SetJustifyV then row.notices:SetJustifyV("TOP") end
+		if row.notices.SetWordWrap then row.notices:SetWordWrap(true) end
 		self.deskRows[index] = row
 	end
 	self.deskPrevious = Theme:CreateTightButton(page, "< PREVIOUS", 22, false)
-	self.deskPrevious:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", PAGE_GUTTER, 8)
+	self.deskPrevious:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -470)
 	self.deskPrevious:SetScript("OnClick", function()
 		local taskId = Config.deskTask or "desk"
 		if taskId == "deskTabs" and (Config.deskTabPage or 1) > 1 then
@@ -13706,7 +13875,7 @@ function Config:BuildDeskPage()
 		end
 	end)
 	self.deskNext = Theme:CreateTightButton(page, "NEXT >", 22, true)
-	self.deskNext:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", -PAGE_GUTTER, 8)
+	self.deskNext:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAGE_GUTTER, -470)
 	self.deskNext:SetScript("OnClick", function()
 		local taskId = Config.deskTask or "desk"
 		if taskId == "deskTabs" then
@@ -13728,14 +13897,14 @@ function Config:BuildDeskPage()
 		end
 	end)
 	self.deskAdvancedButton = Theme:CreateTightButton(page, "MORE OPTIONS", 22, false)
-	self.deskAdvancedButton:SetPoint("RIGHT", self.deskNext, "LEFT", -10, 0)
+	self.deskAdvancedButton:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAGE_GUTTER, -438)
 	self.deskAdvancedButton:SetScript("OnClick", function()
 		local task = deskTasks[Config.deskTask or "desk"] or deskTasks.desk
 		Config:SetMode("advanced")
 		Config:ShowPage(task.advanced)
 	end)
 	self.deskReviewButton = Theme:CreateTightButton(page, "REVIEW HELD WHISPERS", 22, false)
-	self.deskReviewButton:SetPoint("RIGHT", self.deskAdvancedButton, "LEFT", -10, 0)
+	self.deskReviewButton:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -438)
 	self.deskReviewButton:SetScript("OnClick", function()
 		local taskId = Config.deskTask
 		Config:SetMode("advanced")
@@ -13811,6 +13980,9 @@ function Config:ShowPage(id)
 	end
 	for _, page in pairs(self.pages) do
 		page:Hide()
+	end
+	if id ~= "desk" and self.content and self.content.SetHeight then
+		self.content:SetHeight(CONFIG_CONTENT_HEIGHT)
 	end
 	if not self.pages[id] then
 		builders[id](self)
@@ -13971,12 +14143,15 @@ function Config:ReloadProfile()
 	end
 	self.pages = {}
 	self.deskPage = nil
+	self.deskSteps = nil
 	self.deskRows = nil
 	self.deskHeading = nil
 	self.deskHint = nil
 	self.deskTaskCount = nil
 	self.deskPreviewFirst = nil
 	self.deskPreviewSecond = nil
+	self.deskPreviewBand = nil
+	self.deskTranscript = nil
 	self.deskNote = nil
 	self.deskPrevious = nil
 	self.deskNext = nil
@@ -15006,6 +15181,7 @@ function Config:BuildFrame()
 
 	Theme:RegisterRefreshCallback(function()
 		if Config.frame then
+			Config:RefreshDeskPage()
 			Config:RefreshNavigation()
 			Config:RefreshColorwayCards()
 			Config:RefreshKeywordColorsPage(true)
