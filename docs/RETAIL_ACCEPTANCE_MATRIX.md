@@ -38,6 +38,13 @@ automate `/reload` or scan game logs for it.
 | M19 | Yes | After a manual in-game `/reload`, settings and retained history return; no duplicate capture, stale fallback, or startup-only error. | ⬜ | — |
 | M20 | No | High-traffic play with other common addons remains responsive and readable; test conflict warnings and fallback behavior. | ⬜ | — |
 | M21 | Yes | A first-contact Battle.net stranger is held by account ID before normal chat/Messenger; a verified friend bypasses review, and approval releases exactly one line. Test same display name on two IDs and an unavailable friend lookup. | ⬜ | — |
+| M22 | Yes | Change one source limit and the optional total history cap; only explicitly reduced history is pruned, oldest-first, and the surviving lines match after a manually triggered `/reload`. | ⬜ | — |
+| M23 | Yes | Turn off future WoW and Battle.net private-history saving separately; current-session Messenger still shows replies, prior saved lines remain until the scoped two-click clear, and cleared copies stay gone after `/reload`. | ⬜ | — |
+| M24 | No | Spam Firewall POLICY export contains no names, message text, drafts, or blocklists; Preview never applies, stale edits refuse Apply, and a confirmed import visibly refreshes the firewall. | ⬜ | — |
+| M25 | No | Item/spell hover previews appear only when enabled, hide on leave, and do not override another tooltip; a Group Finder INVITE link acts only on explicit click of a still-visible eligible message. | ⬜ | — |
+| M26 | No | FIND > ALERTS shows only current-session retained alerts, drops blocked/evicted entries, and does not offer inbox copy/export. | ⬜ | — |
+| M27 | No | A linked alt-name group expands only exact player HISTORY results; ordinary FIND, whisper approval, ignore, and block behavior remain separate. Test accented and realm-qualified names. | ⬜ | — |
+| M28 | No | Semantic Routes BATCH EDIT stages Trade/LFG/PvP switches until Apply, Cancel leaves them unchanged, and a successful Apply updates displayed routes and unread badges without duplicated lines. | ⬜ | — |
 
 The [replacement audit](RETAIL_REPLACEMENT_AUDIT.md) explains the product
 invariants behind these checks. The [local test inventory](RETAIL_TESTING.md)

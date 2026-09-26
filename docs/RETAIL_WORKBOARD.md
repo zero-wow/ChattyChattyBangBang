@@ -6,14 +6,14 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. Purple is for work that cannot be considered locally complete until Zero validates it in-game.
 
-**Progress:** 83/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+**Progress:** 94/100 locally verified; 5 in progress; 0 queued; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
 ## Add — missing capabilities
 
 | ID | Status | Feature |
 | --- | --- | --- |
 | A01 | 🟡 | Known event-registration failures now reveal Blizzard chat and Overview shows tracked coverage; direct add-on output and untracked native notices can still be hidden until A02 or a broader fallback policy is solved. |
-| A02 | 🟡 | Feasibility review: existing opt-in DebugMessage bridge is safe; blanket ChatFrame:AddMessage interception also sees normal chat and risks duplicates. Scoped adapter design pending. |
+| A02 | 🟡 | Senderless Blizzard client notices can now recover by line ID after lockdown; player-authored lines still require a sender. Existing opt-in DebugMessage bridge is safe, but direct third-party AddMessage output still lacks a reliable source; blanket interception risks duplicates. In-game payload behavior remains unverified. |
 | A03 | 🟢 | First-class Battle.net Messenger sessions and replies, keyed by account ID; mocked identity, send, and failure paths pass. In-game behavior remains unverified. |
 | A04 | 🟢 | Account-ID quarantine retains first contacts before native hiding; only verified friends bypass, unsafe payloads stay visible. In-game behavior remains unverified. |
 | A05 | 🟢 | Readable Community chat now routes with stable club/stream source IDs, defaults to General, and preserves saved source choices; focused mocks pass. Lockdown fallback and in-game behavior remain unverified. |
@@ -109,7 +109,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | P05 | 🟡 | Settings shell now has measured sidebar/divider and symmetric page gutters; every dynamic subpage/disclosure state still needs bounds review. |
 | P06 | 🟢 | Shared settings-control gap increased to 6px; existing right-gutter and viewport bounds mocks pass. |
 | P07 | 🟡 | Selected labels can expand into proven spare width or show a UTF-8-safe ellipsis/full tooltip with gutters; fixed 20–24px grids still need a broader layout pass. Mocks pass. |
-| P08 | 🟡 | Clicking a settings subtab enables visible keyboard focus and safe Tab/arrow/Enter navigation with release/propagation guards; keyboard-only entry from a freshly opened panel remains unsolved. Mocks pass. |
+| P08 | 🟢 | `/ccbb tabs [page]` enters settings-tab keyboard navigation directly, with focus/propagation guards and a session-only Advanced view that does not change the saved mode. The prior click-first path remains; 700×500 wide-font and command-dispatch mocks pass. In-game behavior remains unverified. |
 | P09 | 🟢 | Start Here has seven clickable numbered steps in a compact two-row map; 700×500 bounds mocks pass. |
 | P10 | 🟢 | Start Here preview uses live chat typography/source colors and the chosen message-band treatment; appearance mocks pass. |
 | P11 | 🟢 | Wrapped preview lines grow their transcript surface and scrollable page; long-copy mocks pass. |

@@ -10,7 +10,8 @@ C_ChatInfo = {
 	InChatMessagingLockdown = function() return locked end,
 	GetChatLineText = function(id)
 		assert(not locked, "recovery read chat during lockdown")
-		return id == 42 and "WTS test item" or nil
+		return id == 42 and "WTS test item" or id == 43 and "Gained currency"
+			or id == 44 and "FRIEND_REQUEST" or id == 45 and "YOU_JOINED" or nil
 	end,
 	GetChatLineSenderName = function(id) return id == 42 and "Seller-Realm" or nil end,
 	GetChatLineSenderGUID = function(id) return id == 42 and "Player-1-SELLER" or nil end,
@@ -111,4 +112,37 @@ showOK, showReason = recovery:TryShowNativeChat()
 assert(not retryOK and retryReason == "nothing-waiting"
 	and not showOK and showReason == "no-recovery-need" and not nativeShown,
 	"manual actions must not turn native chat on without an active recovery need")
+
+-- A senderless client notice is still recoverable by line ID, while the same
+-- payload must not masquerade as player-authored public chat without a sender.
+recovery:Queue("CHAT_MSG_CURRENCY", secret, secret, nil, nil, nil,
+	nil, nil, nil, nil, nil, 43, secret)
+recovery:Flush()
+assert(captures[#captures].event == "CHAT_MSG_CURRENCY"
+	and captures[#captures].args[1] == "Gained currency"
+	and captures[#captures].args[2] == nil
+	and recovery:GetStatus().pending == 0 and not nativeShown,
+	"senderless client notice stayed unresolved after its text became readable")
+recovery:Queue("CHAT_MSG_BN_INLINE_TOAST_ALERT", secret, secret, nil, nil, nil,
+	nil, nil, nil, nil, nil, 44, secret)
+recovery:Flush()
+assert(captures[#captures].event == "CHAT_MSG_BN_INLINE_TOAST_ALERT"
+	and captures[#captures].args[1] == "FRIEND_REQUEST"
+	and recovery:GetStatus().pending == 0,
+	"senderless Battle.net friend request marker stayed unresolved")
+recovery:Queue("CHAT_MSG_CHANNEL_NOTICE", secret, secret, nil, "Trade - City", nil,
+	nil, nil, 2, "Trade", nil, 45, secret)
+recovery:Flush()
+assert(captures[#captures].event == "CHAT_MSG_CHANNEL_NOTICE"
+	and captures[#captures].args[1] == "YOU_JOINED"
+	and captures[#captures].args[4] == "Trade - City"
+	and recovery:GetStatus().pending == 0,
+	"senderless channel notice lost its restored channel metadata")
+recovery:Queue("CHAT_MSG_CHANNEL", secret, secret, nil, nil, nil,
+	nil, nil, nil, nil, nil, 43, secret)
+local captureCount = #captures
+recovery:Flush()
+assert(#captures == captureCount and recovery:GetStatus().pending == 1 and nativeShown,
+	"senderless player chat was replayed without its author")
+recovery:Stop()
 print("ChatRecovery mock tests passed")

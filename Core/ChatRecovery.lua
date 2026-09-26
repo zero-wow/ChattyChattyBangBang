@@ -47,10 +47,44 @@ local function mayReleaseNative(self)
 	end
 end
 
-local function needsSender(event)
-	return event ~= "CHAT_MSG_SYSTEM" and event ~= "CHAT_MSG_LOOT"
-		and event ~= "CHAT_MSG_MONEY" and event ~= "CHAT_MSG_ZONE_UNDER_ATTACK"
-		and string.find(event, "^CHAT_MSG_BG_SYSTEM_") == nil
+-- Many explicit client notices have meaningful text but no author. Requiring
+-- a sender for these after lockdown would leave a recovered line unresolved
+-- even though GetChatLineText has become readable. Player-authored and
+-- sender-formatted notices still wait for an accessible sender.
+local senderOptionalEvents = {
+	CHAT_MSG_SYSTEM = true,
+	CHAT_MSG_LOOT = true,
+	CHAT_MSG_MONEY = true,
+	CHAT_MSG_CURRENCY = true,
+	CHAT_MSG_TRADESKILLS = true,
+	CHAT_MSG_OPENING = true,
+	CHAT_MSG_SKILL = true,
+	CHAT_MSG_PET_INFO = true,
+	CHAT_MSG_COMBAT_MISC_INFO = true,
+	CHAT_MSG_TARGETICONS = true,
+	CHAT_MSG_PET_BATTLE_INFO = true,
+	CHAT_MSG_PET_BATTLE_COMBAT_LOG = true,
+	CHAT_MSG_COMBAT_XP_GAIN = true,
+	CHAT_MSG_COMBAT_HONOR_GAIN = true,
+	CHAT_MSG_COMBAT_FACTION_CHANGE = true,
+	CHAT_MSG_CHANNEL_LIST = true,
+	CHAT_MSG_CHANNEL_NOTICE = true,
+	CHAT_MSG_RESTRICTED = true,
+	CHAT_MSG_ZONE_UNDER_ATTACK = true,
+	CHAT_MSG_BG_SYSTEM_NEUTRAL = true,
+	CHAT_MSG_BG_SYSTEM_ALLIANCE = true,
+	CHAT_MSG_BG_SYSTEM_HORDE = true,
+}
+
+
+local function needsSender(event, text)
+	-- Blizzard renders these two Battle.net markers without arg2. Other toast
+	-- markers name a player, so wait for that sender instead of showing a raw ID.
+	if event == "CHAT_MSG_BN_INLINE_TOAST_ALERT"
+		and (text == "FRIEND_REQUEST" or text == "FRIEND_PENDING") then
+		return false
+	end
+	return senderOptionalEvents[event] ~= true
 end
 
 local function lookup(getter, lineId)
@@ -155,7 +189,7 @@ function Recovery:Flush()
 		item.attempts = item.attempts + 1
 		local text = lookup(api.GetChatLineText, item.lineId)
 		local sender = lookup(api.GetChatLineSenderName, item.lineId)
-		if type(text) == "string" and (not needsSender(item.event)
+		if type(text) == "string" and (not needsSender(item.event, text)
 			or (type(sender) == "string" and sender ~= "")) then
 			local args = item.arguments
 			args[1], args[2], args[11] = text, sender, item.lineId

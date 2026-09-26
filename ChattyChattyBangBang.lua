@@ -501,6 +501,7 @@ function ChattyChattyBangBang:OnInitialize()
 	end
 	
 	self:RegisterChatCommand("ChattyChattyBangBang", "OpenConfig")
+	self:RegisterChatCommand("ccbb", "OpenConfig")
 	self:RegisterChatCommand("ccbbw", "WhisperGuardCommand")
 	
 	self.db.RegisterCallback(self, "OnProfileChanged", "SetUpdateConfig")
@@ -603,6 +604,17 @@ function ChattyChattyBangBang:OpenConfig(input)
 	local firstWord = type(input) == "string" and string.match(string.lower(input), "^%s*(%S+)") or nil
 	if firstWord == "whisper" or firstWord == "whispers" then
 		return self:WhisperGuardCommand(string.gsub(input, "^%s*%S+%s*", "", 1))
+	end
+	if firstWord == "tabs" then
+		local pageId = string.match(input, "^%s*%S+%s*(%S*)") or ""
+		if self.CustomConfig and self.CustomConfig.OpenKeyboardTabs then
+			local focused, reason = self.CustomConfig:OpenKeyboardTabs(pageId)
+			if not focused and self.Print then
+				self:Print("Keyboard tab focus unavailable: " .. tostring(reason)
+					.. ". Try /ccbb tabs or /ccbb tabs views.")
+			end
+			return focused
+		end
 	end
 	if self.CustomConfig then
 		self.CustomConfig:Open()

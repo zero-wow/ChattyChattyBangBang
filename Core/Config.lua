@@ -49,6 +49,9 @@ local deskTaskIds = {}
 for index = 1, #deskTaskOrder do deskTaskIds[deskTaskOrder[index]] = true end
 
 function Config:GetMode()
+	-- /ccbb tabs may expose detailed tabs for this one open window without
+	-- changing the player's saved Simple/Advanced preference.
+	if self.keyboardTabSessionAdvanced then return "advanced" end
 	if type(addon.GetConfigMode) == "function" then
 		local ok, mode = pcall(addon.GetConfigMode, addon)
 		if ok and (mode == "simple" or mode == "advanced") then return mode end
@@ -62,6 +65,7 @@ function Config:SetMode(mode)
 		local ok, accepted = pcall(addon.SetConfigMode, addon, mode)
 		if not ok or accepted == false then return false end
 	end
+	self.keyboardTabSessionAdvanced = nil
 	self.sessionConfigMode = mode
 	if self.frame then
 		self:ShowPage(mode == "advanced" and "home" or (self.deskTask or "desk"))
@@ -366,7 +370,7 @@ function Config:RegisterKeyboardTab(button, group, order)
 		and (button._themeTooltipTitle or button._themeFullLabel) then
 		local body = button._themeTooltipBody or ""
 		button:SetTooltip(button._themeTooltipTitle or button._themeFullLabel,
-			body .. (body ~= "" and "\n" or "") .. "Click, then use Left/Right to switch tabs, Tab to move focus, Enter to select, or Esc to leave keyboard navigation.")
+			body .. (body ~= "" and "\n" or "") .. "Type /ccbb tabs for keyboard-only entry. Left/Right switches tabs, Tab moves focus, Enter selects, and Esc exits.")
 		button._configTabKeyboardHelp = true
 	end
 	if self.frame and self.frame.SetPropagateKeyboardInput
@@ -16682,6 +16686,7 @@ function Config:BuildFrame()
 	-- must never leave a synthetic NEW marker behind in normal play.
 	frame:HookScript("OnHide", function()
 		Config:ReleaseKeyboardTab()
+		Config.keyboardTabSessionAdvanced = nil
 		Config.navigationDrawerOpen = false
 		if Config.dockMarkerPreviewActive then
 			Config:SetNewMessageIndicatorPreview(false)
@@ -16720,6 +16725,13 @@ function Config:BuildFrame()
 	self.headerSubtitleCompact = (isRetail and "RETAIL  v" or "WRATH  v") .. getAddonVersion()
 	subtitle:SetText(self.headerSubtitleNormal)
 	self.headerSubtitle = subtitle
+	local keyboardHint = Theme:CreateText(header, "GameFontHighlightSmall", "textMuted")
+	keyboardHint:SetPoint("RIGHT", header, "RIGHT", -50, 0)
+	keyboardHint:SetWidth(128)
+	keyboardHint:SetJustifyH("RIGHT")
+	if keyboardHint.SetWordWrap then keyboardHint:SetWordWrap(false) end
+	self:FitKeywordScopeText(keyboardHint, "/ccbb tabs", 120)
+	self.headerKeyboardHint = keyboardHint
 
 	local close = CreateFrame("Button", nil, header)
 	-- The close target stays 30px at the reviewed compact size while its quiet
@@ -16969,6 +16981,8 @@ function Config:BuildFrame()
 
 	Theme:RegisterRefreshCallback(function()
 		if Config.frame then
+			Config:FitKeywordScopeText(Config.headerKeyboardHint,
+				"/ccbb tabs", 120)
 			Config:RefreshDeskPage()
 			Config:RefreshNavigation()
 			Config:RefreshColorwayCards()
@@ -16997,6 +17011,27 @@ function Config:Open()
 	self:ShowPage(self:GetMode() == "advanced" and (self.activePage ~= "desk" and self.activePage or "home")
 		or (self.deskTask or "desk"))
 	self.frame:Raise()
+end
+
+-- An explicit slash command is the keyboard-only entrance. It never installs
+-- a global key listener and never changes the saved settings mode. If the
+-- current page has no sub-tabs, choose Chat Window's first visible tab.
+function Config:OpenKeyboardTabs(pageId)
+	pageId = type(pageId) == "string" and string.lower(pageId) or ""
+	if pageId == "chat" or pageId == "window" then pageId = "dock" end
+	if pageId == "tabs" then pageId = "views" end
+	if pageId ~= "" and not builders[pageId] then return false, "unknown page" end
+	self.keyboardTabSessionAdvanced = true
+	self:Open()
+	if pageId ~= "" then self:ShowPage(pageId) end
+	local candidates = self:GetKeyboardTabs()
+	if #candidates == 0 and pageId == "" then
+		self:ShowPage("dock")
+		candidates = self:GetKeyboardTabs()
+	end
+	if #candidates > 0 and self:FocusKeyboardTab(candidates[1]) then return true end
+	self:ReleaseKeyboardTab()
+	return false, #candidates == 0 and "no tabs on that page" or "keyboard capture unavailable"
 end
 
 function Config:OpenSetup()
