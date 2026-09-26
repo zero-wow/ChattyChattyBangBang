@@ -23,6 +23,10 @@ local GetNumFriends = _G.GetNumFriends
 local GetNumGuildMembers = _G.GetNumGuildMembers
 local GetNumPartyMembers = _G.GetNumPartyMembers
 local GetNumRaidMembers = _G.GetNumRaidMembers
+local GetNumGroupMembers = _G.GetNumGroupMembers
+local GetNumSubgroupMembers = _G.GetNumSubgroupMembers
+local IsInRaid = _G.IsInRaid
+local GetRaidRosterInfo = _G.GetRaidRosterInfo
 local GetNumWhoResults = _G.GetNumWhoResults
 local GetWhoInfo = _G.GetWhoInfo
 local GuildRoster = _G.GuildRoster
@@ -43,6 +47,34 @@ local tinsert = _G.tinsert
 local type = _G.type
 
 local player = UnitName("player")
+
+local function raidMemberCount()
+	if type(GetNumRaidMembers) == "function" then
+		return GetNumRaidMembers() or 0
+	end
+	if type(IsInRaid) == "function" and IsInRaid() and type(GetNumGroupMembers) == "function" then
+		return GetNumGroupMembers() or 0
+	end
+	return 0
+end
+
+local function partyMemberCount()
+	if type(GetNumPartyMembers) == "function" then
+		return GetNumPartyMembers() or 0
+	end
+	if type(IsInRaid) == "function" and IsInRaid() then
+		return 0
+	end
+	if type(GetNumSubgroupMembers) == "function" then
+		return GetNumSubgroupMembers() or 0
+	end
+	return 0
+end
+
+local function isMaxLevel(level)
+	local maxLevel = type(_G.GetMaxPlayerLevel) == "function" and _G.GetMaxPlayerLevel() or _G.MAX_PLAYER_LEVEL
+	return type(maxLevel) == "number" and maxLevel > 0 and level >= maxLevel
+end
 
 
 local channels = {
@@ -230,8 +262,12 @@ end
 
 
 function mod:OnEnable()
-	self:RegisterEvent("RAID_ROSTER_UPDATE")
-	self:RegisterEvent("PARTY_MEMBERS_CHANGED")
+	if type(GetNumGroupMembers) == "function" and type(GetNumSubgroupMembers) == "function" then
+		self:RegisterEvent("GROUP_ROSTER_UPDATE")
+	else
+		self:RegisterEvent("RAID_ROSTER_UPDATE")
+		self:RegisterEvent("PARTY_MEMBERS_CHANGED")
+	end
 	self:RegisterEvent("WHO_LIST_UPDATE")
 	self:RegisterEvent("PLAYER_TARGET_CHANGED")
 	self:RegisterEvent("CHAT_MSG_SYSTEM", "WHO_LIST_UPDATE")
@@ -356,7 +392,8 @@ end
 function mod:RAID_ROSTER_UPDATE(evt)
 	wipe(channels.RAID)
 
-	for i = 1, GetNumRaidMembers() do
+	if type(GetRaidRosterInfo) ~= "function" then return end
+	for i = 1, raidMemberCount() do
 		local n, _, _, l, _, c = GetRaidRosterInfo(i)
 		if n and c and l then
 			channels.RAID[n] = true
@@ -368,13 +405,18 @@ end
 function mod:PARTY_MEMBERS_CHANGED(evt)
 	wipe(channels.PARTY)
 	
-	for i = 1, GetNumPartyMembers() do
+	for i = 1, partyMemberCount() do
 		local n = UnitName("party" .. i)
 		local _, c = UnitClass("party" .. i)
 		local l = UnitLevel("party" .. i)
-		channels.PARTY[n] = true
+		if n then channels.PARTY[n] = true end
 		self:AddPlayer(n, c, l, self.db.profile.saveParty)
 	end
+end
+
+function mod:GROUP_ROSTER_UPDATE(evt)
+	self:RAID_ROSTER_UPDATE(evt)
+	self:PARTY_MEMBERS_CHANGED(evt)
 end
 
 function mod:PLAYER_TARGET_CHANGED(evt)
@@ -434,7 +476,7 @@ local function changeName(msgHeader, name, extra, msgCnt,displayName, msgBody)
 		level = mod.db.profile.includeLevel and tab.level or nil
 	end
 
-	if level and (level ~= 80 or not mod.db.profile.excludeMaxLevel) then
+	if level and (not mod.db.profile.excludeMaxLevel or not isMaxLevel(level)) then
 		if mod.db.profile.levelByDiff then
 			local c = GetQuestDifficultyColor(level)
 			level = ("|cff%02x%02x%02x%s|r"):format(c.r * 255, c.g * 255, c.b * 255, level)

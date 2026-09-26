@@ -2,6 +2,27 @@ local mod = ChattyChattyBangBang:NewModule("ChatTabs", "AceHook-3.0", "AceEvent-
 local L = LibStub("AceLocale-3.0"):GetLocale("ChattyChattyBangBang")
 local font = GameFontNormalSmall
 mod.modName = L["Chat Tabs"]
+local originalTabFade = {}
+
+local function hideUnhoveredTab(tab)
+	if not originalTabFade[tab] then
+		originalTabFade[tab] = {
+			noMouseAlpha = tab.noMouseAlpha,
+			alpha = tab.GetAlpha and tab:GetAlpha(),
+		}
+	end
+	tab.noMouseAlpha = 0
+	tab:SetAlpha(0)
+end
+
+local function restoreTabFade(tab)
+	local original = originalTabFade[tab]
+	if original then
+		tab.noMouseAlpha = original.noMouseAlpha
+		tab:SetAlpha(original.alpha or 0.2)
+		originalTabFade[tab] = nil
+	end
+end
 
 local defaults = {
 	profile = {
@@ -150,8 +171,7 @@ function mod:OnEnable()
 		if (mod.db.profile.chattabs) then
 			mod:HideTab(tab)
 		end
-		tab.noMouseAlpha=0
-		tab:SetAlpha(0)
+		hideUnhoveredTab(tab)
 	end
 	for index,name in ipairs(self.TempChatFrames) do
 		local chat = _G[name]
@@ -178,8 +198,7 @@ function mod:OnEnable()
 		if (mod.db.profile.chattabs) then
 			mod:HideTab(tab)
 		end
-		tab.noMouseAlpha=0
-		tab:SetAlpha(0)
+		hideUnhoveredTab(tab)
 	end
 end
 
@@ -193,8 +212,7 @@ function mod:OnDisable()
 		_G["ChatFrame"..i.."TabRight"]:Show()
 		tab:EnableMouseWheel(false)
 		tab:Hide()
-		tab.noMousealpha=0.2
-		tab:SetAlpha(0.2)
+		restoreTabFade(tab)
 	end
 	for index,name in ipairs(self.TempChatFrames) do
 		local chat = _G[name]
@@ -205,8 +223,7 @@ function mod:OnDisable()
 		_G[name.."TabRight"]:Show()
 		tab:EnableMouseWheel(false)
 		tab:Hide()
-		tab.noMousealpha=0.2
-		tab:SetAlpha(0.2)
+		restoreTabFade(tab)
 	end
 	self:UndecorateTabs()
 end

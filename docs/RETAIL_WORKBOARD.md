@@ -6,7 +6,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. Purple is for work that cannot be considered locally complete until Zero validates it in-game.
 
-**Progress:** 57/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+**Progress:** 67/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
 ## Add — missing capabilities
 
@@ -29,7 +29,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | A15 | 🔴 | Invite-link actions in message text. |
 | A16 | 🔴 | Optional persistent unsent Messenger drafts. |
 | A17 | 🔴 | Optional persistent per-tab composer routes. |
-| A18 | 🔴 | Smart Chat send/command history recall. |
+| A18 | 🟢 | Up/Down recalls 100 non-private Smart Chat sends with draft restoration; Alt+Up/Down remains Blizzard's command-history path. Mocks pass; Blizzard's separate history may retain outgoing whispers. |
 | A19 | 🔴 | Chat logging controls with private-channel exclusions. |
 | A20 | 🔴 | Different history limits per source. |
 | A21 | 🔴 | Privacy-specific whisper/Battle.net retention. |
@@ -60,10 +60,10 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | F16 | 🟢 | Detect instance groups and accept INSTANCE_CHAT composer route; in-game verification remains. |
 | F17 | 🟢 | Clear History leaves SmartDock unread/NEW markers. |
 | F18 | 🟢 | Request Retail guild roster and trust only explicit membership; first-load/cross-realm check remains. |
-| F19 | 🔴 | Guard legacy Player Names raid/party API use if fallback enabled. |
-| F20 | 🔴 | Guard absent GuildFrame in legacy Alt Names fallback. |
-| F21 | 🔴 | Correct Chat Tabs noMouseAlpha restoration if fallback enabled. |
-| F22 | 🔴 | Remove hard-coded level-80 limit in Player Names fallback. |
+| F19 | 🟢 | Dormant Player Names fallback now guards absent raid/party APIs and roster names; focused mock passes. Still excluded from Retail package. |
+| F20 | 🟢 | Dormant Alt Names fallback tolerates absent GuildFrame; focused mock passes. Still excluded from Retail package. |
+| F21 | 🟢 | Dormant Chat Tabs fallback restores original noMouseAlpha/alpha instead of using the mistyped field; focused mock passes. Still excluded from Retail package. |
+| F22 | 🟢 | Dormant Player Names fallback uses the client level cap instead of 80; focused mock passes. Still excluded from Retail package. |
 | F23 | 🟢 | Modules status must honor each Smart Chat feature toggle. |
 | F24 | 🟢 | Do not call unavailable native fallback “ready.” |
 | F25 | 🟡 | Added channel-notice capture plus guarded localized status, ping, Battle.net toast, and channel-notice formatting with focused fixtures; other synthetic native output and in-game payload behavior remain to audit. |
@@ -117,11 +117,11 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | P13 | 🟢 | Option rows measure toggle labels and explanations, keeping the footer below them; wide-font layout mocks pass. |
 | P14 | 🔴 | Replace repeated explanatory prefixes with cleaner hierarchy. |
 | P15 | 🟢 | Messenger's Go to Bottom arrow has a 16×18 target in its own 26px right lane; compact-window layout mocks pass. |
-| P16 | 🔴 | Add units and breathing room to sale-ad numeric settings. |
-| P17 | 🔴 | Label each colorway swatch's role. |
-| P18 | 🔴 | Reveal full colorway descriptions on hover. |
-| P19 | 🔴 | Use one selected-theme indicator, not ACTIVE plus CURRENT. |
-| P20 | 🔴 | Enlarge/clarify theme pager controls. |
+| P16 | 🟢 | Sale-ad limits use two measured columns, explicit hours/ads/characters units, and value-unit gutters; config layout mocks pass. |
+| P17 | 🟢 | Colorway swatches label their BASE/PANEL/ACCENT/GOLD roles, including wide-font fallback; card mocks pass. |
+| P18 | 🟢 | Colorway hover shows the full description and swatch legend; tooltip mocks pass. |
+| P19 | 🟢 | Colorway cards use one CURRENT/APPLY state instead of competing selection labels; card mocks pass. |
+| P20 | 🟢 | Theme paging uses centered PREVIOUS/NEXT controls, page counts, and opens on the active palette page; geometry mocks pass. |
 | P21 | 🟢 | Main chat's invisible scrollbar drag lane is 16px while its themed thumb stays 6px; bounds and theme mocks pass. |
 | P22 | 🟢 | Main chat's END action has a 24×20 target and a separate right lane; compact-layout mocks pass. |
 | P23 | 🟢 | Messenger's Older/Newer/Latest controls have larger targets and a reserved row that releases when unused; 300×160 layout mocks pass. |

@@ -40,6 +40,7 @@ local COMPOSER_ROUTE_MENU_ROWS = 5
 local COMPOSER_ROUTE_MENU_BUTTON_WIDTH = 98
 local COMPOSER_ROUTE_MENU_BUTTON_HEIGHT = 18
 local COMPOSER_ROUTE_MENU_GAP = 2
+local COMPOSER_HISTORY_LIMIT = 100
 local PLAYER_ACTION_BUTTON_HEIGHT = 18
 local PLAYER_ACTION_BUTTON_GAP = 2
 local PLAYER_ACTION_PANEL_PADDING = 4
@@ -5838,6 +5839,154 @@ function Dock:ActivateComposer()
 	self.routingComposer = false
 end
 
+local function getComposerHistoryChatType(editBox)
+	if type(editBox.GetChatType) == "function" then
+		return editBox:GetChatType()
+	end
+	if type(editBox.GetAttribute) == "function" then
+		return editBox:GetAttribute("chatType")
+	end
+end
+
+local function isPrivateComposerHistoryType(chatType)
+	return type(chatType) == "string"
+		and (chatType:find("WHISPER", 1, true) ~= nil or chatType == "BN_CONVERSATION")
+end
+
+function Dock:ResetComposerHistoryNavigation()
+	self.composerHistoryIndex = nil
+	self.composerHistoryDraft = nil
+end
+
+function Dock:RestoreComposerHistoryInputPropagation(editBox)
+	if self.composerHistoryInputPropagationSuppressed and editBox
+		and editBox.SetPropagateKeyboardInput then
+		editBox:SetPropagateKeyboardInput(true)
+	end
+	self.composerHistoryInputPropagationSuppressed = nil
+end
+
+function Dock:ClearComposerHistory()
+	self.composerHistory = nil
+	self:ResetComposerHistoryNavigation()
+end
+
+function Dock:RecordComposerHistory(text, chatType)
+	-- Blizzard owns slash-command history on this shared edit box. Never copy
+	-- commands or private replies into Chatty's independent recall list.
+	if type(text) ~= "string" or type(chatType) ~= "string"
+		or (issecretvalue and issecretvalue(text)) or not text:find("%S")
+		or text:match("^%s*/") or isPrivateComposerHistoryType(chatType) then
+		return false
+	end
+	local history = self.composerHistory or {}
+	self.composerHistory = history
+	if history[#history] ~= text then
+		history[#history + 1] = text
+		if #history > COMPOSER_HISTORY_LIMIT then
+			table.remove(history, 1)
+		end
+	end
+	self:ResetComposerHistoryNavigation()
+	return true
+end
+
+function Dock:OnComposerPreSendText(editBox)
+	if not self.active or editBox ~= self.editBox then
+		return
+	end
+	-- In Retail a chat payload can be secret during lockdown. Inspect it only
+	-- when the client permits ordinary Lua string operations; otherwise skip it.
+	pcall(function()
+		self:RecordComposerHistory(editBox:GetText(), getComposerHistoryChatType(editBox))
+	end)
+end
+
+function Dock:HandleComposerHistoryKey(editBox, key)
+	if not self.active or editBox ~= self.editBox or (key ~= "UP" and key ~= "DOWN")
+		or (IsAltKeyDown and IsAltKeyDown())
+		or (IsControlKeyDown and IsControlKeyDown())
+		or (IsShiftKeyDown and IsShiftKeyDown())
+		or (editBox.GetAltArrowKeyMode and not editBox:GetAltArrowKeyMode()) then
+		return false
+	end
+	-- The inherited AutoComplete edit box uses arrow keys for its own popup.
+	local autoComplete = _G.AutoCompleteBox
+	if autoComplete and autoComplete.IsShown and autoComplete:IsShown()
+		and autoComplete.parent == editBox then
+		return false
+	end
+	local history = self.composerHistory
+	if not history or #history == 0 then
+		return false
+	end
+	local ok, currentText = pcall(function()
+		local text = editBox:GetText()
+		if type(text) ~= "string" or (issecretvalue and issecretvalue(text))
+			or isPrivateComposerHistoryType(getComposerHistoryChatType(editBox))
+			or (not self.composerHistoryIndex and text:match("^%s*/")) then
+			return nil
+		end
+		return text
+	end)
+	if not ok or not currentText then
+		return false
+	end
+	local index = self.composerHistoryIndex
+	if not index then
+		if key == "DOWN" then
+			return false
+		end
+		self.composerHistoryDraft = currentText
+		index = #history
+	elseif key == "UP" then
+		index = math.max(1, index - 1)
+	elseif index < #history then
+		index = index + 1
+	else
+		index = nil
+	end
+	self.composerHistoryIndex = index
+	local replacement = index and history[index] or (self.composerHistoryDraft or "")
+	if not index then
+		self.composerHistoryDraft = nil
+	end
+	editBox:SetText(replacement)
+	if editBox.SetCursorPosition then
+		editBox:SetCursorPosition(#replacement)
+	end
+	return true
+end
+
+function Dock:BindComposerHistory(editBox)
+	if self.composerHistoryHookedEditBox ~= editBox then
+		editBox:HookScript("OnKeyDown", function(activeEditBox, key)
+			if Dock:HandleComposerHistoryKey(activeEditBox, key)
+				and activeEditBox.SetPropagateKeyboardInput then
+				activeEditBox:SetPropagateKeyboardInput(false)
+				Dock.composerHistoryInputPropagationSuppressed = true
+			end
+		end)
+		editBox:HookScript("OnKeyUp", function(activeEditBox, key)
+			if key == "UP" or key == "DOWN" then
+				Dock:RestoreComposerHistoryInputPropagation(activeEditBox)
+			end
+		end)
+		editBox:HookScript("OnTextChanged", function(activeEditBox, userInput)
+			if Dock.active and activeEditBox == Dock.editBox and userInput then
+				Dock:ResetComposerHistoryNavigation()
+			end
+		end)
+		self.composerHistoryHookedEditBox = editBox
+	end
+	if not self.composerHistoryRegistered and EventRegistry
+		and type(EventRegistry.RegisterCallback) == "function" then
+		local ok = pcall(EventRegistry.RegisterCallback, EventRegistry,
+			"ChatFrame.OnEditBoxPreSendText", self.OnComposerPreSendText, self)
+		self.composerHistoryRegistered = ok
+	end
+end
+
 function Dock:AttachEditBox()
 	if self.editBoxSnapshot then
 		return true
@@ -5900,6 +6049,7 @@ function Dock:AttachEditBox()
 	end
 	self:HideNativeComposerChrome()
 	self:RefreshComposerLayout()
+	self:BindComposerHistory(editBox)
 
 	if not self.editBoxHooked then
 		editBox:HookScript("OnShow", function()
@@ -5921,6 +6071,8 @@ function Dock:AttachEditBox()
 		end)
 		editBox:HookScript("OnHide", function()
 			if Dock.active then
+				Dock:ResetComposerHistoryNavigation()
+				Dock:RestoreComposerHistoryInputPropagation(editBox)
 				Dock:HideComposerRouteMenu()
 				Dock:UpdateComposerState()
 				Dock:EndComposerInput()
@@ -6005,6 +6157,13 @@ function Dock:RestoreEditBox()
 		return
 	end
 	deactivateChatEditBox(self.editBox)
+	if self.composerHistoryRegistered and EventRegistry
+		and type(EventRegistry.UnregisterCallback) == "function" then
+		pcall(EventRegistry.UnregisterCallback, EventRegistry, "ChatFrame.OnEditBoxPreSendText", self)
+		self.composerHistoryRegistered = nil
+	end
+	self:ResetComposerHistoryNavigation()
+	self:RestoreComposerHistoryInputPropagation(self.editBox)
 	self.editBox:SetParent(self.editBoxSnapshot.parent)
 	restorePoints(self.editBox, self.editBoxSnapshot.points)
 	self.editBox:SetWidth(self.editBoxSnapshot.width)
@@ -9331,6 +9490,8 @@ function Dock:Build()
 	end)
 	self.composer = composer
 	self:BindHeaderHover(composer)
+	self:BindDockControlTooltip(composer, "Message history",
+		"Up/Down recalls recent messages. Alt+Up/Down uses WoW's command history. Chatty does not keep private replies in its recall list.")
 	local route = createTightButton(composer, "SAY", 20, false)
 	route:SetPoint("LEFT", composer, "LEFT", 3, 0)
 	route:SetWidth(COMPOSER_ROUTE_MIN_WIDTH)
@@ -9364,6 +9525,8 @@ function Dock:Build()
 	end)
 	self.composerSend = send
 	self:BindHeaderHover(send)
+	self:BindDockControlTooltip(send, "Message history",
+		"Up/Down recalls recent messages. Alt+Up/Down uses WoW's command history. Chatty does not keep private replies in its recall list.")
 	-- The real Blizzard edit box is intentionally textureless inside SmartDock.
 	-- This optional, full-height field is the one piece of decorative polish a
 	-- player can enable.  Its bounds intentionally extend beyond the editor on
@@ -9506,6 +9669,7 @@ function Dock:Deactivate()
 	self.railMoveActive = false
 	self.active = false
 	self.routingComposer = false
+	self:ClearComposerHistory()
 	self.editReveal = nil
 	self.composerInputActive = false
 	self.railClickRevealed = false

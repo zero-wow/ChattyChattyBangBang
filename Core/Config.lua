@@ -6007,12 +6007,21 @@ local function applySpamRuntime()
 	end
 end
 
-local function createSpamNumberField(parent, label, x, y, target, key, minimum, maximum, fallback)
+local function createSpamNumberField(parent, label, x, y, target, key, minimum, maximum, fallback, unit)
 	local caption = Theme:CreateText(parent, "GameFontHighlightSmall", "textMuted")
 	caption:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
 	caption:SetText(label)
+	if unit then caption:SetWidth(292) end
 	local editBox = Theme:CreateEditBox(parent, 58, 24, false)
 	editBox:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -(y + 14))
+	if unit then
+		local unitLabel = Theme:CreateText(parent, "GameFontHighlightSmall", "textMuted")
+		unitLabel:SetPoint("LEFT", editBox, "RIGHT", 10, 0)
+		unitLabel:SetWidth(120)
+		unitLabel:SetText(unit)
+		editBox.unitLabel = unitLabel
+		editBox.caption = caption
+	end
 	editBox:SetText(tostring(clampNumber(target[key], minimum, maximum, fallback)))
 	local function commit(self)
 		local value = clampNumber(self:GetText(), minimum, maximum, fallback)
@@ -6028,12 +6037,21 @@ local function createSpamNumberField(parent, label, x, y, target, key, minimum, 
 	return editBox
 end
 
-local function createSpamHoursField(parent, label, x, y, target, key, minimum, maximum, fallback)
+local function createSpamHoursField(parent, label, x, y, target, key, minimum, maximum, fallback, unit)
 	local caption = Theme:CreateText(parent, "GameFontHighlightSmall", "textMuted")
 	caption:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
 	caption:SetText(label)
+	if unit then caption:SetWidth(292) end
 	local editBox = Theme:CreateEditBox(parent, 58, 24, false)
 	editBox:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -(y + 14))
+	if unit then
+		local unitLabel = Theme:CreateText(parent, "GameFontHighlightSmall", "textMuted")
+		unitLabel:SetPoint("LEFT", editBox, "RIGHT", 10, 0)
+		unitLabel:SetWidth(120)
+		unitLabel:SetText(unit)
+		editBox.unitLabel = unitLabel
+		editBox.caption = caption
+	end
 	local hours = clampNumber((tonumber(target[key]) or fallback * 3600) / 3600,
 		minimum, maximum, fallback)
 	editBox:SetText(tostring(hours))
@@ -6818,18 +6836,20 @@ function Config:BuildSpamPage()
 	adsHint:SetPoint("TOPLEFT", adsPane, "TOPLEFT", 0, -66)
 	adsHint:SetWidth(PAGE_WIDTH - 12)
 	adsHint:SetText("Applies to sale ads in public chat, not ordinary conversation or private whispers.")
+	-- Two deliberate columns leave a readable unit beside every value, even
+	-- with larger font metrics. Each caption and input remains inside its cell.
 	self.spamRepeatAdNumberEdits = {
-		window = createSpamHoursField(adsPane, "ROLLING HOURS", 0, 108,
-			spam.repeatAds, "window", 1, 168, 24),
-		maxCopies = createSpamNumberField(adsPane, "VISIBLE COPIES", 160, 108,
-			spam.repeatAds, "maxCopies", 1, 24, 4),
-		minimumGap = createSpamHoursField(adsPane, "MIN GAP (HOURS)", 320, 108,
-			spam.repeatAds, "minimumGap", 0, 24, 1),
-		minimumLength = createSpamNumberField(adsPane, "MIN TEXT CHARS", 480, 108,
-			spam.repeatAds, "minimumLength", 12, 128, 18),
+		window = createSpamHoursField(adsPane, "ROLLING WINDOW", 0, 108,
+			spam.repeatAds, "window", 1, 168, 24, "hours"),
+		maxCopies = createSpamNumberField(adsPane, "VISIBLE COPIES", 320, 108,
+			spam.repeatAds, "maxCopies", 1, 24, 4, "ads"),
+		minimumGap = createSpamHoursField(adsPane, "MINIMUM GAP", 0, 172,
+			spam.repeatAds, "minimumGap", 0, 24, 1, "hours"),
+		minimumLength = createSpamNumberField(adsPane, "MINIMUM AD LENGTH", 320, 172,
+			spam.repeatAds, "minimumLength", 12, 128, 18, "characters"),
 	}
 	local adsDetail = Theme:CreateText(adsPane, "GameFontHighlightSmall", "textMuted")
-	adsDetail:SetPoint("TOPLEFT", adsPane, "TOPLEFT", 0, -170)
+	adsDetail:SetPoint("TOPLEFT", adsPane, "TOPLEFT", 0, -236)
 	adsDetail:SetWidth(PAGE_WIDTH - 12)
 	adsDetail:SetText("Copy limit: when reached, all matching visible copies move to Blocked Messages. Minimum gap: only the new early post is hidden.")
 
@@ -10649,13 +10669,13 @@ local legacyThemeOrder = {
 	"Ember Ledger",
 }
 
--- Twelve cards fit in the existing workspace as a clean 3 x 4 gallery.  More
--- palettes therefore add a compact page instead of pushing cards into the
--- footer or bringing back the oversized empty preview area.
+-- Twelve cards fit in the existing workspace as a clean 3 x 4 gallery.  The
+-- extra card height gives the sample colors their own role-label row while
+-- leaving a real gutter before the pager, even at the 700x500 viewport.
 local COLORWAY_COLUMNS = 3
 local COLORWAY_PAGE_SIZE = 12
 local COLORWAY_CARD_WIDTH = 206
-local COLORWAY_CARD_HEIGHT = 76
+local COLORWAY_CARD_HEIGHT = 88
 local COLORWAY_COLUMN_GAP = 5
 local COLORWAY_ROW_GAP = 6
 
@@ -10709,7 +10729,7 @@ local function getCompactThemeDescription(name)
 	-- Theme cards are deliberately short.  Keep a two-line sentence from
 	-- changing the compact grid's rhythm when a future palette uses a longer
 	-- description.
-	local maxLength = 34
+	local maxLength = 27
 	if string.len(description) > maxLength then
 		local shortened = string.sub(description, 1, maxLength - 3)
 		local lastSpace = string.match(shortened, "^.*() ")
@@ -10721,6 +10741,26 @@ local function getCompactThemeDescription(name)
 	return description
 end
 
+function Config:FitColorwayLabel(fontString, fullText, maxWidth, compactText)
+	fontString:SetText(fullText)
+	if fontString.SetMaxLines then fontString:SetMaxLines(1) end
+	local measure = fontString.GetUnboundedStringWidth or fontString.GetStringWidth
+	if type(measure) ~= "function" then return end
+	local ok, width = pcall(measure, fontString)
+	if not ok or type(width) ~= "number" or width <= maxWidth then return end
+	if compactText then
+		fontString:SetText(compactText)
+		ok, width = pcall(measure, fontString)
+		if not ok or type(width) ~= "number" or width <= maxWidth then return end
+	end
+	local shortened = compactText or fullText
+	repeat
+		shortened = string.sub(shortened, 1, -2)
+		fontString:SetText(shortened .. "...")
+		ok, width = pcall(measure, fontString)
+	until not ok or type(width) ~= "number" or width <= maxWidth or #shortened <= 2
+end
+
 function Config:CreateColorwayCard(parent, name, xOffset, yOffset)
 	local palettes = Theme.ColorWays or Theme.Colorways or {}
 	local palette = palettes[name]
@@ -10728,46 +10768,61 @@ function Config:CreateColorwayCard(parent, name, xOffset, yOffset)
 		return nil
 	end
 	local card = CreateFrame("Button", nil, parent)
-	-- The swatches are the preview; do not spend a tall card on empty space
-	-- beneath them.  The description and APPLY affordance still have their own
-	-- clean line, but the gallery stays dense enough to scan as one palette set.
-	card:SetSize(206, 76)
+	-- One state/action label, a labeled sample strip, and one short description
+	-- line are easier to scan than competing ACTIVE and CURRENT markers.
+	card:SetSize(COLORWAY_CARD_WIDTH, COLORWAY_CARD_HEIGHT)
 	card:SetPoint("TOPLEFT", parent, "TOPLEFT", xOffset, -(yOffset or PAGE_TOP))
 	Theme:RegisterFrame(card, "surface", "borderMuted")
 	card.colorwayName = name
+	local info = Theme.GetColorwayInfo and Theme:GetColorwayInfo(name)
+	card.fullDescription = info and info.description or "A coordinated alternate palette."
 
 	local title = Theme:CreateText(card, "GameFontNormalSmall", "text")
-	title:SetPoint("TOPLEFT", card, "TOPLEFT", 6, -6)
-	title:SetWidth(146)
+	title:SetPoint("TOPLEFT", card, "TOPLEFT", 6, -7)
+	title:SetWidth(135)
 	title:SetJustifyH("LEFT")
-	title:SetText(name)
+	self:FitColorwayLabel(title, name, 135)
+	card.title = title
 
-	local selected = Theme:CreateText(card, "GameFontNormalSmall", "goldBright")
-	selected:SetPoint("TOPRIGHT", card, "TOPRIGHT", -6, -6)
-	selected:SetText("ACTIVE")
-	card.selected = selected
+	local choose = Theme:CreateText(card, "GameFontHighlightSmall", "goldBright")
+	choose:SetPoint("TOPRIGHT", card, "TOPRIGHT", -7, -7)
+	choose:SetWidth(52)
+	choose:SetJustifyH("RIGHT")
+	choose:SetText("APPLY")
+	card.choose = choose
 
-	local samples = { "background", "surfaceRaised", "accent", "gold" }
+	local samples = {
+		{ token = "background", label = "BASE", compact = "BG" },
+		{ token = "surfaceRaised", label = "PANEL", compact = "UI" },
+		{ token = "accent", label = "ACCENT", compact = "ACC" },
+		{ token = "gold", label = "GOLD", compact = "GLD" },
+	}
+	card.swatchLabels = {}
+	card.swatchRoles = {}
 	for index = 1, #samples do
-		local color = palette[samples[index]]
+		local color = palette[samples[index].token]
+		local offset = 6 + ((index - 1) * 49)
 		local swatch = card:CreateTexture(nil, "ARTWORK")
 		swatch:SetTexture("Interface\\Buttons\\WHITE8x8")
 		swatch:SetVertexColor(color[1], color[2], color[3], color[4])
-		swatch:SetSize(46, 16)
-		swatch:SetPoint("TOPLEFT", card, "TOPLEFT", 6 + ((index - 1) * 49), -25)
+		swatch:SetSize(46, 14)
+		swatch:SetPoint("TOPLEFT", card, "TOPLEFT", offset, -27)
 		swatch:Show()
+		local label = Theme:CreateText(card, "GameFontHighlightSmall", "textMuted")
+		label:SetPoint("TOPLEFT", card, "TOPLEFT", offset, -44)
+		label:SetWidth(46)
+		label:SetJustifyH("CENTER")
+		self:FitColorwayLabel(label, samples[index].label, 46, samples[index].compact)
+		card.swatchLabels[index] = label
+		card.swatchRoles[index] = samples[index].label
 	end
 
 	local description = Theme:CreateText(card, "GameFontHighlightSmall", "textMuted")
-	description:SetPoint("TOPLEFT", card, "TOPLEFT", 6, -47)
-	description:SetWidth(196)
+	description:SetPoint("TOPLEFT", card, "TOPLEFT", 6, -66)
+	description:SetWidth(194)
 	description:SetJustifyH("LEFT")
 	description:SetText(getCompactThemeDescription(name))
-
-	local choose = Theme:CreateText(card, "GameFontNormalSmall", "gold")
-	choose:SetPoint("BOTTOM", card, "BOTTOM", 0, 3)
-	choose:SetText("APPLY")
-	card.choose = choose
+	card.description = description
 
 	card:SetScript("OnClick", function()
 		addon:SetColorway(name)
@@ -10775,8 +10830,18 @@ function Config:CreateColorwayCard(parent, name, xOffset, yOffset)
 	end)
 	card:SetScript("OnEnter", function(self)
 		Theme:ApplyFrame(self, "surfaceRaised", "goldBright")
+		if GameTooltip then
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			setTooltipTitle(GameTooltip, self.colorwayName, TOOLTIP_WHITE, 1, true)
+			GameTooltip:AddLine(self.fullDescription, 0.72, 0.76, 0.84, true)
+			GameTooltip:AddLine("Swatches: base, panel, accent, gold.", 0.55, 0.62, 0.72, true)
+			GameTooltip:Show()
+		end
 	end)
 	card:SetScript("OnLeave", function(self)
+		if GameTooltip and (not GameTooltip.GetOwner or GameTooltip:GetOwner() == self) then
+			GameTooltip:Hide()
+		end
 		Config:RefreshColorwayCards()
 	end)
 	return card
@@ -10788,7 +10853,12 @@ function Config:BuildColorwaysPage()
 	self.colorwayCards = {}
 	self.colorwayPage = 1
 	local names = getThemeNames()
+	local active = addon:GetSmartSettings().colorway
+	if Theme.ResolveColorwayName then active = Theme:ResolveColorwayName(active) end
 	for index = 1, #names do
+		if names[index] == active then
+			self.colorwayPage = math.floor((index - 1) / COLORWAY_PAGE_SIZE) + 1
+		end
 		local card = self:CreateColorwayCard(
 			page,
 			names[index],
@@ -10801,17 +10871,19 @@ function Config:BuildColorwaysPage()
 	end
 
 	self.colorwayPagerText = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
-	self.colorwayPagerText:SetPoint("TOPLEFT", page, "TOPLEFT", 250, -382)
-	self.colorwayPagerText:SetWidth(112)
+	self.colorwayPagerText:SetPoint("TOP", page, "TOP", 0, -432)
+	self.colorwayPagerText:SetSize(108, 24)
 	self.colorwayPagerText:SetJustifyH("CENTER")
-	self.colorwayPrevious = Theme:CreateTightButton(page, "<", 20, false)
-	self.colorwayPrevious:SetPoint("LEFT", self.colorwayPagerText, "RIGHT", 4, 0)
+	self.colorwayPrevious = Theme:CreateTightButton(page, "PREVIOUS", 24, false)
+	self.colorwayPrevious:SetPoint("RIGHT", self.colorwayPagerText, "LEFT", -8, 0)
+	setActionStyle(self.colorwayPrevious, "quiet", "Previous themes", "Show the previous page of colorways.")
 	self.colorwayPrevious:SetScript("OnClick", function()
 		Config.colorwayPage = math.max(1, (tonumber(Config.colorwayPage) or 1) - 1)
 		Config:RefreshColorwayCards()
 	end)
-	self.colorwayNext = Theme:CreateTightButton(page, ">", 20, false)
-	self.colorwayNext:SetPoint("LEFT", self.colorwayPrevious, "RIGHT", CONTROL_GAP, 0)
+	self.colorwayNext = Theme:CreateTightButton(page, "NEXT", 24, false)
+	self.colorwayNext:SetPoint("LEFT", self.colorwayPagerText, "RIGHT", 8, 0)
+	setActionStyle(self.colorwayNext, "quiet", "Next themes", "Show the next page of colorways.")
 	self.colorwayNext:SetScript("OnClick", function()
 		Config.colorwayPage = (tonumber(Config.colorwayPage) or 1) + 1
 		Config:RefreshColorwayCards()
@@ -10851,11 +10923,6 @@ function Config:RefreshColorwayCards()
 			card:Hide()
 		end
 		local selected = card.colorwayName == active
-		if selected then
-			card.selected:Show()
-		else
-			card.selected:Hide()
-		end
 		if card.choose then
 			card.choose:SetText(selected and "CURRENT" or "APPLY")
 		end
@@ -10864,7 +10931,7 @@ function Config:RefreshColorwayCards()
 
 	local showPager = pageCount > 1
 	if self.colorwayPagerText then
-		self.colorwayPagerText:SetText("THEMES " .. tostring(page) .. " / " .. tostring(pageCount))
+		self.colorwayPagerText:SetText("PAGE " .. tostring(page) .. " OF " .. tostring(pageCount))
 		if showPager then self.colorwayPagerText:Show() else self.colorwayPagerText:Hide() end
 	end
 	for _, button in ipairs({ self.colorwayPrevious, self.colorwayNext }) do

@@ -213,6 +213,29 @@ for _, edit in pairs(config.spamRepeatAdNumberEdits) do
 	assert(edit.parent == config.spamFilterSubPanes.ads,
 		"sale-ad limit leaked outside its pane")
 end
+local saleFields = {
+	{ key = "window", x = 0, y = 108, unit = "hours" },
+	{ key = "maxCopies", x = 320, y = 108, unit = "ads" },
+	{ key = "minimumGap", x = 0, y = 172, unit = "hours" },
+	{ key = "minimumLength", x = 320, y = 172, unit = "characters" },
+}
+for _, spec in ipairs(saleFields) do
+	local edit = config.spamRepeatAdNumberEdits[spec.key]
+	assert(edit.point[4] == spec.x and edit.point[5] == -(spec.y + 14)
+		and edit.width == 58 and edit.height == 24,
+		"sale-ad numeric fields lost their clear two-column layout")
+	assert(edit.caption and edit.caption.point[4] == spec.x
+		and edit.caption.point[5] == -spec.y and edit.caption.width == 292
+		and spec.x + edit.caption.width <= 636 - 12,
+		"sale-ad caption clipped or reached the pane border")
+	assert(edit.unitLabel and edit.unitLabel:GetText() == spec.unit
+		and edit.unitLabel.point[1] == "LEFT" and edit.unitLabel.point[2] == edit
+		and edit.unitLabel.point[3] == "RIGHT" and edit.unitLabel.point[4] == 10
+		and spec.x + edit.width + 10 + edit.unitLabel.width <= 636 - 8,
+		"sale-ad value and explicit unit lost their gutter or pane bounds")
+end
+assert((saleFields[3].y - (saleFields[1].y + 14 + 24)) >= 20,
+	"sale-ad numeric rows lost their breathing room")
 config.spamRepeatAdNumberEdits.maxCopies:SetText("6")
 config.spamRepeatAdNumberEdits.maxCopies.scripts.OnEditFocusLost(config.spamRepeatAdNumberEdits.maxCopies)
 config.spamRepeatAdNumberEdits.minimumGap:SetText("2")

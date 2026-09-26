@@ -3,6 +3,7 @@
 -- pagination, the custom-view draft, and the single selected editor can be
 -- checked without a running client.
 
+local mockFontWidthMultiplier = 1
 local Frame = {}
 Frame.__index = Frame
 
@@ -54,7 +55,7 @@ function Frame:GetText()
 end
 
 function Frame:GetStringWidth()
-	return string.len(self:GetText()) * 6
+	return string.len(self:GetText()) * 6 * mockFontWidthMultiplier
 end
 
 function Frame:Show()
@@ -215,7 +216,7 @@ function Theme:GetColorwayNames()
 	return copy
 end
 function Theme:GetColorwayInfo()
-	return { description = "A compact dark palette." }
+	return { description = "A compact dark palette with warm highlights and quiet graphite surfaces." }
 end
 function Theme:ResolveColorwayName(name)
 	return name or "Obsidian Dawn"
@@ -1390,11 +1391,75 @@ assert(config.colorwayPagerText:IsShown(), "multi-page theme gallery hid its pag
 assert(config.colorwayCards[1]:IsShown() and config.colorwayCards[12]:IsShown(),
 	"first theme page did not show its twelve compact cards")
 assert(not config.colorwayCards[13]:IsShown(), "second-page theme card leaked into the first page")
+assert(config.colorwayCards[1].choose:GetText() == "CURRENT"
+	and config.colorwayCards[1].selected == nil
+	and config.colorwayCards[2].choose:GetText() == "APPLY",
+	"theme cards still show duplicate selected indicators")
+local roles = { "BASE", "PANEL", "ACCENT", "GOLD" }
+for index = 1, 12 do
+	local card = config.colorwayCards[index]
+	local left, top = card.point[4], -card.point[5]
+	assert(card.width == 206 and card.height == 88 and left >= 8
+		and left + card.width <= 652 - 8 and top + card.height <= 508 - 8,
+		"theme gallery card escaped the compact Settings page")
+	assert(card.title.width == 135 and card.title.point[4] == 6
+		and card.choose.width == 52 and card.choose.point[4] == -7,
+		"theme title and selected indicator lost their visible gutter")
+	for roleIndex, role in ipairs(roles) do
+		local swatchLabel = card.swatchLabels[roleIndex]
+		assert(swatchLabel:GetText() == role and swatchLabel.width == 46
+			and swatchLabel.point[4] >= 6
+			and swatchLabel.point[4] + swatchLabel.width <= 206 - 6,
+			"theme color swatch omitted its role or touched a card border")
+	end
+	assert(card.fullDescription:find("graphite surfaces", 1, true)
+		and #card.description:GetText() < #card.fullDescription,
+		"theme card did not reserve its full description for hover")
+end
+local tooltip = { lines = {} }
+function tooltip:SetOwner(owner) self.owner = owner end
+function tooltip:GetOwner() return self.owner end
+function tooltip:SetText(value) self.title = value end
+function tooltip:AddLine(value) self.lines[#self.lines + 1] = value end
+function tooltip:Show() self.shown = true end
+function tooltip:Hide() self.shown = false end
+GameTooltip = tooltip
+config.colorwayCards[2].scripts.OnEnter(config.colorwayCards[2])
+assert(tooltip.shown and tooltip.title == mockThemeNames[2]
+	and tooltip.lines[1] == config.colorwayCards[2].fullDescription
+	and tooltip.lines[2]:find("base, panel, accent, gold", 1, true),
+	"theme hover did not reveal the full description")
+config.colorwayCards[2].scripts.OnLeave(config.colorwayCards[2])
+assert(not tooltip.shown, "theme hover tooltip remained after leaving the card")
+assert(config.colorwayPagerText:GetText() == "PAGE 1 OF 2"
+	and config.colorwayPagerText.point[5] == -432
+	and 432 >= (46 + (3 * (88 + 6)) + 88) + 8
+	and 432 + 24 <= 508 - 8,
+	"theme pager overlaps the card grid or leaves the scrollable page")
+assert(config.colorwayPrevious.text:GetText() == "PREVIOUS"
+	and config.colorwayNext.text:GetText() == "NEXT"
+	and config.colorwayPrevious.height == 24 and config.colorwayNext.height == 24
+	and config.colorwayPrevious.point[2] == config.colorwayPagerText
+	and config.colorwayNext.point[2] == config.colorwayPagerText,
+	"theme pager controls are not clear, bounded hit targets")
+mockFontWidthMultiplier = 2.2
+local wideFontCard = config:CreateColorwayCard(config.pages.colorways, "Verdant Reliquary", 8, 46)
+assert(wideFontCard.title:GetText():find("...", 1, true)
+	and wideFontCard.swatchLabels[2]:GetText() == "UI"
+	and wideFontCard.swatchLabels[3]:GetText() == "ACC"
+	and wideFontCard.swatchRoles[2] == "PANEL"
+	and wideFontCard.swatchRoles[3] == "ACCENT",
+	"wide-font theme labels did not stay within their fixed, explained cells")
+mockFontWidthMultiplier = 1
 config.colorwayNext.scripts.OnClick()
 assert(config.colorwayPage == 2 and config.colorwayCards[13]:IsShown() and not config.colorwayCards[1]:IsShown(),
 	"theme pager did not switch the compact gallery page")
 config.colorwayCards[13].scripts.OnClick()
 assert(settings.colorway == "Verdant Reliquary", "theme card did not apply its palette")
+config:BuildColorwaysPage()
+assert(config.colorwayPage == 2 and config.colorwayCards[13]:IsShown(),
+	"reopening Themes did not show the currently selected palette's page")
+GameTooltip = nil
 
 -- Semantic Routes presents only the optional text-inference switches. Exact
 -- event/source routing is deliberately absent from this UI. The test also
