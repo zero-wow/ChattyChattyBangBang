@@ -72,20 +72,22 @@ local defaults = {
 		-- output into its own message history and leave every other frame write
 		-- untouched.
 		localCommandOutput = {
-			schema = 1,
+			schema = 2,
 			enabled = true,
 			destination = "system",
+			addonCommandsEnabled = true,
 		},
+		messageRoutePatternRules = {},
 		-- Smart Chat's own text presentation.  A missing font inherits the
 		-- player's current ChatFontNormal face; non-empty values are raw
 		-- LibSharedMedia font keys resolved by Core/Settings.lua.
 		textAppearance = {
-			schema = 3,
+			schema = 4,
 			size = 0,
 			outline = "INHERIT",
 			-- ScrollingMessageFrame:SetSpacing uses pixels between rendered lines.
 			-- Keep the default compact while allowing a little breathing room.
-			spacing = 1,
+			spacing = 3,
 			entryGapRows = 0,
 		},
 		dock = {

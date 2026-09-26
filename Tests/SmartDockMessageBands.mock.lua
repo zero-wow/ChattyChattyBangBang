@@ -36,10 +36,11 @@ local display = {
 	height = 50,
 	visibleLines = 5,
 	scroll = 0,
+	spacing = 0,
 	GetWidth = function(self) return self.width end,
 	GetHeight = function(self) return self.height end,
 	GetFont = function() return "Fonts\\FRIZQT__.TTF", 10 end,
-	GetSpacing = function() return 0 end,
+	GetSpacing = function(self) return self.spacing end,
 	GetNumLinesDisplayed = function(self) return self.visibleLines end,
 	GetCurrentScroll = function(self) return self.scroll end,
 }
@@ -84,10 +85,10 @@ assert(#textures == 2 and dock.messageBandVisibleCount == 2,
 	"wrapped logical records did not produce exactly one band apiece")
 assert(textures[1].points[1][4] == 60,
 	"AFTER PLAYER did not begin at the measured player/message boundary")
-assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -22,
-	"the wrapped entry lost its continuous band or bottom padding at the top clip")
-assert(textures[2].points[1][5] == -28 and textures[2].points[2][5] == -50,
-	"the bottom-clipped wrapped entry lost its top padding or escaped the viewport")
+assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -20,
+	"the wrapped entry lost its continuous band at the top clip")
+assert(textures[2].points[1][5] == -30 and textures[2].points[2][5] == -50,
+	"the bottom-clipped wrapped entry escaped its own rows or the viewport")
 assert(textures[1].color[1] == 0.1 and textures[1].color[2] == 0.2
 	and textures[1].color[3] == 0.3 and textures[1].color[4] == 0.22,
 	"message band color or independent alpha was lost")
@@ -97,7 +98,7 @@ assert(textures[1].color[1] == 0.1 and textures[1].color[2] == 0.2
 -- shift down onto unrelated chat entries.
 display.visibleLines = 3
 assert(dock:RefreshMessageBands(), "logical-message count disabled row bands")
-assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -22,
+assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -20,
 	"displayed message count was mistaken for visual rows and shifted the zebra bands")
 display.visibleLines = 5
 
@@ -106,8 +107,8 @@ display.scroll = 2
 assert(dock:RefreshMessageBands(), "scrolled history did not repaint message bands")
 assert(dock.messageBandVisibleCount == 1 and textures[1].shown and textures[2].shown == false,
 	"offscreen alternating records were not released from the bounded pool")
-assert(textures[1].points[1][5] == -18 and textures[1].points[2][5] == -42,
-	"scrolled wrapped entry did not gain balanced padding around its visible span")
+assert(textures[1].points[1][5] == -20 and textures[1].points[2][5] == -40,
+	"scrolled wrapped entry spilled onto adjacent no-gap rows")
 
 -- Every configured start boundary is measured from the same formatted leader
 -- used by the visible ScrollingMessageFrame.
@@ -152,8 +153,8 @@ dock:RefreshMessageBands()
 assert(textures[1].points[2][4] == 3,
 	"pre-layout full bleed did not derive the hidden-scrollbar viewport inset")
 
--- A single-line shade gets the same top and bottom room, even with no entry
--- gap configured. The native text width and scrollbar lane do not change.
+-- With no entry gap, a shade owns exactly its physical row. Native line
+-- spacing provides glyph padding; the band never leaks over adjacent text.
 bandSettings.extendUnderScrollbar = false
 bandSettings.extent = "full"
 dock.displayRecords = {
@@ -164,9 +165,9 @@ dock.displayRecords = {
 assert(dock:RefreshMessageBands() and dock.messageBandVisibleCount == 1,
 	"single-line alternating entry did not paint")
 assert(textures[1].points[1][4] == -3
-	and textures[1].points[1][5] == -28 and textures[1].points[2][5] == -42
+	and textures[1].points[1][5] == -30 and textures[1].points[2][5] == -40
 	and textures[1].points[2][4] == 0,
-	"single-line band did not retain symmetric padding inside the text viewport")
+	"single-line band did not stay within its own balanced row")
 
 -- A narrow display cannot host an AFTER PLAYER stripe whose prefix is wider
 -- than the text area. Retire the prior texture rather than spilling outward.
@@ -186,14 +187,45 @@ display.scroll = 1
 dock.displayRecords[1].bandAlternate = true
 dock.displayRecords[2].bandAlternate = false
 assert(dock:RefreshMessageBands() and textures[1].points[1][5] == 0
-	and textures[1].points[2][5] == -12,
-	"top-clipped shade escaped the viewport or lost its visible bottom padding")
+	and textures[1].points[2][5] == -10,
+	"top-clipped shade escaped the viewport or its own row")
 display.scroll = 0
 dock.displayRecords[1].bandAlternate = false
 dock.displayRecords[3].bandAlternate = true
-assert(dock:RefreshMessageBands() and textures[1].points[1][5] == -8
+assert(dock:RefreshMessageBands() and textures[1].points[1][5] == -10
 	and textures[1].points[2][5] == -20,
-	"bottom-clipped shade escaped the viewport or lost its visible top padding")
+	"bottom-clipped shade escaped the viewport or its own row")
+
+-- Optional blank rows are partitioned at their midpoint. Each neighbor gets
+-- equal visible breathing room, even with odd native line height, and a
+-- wrapped message remains one continuous band through all content lines.
+display.height = 132
+display.spacing = 1
+display.scroll = 0
+dock.displayRecords = {
+	{ record = { text = "one" }, gapRows = 0, lines = 1, bandAlternate = false },
+	{ record = { sender = "Two", text = "two wraps" }, gapRows = 1, lines = 3, bandAlternate = true },
+	{ record = { text = "three" }, gapRows = 1, lines = 2, bandAlternate = false },
+	{ record = { sender = "Four", text = "four" }, gapRows = 2, lines = 3, bandAlternate = true },
+	{ record = { text = "five" }, gapRows = 2, lines = 3, bandAlternate = false },
+}
+assert(dock:RefreshMessageBands() and dock.messageBandVisibleCount == 2,
+	"entry gaps broke alternating logical-message count")
+assert(textures[1].points[1][5] == -17 and textures[1].points[2][5] == -50,
+	"one-row gap did not split at the same boundary around a wrapped band")
+assert(textures[2].points[1][5] == -77 and textures[2].points[2][5] == -110,
+	"two-row gap did not split evenly around the later band")
+assert(textures[1].points[2][4] == 0 and textures[2].points[2][4] == 0,
+	"entry spacing altered the text viewport or scrollbar lane")
+
+-- A clipped multi-row gap must not paint beyond the viewport. The following
+-- band owns only its half of that gap, rather than coloring the whole spacer.
+display.height = 33
+display.scroll = 1
+assert(dock:RefreshMessageBands() and dock.messageBandVisibleCount == 1,
+	"clipped gap lost the final alternating message")
+assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -22,
+	"clipped gap band escaped the viewport or claimed both halves")
 
 bandSettings.enabled = false
 assert(dock:RefreshMessageBands() == false and textures[1].shown == false,

@@ -184,9 +184,10 @@ local MANUAL_WRAP_VALIDATION_PASSES = 4
 -- dock's 720px maximum height can expose fewer than ninety entries at once;
 -- 128 keeps the pool strictly bounded while covering every supported layout.
 local MESSAGE_BAND_POOL_LIMIT = 128
--- A small decorative gutter around the first and last line of each band.
--- Clamp it to the live line height so compact fonts retain an unshaded row.
-local MESSAGE_BAND_VERTICAL_PADDING = 3
+-- A configured blank row belongs equally to the messages on either side.
+-- Split odd pixel heights at the same boundary so neighboring bands neither
+-- overlap nor leave a seam. Without a blank row, native line spacing already
+-- provides the inset within each physical row; do not shade adjacent text.
 -- Shift-hover actions belong to one logical message, even when that message
 -- wraps across several rendered rows. Paint one theme-aware selection behind
 -- the readable glyphs so the BLOCK / ANALYZE target stays unmistakable without
@@ -4080,7 +4081,7 @@ end
 -- Draw only the currently visible alternating entries. One texture spans the
 -- entire clipped logical record, so every wrapped continuation shares exactly
 -- the same band and scrolling cannot turn a long message into zebra stripes.
--- The overhang never changes native text spacing and stops at viewport edges.
+-- Gap coverage never changes native text spacing and stops at viewport edges.
 function Dock:RefreshMessageBands()
 	local appearance = self:GetMessageBandAppearance()
 	local display = self.display
@@ -4102,7 +4103,6 @@ function Dock:RefreshMessageBands()
 		self:HideMessageBands()
 		return false
 	end
-	local verticalPadding = math.min(MESSAGE_BAND_VERTICAL_PADDING, math.floor(lineHeight / 4))
 	local bandRightOffset = 0
 	if appearance.extendUnderScrollbar then
 		local rightInset = tonumber(self.transientMessageRightInset)
@@ -4128,13 +4128,20 @@ function Dock:RefreshMessageBands()
 				used = used + 1
 				local band = self:AcquireMessageBand(used)
 				if band then
+					local topGapRows = math.max(0, math.floor(tonumber(entry.gapRows) or 0))
+					local nextEntry = records[index + 1]
+					local bottomGapRows = nextEntry
+						and math.max(0, math.floor(tonumber(nextEntry.gapRows) or 0)) or 0
+					local topPadding = math.floor(topGapRows * lineHeight / 2)
+					local bottomGapPixels = bottomGapRows * lineHeight
+					local bottomPadding = bottomGapPixels - math.floor(bottomGapPixels / 2)
 					local top = math.max(0, geometry.topInset
 						+ (visible.visibleContentFirstLine - geometry.firstVisibleLine) * lineHeight
-						- verticalPadding)
+						- topPadding)
 					local bottom = math.min(displayHeight,
 						geometry.topInset
 						+ (visible.visibleContentLastLine - geometry.firstVisibleLine + 1) * lineHeight
-						+ verticalPadding)
+						+ bottomPadding)
 					band:ClearAllPoints()
 					local bandStartX = appearance.extent == "full"
 						and -(math.max(4, tonumber(self.transientMessageLeftInset) or 4)
@@ -4605,13 +4612,16 @@ function Dock:HideMessageBlockControls()
 	if self.analysisPanel then
 		self.analysisPanel:Hide()
 	end
+	if self.analysisRuleEditor then self.analysisRuleEditor:Hide() end
 	self:HideMessageRouteOverrideMenu()
+	if self.analysisRuleDestinationMenu then self.analysisRuleDestinationMenu:Hide() end
 	self.blockActionRecord = nil
 	self.blockChoicesRecord = nil
 	self.analysisActionRecord = nil
 	self.analysisRecord = nil
 	self.analysisDotExpires = nil
 	self.analysisReportExpectedRoute = nil
+	self.analysisPatternRuleIndex = nil
 end
 
 function Dock:EnsureMessageBlockDriver()
@@ -4665,6 +4675,10 @@ function Dock:UpdateMessageBlockAction()
 		self:HideMessageBlockControls()
 		return
 	end
+	-- A focused rule editor is explicitly dismissed with its own controls.
+	-- Mouse movement away from the compact chat surface must not discard edits.
+	if self.analysisRuleEditor and self.analysisRuleEditor.IsShown
+		and self.analysisRuleEditor:IsShown() then return end
 
 	local overDisplay = self.display.IsMouseOver and self.display:IsMouseOver()
 	local overAction = self.blockAction and self.blockAction.IsMouseOver and self.blockAction:IsMouseOver()
@@ -4672,6 +4686,8 @@ function Dock:UpdateMessageBlockAction()
 	local overAnalyze = self.analysisAction and self.analysisAction.IsMouseOver and self.analysisAction:IsMouseOver()
 	local overAnalysisPanel = (self.analysisPanel and self.analysisPanel.IsMouseOver and self.analysisPanel:IsMouseOver())
 		or (self.analysisRouteMenu and self.analysisRouteMenu.IsMouseOver and self.analysisRouteMenu:IsMouseOver())
+		or (self.analysisRuleEditor and self.analysisRuleEditor.IsMouseOver
+			and self.analysisRuleEditor:IsMouseOver())
 	local overMessageDot = false
 	for _, dot in ipairs(self.messageTypeDotPool or {}) do
 		if dot.IsShown and dot:IsShown() and dot.IsMouseOver and dot:IsMouseOver() then
@@ -4759,9 +4775,11 @@ local function compactAnalysisText(value, maximum)
 	return value
 end
 
-local function setAnalysisRowText(row, value)
+local function setAnalysisRowText(row, value, visibleLimit)
 	value = tostring(value or "")
-	row:SetText(compactAnalysisText(value, 46))
+	-- The inspector reserves wrapped rows; only exceptionally long evidence is
+	-- shortened. The full value is always available from the row tooltip.
+	row:SetText(compactAnalysisText(value, visibleLimit or 120))
 	if row.analysisHit then
 		row.analysisHit.analysisFullText = string.sub(value, 1, 1200)
 	end
@@ -4810,6 +4828,7 @@ local analysisViewLabels = {
 local analysisCaptureReasons = {
 	event = "message event", source = "channel source", semantic = "semantic score",
 	override = "manual correction", provider = "compatibility provider",
+	["pattern-rule"] = "saved phrase rule",
 	["local-command"] = "command output setting", sync = "sync protocol",
 	general = "General fallback",
 }
@@ -4820,18 +4839,21 @@ end
 
 function Dock:RefreshMessageAnalysisLayout()
 	local panel = self.analysisPanel
-	local host = self.frame or self.content
+	local host = UIParent or self.frame or self.content
 	if not panel or not host then return false end
 	local hostWidth = host.GetWidth and tonumber(host:GetWidth()) or 0
 	local hostHeight = host.GetHeight and tonumber(host:GetHeight()) or 0
-	local width = 356
-	local height = 154
+	local width = 500
+	local height = 316
+	local scale = 1
 	if hostWidth > 0 then
-		width = math.max(1, math.min(width, hostWidth - 8))
+		scale = math.min(scale, (hostWidth - 24) / width)
 	end
-	if hostHeight > 0 then height = math.max(1, math.min(height, hostHeight - 8)) end
+	if hostHeight > 0 then scale = math.min(scale, (hostHeight - 24) / height) end
+	scale = math.max(0.1, math.min(1, scale))
+	if panel.SetScale then panel:SetScale(scale) end
 	panel:ClearAllPoints()
-	panel:SetPoint("TOPRIGHT", host, "TOPRIGHT", -4, -4)
+	panel:SetPoint("CENTER", host, "CENTER", 0, 0)
 	panel:SetWidth(width)
 	panel:SetHeight(height)
 	return true, width, height
@@ -4861,14 +4883,30 @@ function Dock:ShowMessageAnalysis(record)
 		source = source .. " / " .. analysis.channel
 	end
 	local signals = #analysis.signals > 0 and table.concat(analysis.signals, ", ") or "No special classifier signals."
+	local semantic = type(analysis.semantic) == "table" and analysis.semantic or nil
+	local evidenceSummary = signals
+	if semantic and semantic.isGuildAdvert then
+		evidenceSummary = "Guild identity + recruiting invitation. LF roles describe guild needs."
+	elseif semantic and type(semantic.scores) == "table" and type(semantic.threshold) == "table" then
+		local routeId = analysis.category == "pvp" and "pvp"
+			or analysis.category == "trade" and "trade" or "groupFinder"
+		local score = tonumber(semantic.scores[routeId]) or 0
+		local threshold = tonumber(semantic.threshold[routeId]) or 0
+		local parts = {}
+		for index = 1, math.min(3, #(semantic.signals and semantic.signals[routeId] or {})) do
+			parts[#parts + 1] = semantic.signals[routeId][index]
+		end
+		evidenceSummary = analysisViewLabel(routeId) .. " " .. score .. "/" .. threshold
+			.. (#parts > 0 and (": " .. table.concat(parts, " · ")) or ": no qualifying clues")
+	end
 	local why = #analysis.reasons > 0 and table.concat(analysis.reasons, " ") or "No stored classifier reason."
 	if analysis.blocked then
 		why = why .. " Blocked: " .. tostring(analysis.blockReason or "message rule") .. "."
 	end
-	setAnalysisRowText(self.analysisSource, source)
+	setAnalysisRowText(self.analysisSource, source, 110)
 	local capturedView = analysisViewLabel(analysis.captureRouteView)
 	local currentView = analysisViewLabel(analysis.view or "general")
-	setAnalysisRowText(self.analysisRoute, "THEN " .. capturedView .. "  |  NOW " .. currentView)
+	setAnalysisRowText(self.analysisRoute, "THEN " .. capturedView .. "  |  NOW " .. currentView, 90)
 	if self.analysisRoute.analysisHit then
 		self.analysisRoute.analysisHit.analysisFullText = analysis.captureRouteView
 			and ("THEN: " .. capturedView .. " (" .. tostring(analysis.captureRouteCategory or "general")
@@ -4877,20 +4915,50 @@ function Dock:ShowMessageAnalysis(record)
 			or ("THEN: Unknown (saved before route tracking)\nNOW: " .. currentView
 				.. " (" .. tostring(analysis.category or "general") .. ")")
 	end
-	setAnalysisRowText(self.analysisSignals, signals)
+	setAnalysisRowText(self.analysisSignals, evidenceSummary, 130)
+	if self.analysisSignals.analysisHit then
+		self.analysisSignals.analysisHit.analysisFullText = signals
+	end
 	if not analysis.captureRouteView then
 		why = why .. " Original route unavailable for this older saved line."
 	end
-	setAnalysisRowText(self.analysisWhy, why)
+	setAnalysisRowText(self.analysisWhy, why, 130)
 	local canOverride = record.event == "CHAT_MSG_CHANNEL"
 		and type(addon.SetMessageRouteOverride) == "function"
+	local exactOverride
+	if canOverride and type(addon.GetMessageRouteOverride) == "function" then
+		local ok, category = pcall(addon.GetMessageRouteOverride, addon, record)
+		if ok then exactOverride = category end
+	elseif not record.routePatternRuleIndex then
+		exactOverride = analysis.routeOverrideCategory
+	end
+	local patternIndex
+	if canOverride and type(addon.GetMessageRoutePatternOverride) == "function" then
+		local ok, _, index, preview = pcall(addon.GetMessageRoutePatternOverride, addon, record)
+		if ok then
+			patternIndex = index
+			if index and type(preview) == "table" then
+				local matched = {}
+				for _, phrase in ipairs(preview.include or {}) do
+					if phrase.found then matched[#matched + 1] = phrase.phrase end
+				end
+				setAnalysisRowText(self.analysisSignals, "Saved rule #" .. tostring(index)
+					.. " matched ALL: " .. table.concat(matched, " + "), 130)
+				if self.analysisSignals.analysisHit then
+					self.analysisSignals.analysisHit.analysisFullText =
+						(preview.luaPatternPreview or "") .. "\n" .. signals
+				end
+			end
+		end
+	end
+	self.analysisPatternRuleIndex = patternIndex
 	if self.analysisRouteControls then
 		for _, control in ipairs(self.analysisRouteControls) do
 			if canOverride then control:Show() else control:Hide() end
 		end
 	end
 	if canOverride then
-		local selected = analysis.routeOverrideCategory or analysis.category
+		local selected = exactOverride or analysis.category
 		if not self:SetMessageRouteOverrideDestination(selected, true) then
 			self:SetMessageRouteOverrideDestination("general", true)
 		end
@@ -4899,7 +4967,7 @@ function Dock:ShowMessageAnalysis(record)
 		self.analysisRouteMenu:Hide()
 	end
 	if self.analysisRemoveOverride then
-		if canOverride and analysis.routeOverrideCategory then
+		if canOverride and exactOverride then
 			self.analysisRemoveOverride:Show()
 		else
 			self.analysisRemoveOverride:Hide()
@@ -4907,7 +4975,13 @@ function Dock:ShowMessageAnalysis(record)
 	end
 	if self.analysisFootnote then
 		if canOverride then
-			self.analysisFootnote:SetText("MOVE saves the primary route; checked source feeds can keep a mirrored copy.")
+			self.analysisFootnote:SetText(patternIndex and exactOverride
+				and ("Exact MOVE currently wins; phrase rule #" .. tostring(patternIndex)
+					.. " also matches. RULE... can remove that rule.")
+				or patternIndex
+				and ("Saved phrase rule #" .. tostring(patternIndex)
+					.. " is active. RULE... can preview a new rule or undo this one.")
+				or "MOVE fixes identical text; RULE... matches chosen phrases in future messages.")
 		else
 			self.analysisFootnote:SetText("Read-only: this message type cannot be rerouted.")
 		end
@@ -4993,8 +5067,15 @@ function Dock:SetMessageRouteOverrideDestination(category, quiet)
 	if self.analysisRouteSelector then
 		self.analysisRouteSelector:SetLabel(label .. " v")
 	end
+	if self.analysisRuleDestination then
+		self.analysisRuleDestination:SetLabel(label .. " v")
+	end
 	if not quiet and self.analysisFootnote then
 		self.analysisFootnote:SetText("Ready to save " .. label .. " as the primary route. Checked source feeds remain visible.")
+	end
+	if self.analysisRuleEditor and self.analysisRuleEditor.IsShown
+		and self.analysisRuleEditor:IsShown() then
+		self:RefreshMessageRoutePatternPreview()
 	end
 	return true
 end
@@ -5097,6 +5178,390 @@ function Dock:RemoveMessageRouteOverride()
 		return false, reason or "failed"
 	end
 	self:HideMessageRouteOverrideMenu()
+	return true
+end
+
+local function splitRouteRulePhrases(value)
+	local result = {}
+	value = type(value) == "string" and value or ""
+	if not string.find(value, "%S") then return result end
+	for phrase in string.gmatch(value .. ",", "(.-),") do
+		phrase = string.gsub(string.gsub(phrase, "^%s+", ""), "%s+$", "")
+		result[#result + 1] = phrase
+	end
+	return result
+end
+
+local function routeRulePhraseText(phrases)
+	return type(phrases) == "table" and table.concat(phrases, ", ") or ""
+end
+
+local function suggestedRouteRulePhrases(record)
+	local matcher = addon.RoutePatternRules
+	local visible = matcher and matcher.NormalizeText
+		and matcher:NormalizeText(record and (record.text or record.normalized) or "") or ""
+	if string.find(visible, "[guild:", 1, true)
+		and string.find(visible, "is a new guild", 1, true) then
+		return "[Guild:, is a new guild"
+	end
+	-- Start with one visible clause. The player can shorten or replace it
+	-- before saving; no broad automatic rule is persisted from this suggestion.
+	local firstClause = string.match(visible, "^([^,;.!?]+)") or visible
+	firstClause = string.gsub(string.sub(firstClause, 1, 64), "%s+$", "")
+	return firstClause
+end
+
+local function colorizedRouteRulePreview(preview)
+	local visible = preview.visibleText or ""
+	local limit = math.min(#visible, 220)
+	local states = {}
+	for _, span in ipairs(preview.matchedSpans or {}) do
+		for index = span.first, math.min(span.last, limit) do states[index] = "match" end
+	end
+	for _, phrase in ipairs(preview.exclude or {}) do
+		for _, span in ipairs(phrase.spans or {}) do
+			for index = span.first, math.min(span.last, limit) do states[index] = "exclude" end
+		end
+	end
+	local colors = { match = "|cffffd166", exclude = "|cffff8686", ignored = "|cff9ba8b8" }
+	local parts, cursor = {}, 1
+	while cursor <= limit do
+		local state = states[cursor] or "ignored"
+		local last = cursor
+		while last < limit and (states[last + 1] or "ignored") == state do last = last + 1 end
+		local segment = string.gsub(string.sub(visible, cursor, last), "|", "||")
+		parts[#parts + 1] = colors[state] .. segment .. "|r"
+		cursor = last + 1
+	end
+	if #visible > limit then parts[#parts + 1] = "|cff9ba8b8...|r" end
+	return table.concat(parts)
+end
+
+function Dock:GetMessageRoutePatternDraft()
+	local record = self.analysisRecord
+	local scope = self.analysisRuleScope and self.analysisRuleScope.checked
+	return {
+		destination = self.analysisRouteDestination,
+		sourceId = scope and record and record.sourceId or nil,
+		include = splitRouteRulePhrases(self.analysisRuleInclude
+			and self.analysisRuleInclude:GetText()),
+		exclude = splitRouteRulePhrases(self.analysisRuleExclude
+			and self.analysisRuleExclude:GetText()),
+	}
+end
+
+function Dock:RefreshMessageRoutePatternPreview()
+	local record, matcher = self.analysisRecord, addon.RoutePatternRules
+	if not record or not matcher or type(matcher.Preview) ~= "function" then
+		return false, "unavailable"
+	end
+	local draft = self:GetMessageRoutePatternDraft()
+	local preview, reason = matcher:Preview(draft, record)
+	self.analysisRulePreview = preview
+	if self.analysisRulePatternPreview then
+		self.analysisRulePatternPreview:SetText(preview
+			and compactAnalysisText(preview.luaPatternPreview, 230)
+			or "Choose at least one required phrase (3+ characters).")
+		self.analysisRulePatternPreview.analysisFullText = preview
+			and preview.luaPatternPreview or tostring(reason or "Invalid rule")
+	end
+	if self.analysisRuleMessagePreview then
+		self.analysisRuleMessagePreview:SetText(preview
+			and colorizedRouteRulePreview(preview) or "")
+		self.analysisRuleMessagePreview.analysisFullText = preview
+			and preview.visibleText or ""
+	end
+	if self.analysisRuleStatus then
+		local label = self:GetMessageRouteOverrideDestinationLabel(draft.destination)
+		if preview and preview.matches then
+			self.analysisRuleStatus:SetText("READY · This message matches; future matching public lines go to "
+				.. tostring(label or draft.destination) .. ".")
+		elseif preview then
+			self.analysisRuleStatus:SetText("NOT MATCHED · " .. tostring(preview.reason)
+				.. ". Adjust ALL, NONE, or channel scope before saving.")
+		else
+			self.analysisRuleStatus:SetText("INVALID · " .. tostring(reason or "rule") .. ".")
+		end
+	end
+	if self.analysisRuleSave and self.analysisRuleSave.SetEnabled then
+		self.analysisRuleSave:SetEnabled(preview and preview.matches or false)
+	end
+	return preview and preview.matches or false, preview or reason
+end
+
+function Dock:RefreshMessageRoutePatternEditorLayout()
+	local editor = self.analysisRuleEditor
+	if not editor then return false end
+	local host = UIParent or self.frame
+	if not host then return false end
+	local width = host.GetWidth and tonumber(host:GetWidth()) or 0
+	local height = host.GetHeight and tonumber(host:GetHeight()) or 0
+	local scale = 1
+	if width > 0 then scale = math.min(scale, (width - 24) / 520) end
+	if height > 0 then scale = math.min(scale, (height - 24) / 400) end
+	scale = math.max(0.1, math.min(1, scale))
+	if editor.SetScale then editor:SetScale(scale) end
+	editor:ClearAllPoints()
+	editor:SetPoint("CENTER", host, "CENTER", 0, 0)
+	editor:SetSize(520, 400)
+	return true, scale
+end
+
+function Dock:RefreshMessageRoutePatternDestinationMenu()
+	local menu = self.analysisRuleDestinationMenu
+	if not menu then return false end
+	local destinations = self:GetMessageRouteOverrideDestinations()
+	for index, button in ipairs(self.analysisRuleDestinationMenuButtons or {}) do
+		local destination = destinations[index]
+		if destination then
+			button.routeDestination = destination
+			button:SetLabel(destination.label)
+			button:Show()
+		else
+			button.routeDestination = nil
+			button:Hide()
+		end
+	end
+	local rows = math.max(1, math.ceil(#destinations / 2))
+	menu:SetHeight(8 + rows * 18 + (rows - 1) * 2)
+	return #destinations > 0
+end
+
+function Dock:ToggleMessageRoutePatternDestinationMenu()
+	local menu = self.analysisRuleDestinationMenu
+	if not menu then return false end
+	if menu:IsShown() then menu:Hide() return false end
+	if not self:RefreshMessageRoutePatternDestinationMenu() then return false end
+	menu:Show()
+	return true
+end
+
+function Dock:EnsureMessageRoutePatternEditor()
+	if self.analysisRuleEditor then return self.analysisRuleEditor end
+	if not self.frame or not Theme or not Theme.CreatePanel then return nil end
+	local editor = Theme:CreatePanel(self.frame, "surfaceRaised", "gold")
+	editor:SetSize(520, 400)
+	editor:SetFrameStrata("DIALOG")
+	editor:SetFrameLevel(self.frame:GetFrameLevel() + 35)
+	if editor.SetClampedToScreen then editor:SetClampedToScreen(true) end
+	editor:EnableMouse(true)
+	editor:Hide()
+	editor:SetScript("OnHide", function()
+		if Dock.analysisRuleDestinationMenu then Dock.analysisRuleDestinationMenu:Hide() end
+	end)
+	self.analysisRuleEditor = editor
+
+	local title = Theme:CreateText(editor, "GameFontNormalSmall", "goldBright")
+	title:SetPoint("TOPLEFT", editor, "TOPLEFT", 14, -11)
+	title:SetText("PERMANENT ROUTE RULE")
+	local close = createTightButton(editor, "CLOSE", 18, false)
+	close:SetPoint("TOPRIGHT", editor, "TOPRIGHT", -12, -8)
+	close:SetScript("OnClick", function() editor:Hide() end)
+	local to = Theme:CreateText(editor, "GameFontNormalSmall", "gold")
+	to:SetPoint("TOPLEFT", editor, "TOPLEFT", 14, -43)
+	to:SetText("SEND TO")
+	local destination = Theme:CreateButton(editor, "GENERAL v", 170, 20, false)
+	destination:SetPoint("LEFT", to, "RIGHT", 10, 0)
+	destination:SetScript("OnClick", function() Dock:ToggleMessageRoutePatternDestinationMenu() end)
+	self.analysisRuleDestination = destination
+
+	local scope = Theme:CreateCompactToggle(editor, "ONLY THIS CHANNEL", 158)
+	scope:SetPoint("TOPRIGHT", editor, "TOPRIGHT", -14, -38)
+	scope.OnValueChanged = function() Dock:RefreshMessageRoutePatternPreview() end
+	self.analysisRuleScope = scope
+	local scopeHint = Theme:CreateText(editor, "GameFontHighlightSmall", "textMuted")
+	scopeHint:SetPoint("TOPLEFT", editor, "TOPLEFT", 14, -72)
+	scopeHint:SetPoint("RIGHT", editor, "RIGHT", -14, 0)
+	scopeHint:SetText("Only public-channel messages are eligible. This channel is selected by default.")
+	self.analysisRuleScopeHint = scopeHint
+
+	local function addEditorLabel(text, top)
+		local label = Theme:CreateText(editor, "GameFontNormalSmall", "gold")
+		label:SetPoint("TOPLEFT", editor, "TOPLEFT", 14, top)
+		label:SetText(text)
+		return label
+	end
+	addEditorLabel("ALL · required phrases (comma-separated)", -99)
+	local include = Theme:CreateEditBox(editor, 492, 23, false)
+	include:SetPoint("TOPLEFT", editor, "TOPLEFT", 14, -117)
+	include:SetMaxLetters(384)
+	include:SetScript("OnTextChanged", function() Dock:RefreshMessageRoutePatternPreview() end)
+	self.analysisRuleInclude = include
+	addEditorLabel("NONE · phrases that veto this rule (optional)", -156)
+	local exclude = Theme:CreateEditBox(editor, 492, 23, false)
+	exclude:SetPoint("TOPLEFT", editor, "TOPLEFT", 14, -174)
+	exclude:SetMaxLetters(384)
+	exclude:SetScript("OnTextChanged", function() Dock:RefreshMessageRoutePatternPreview() end)
+	self.analysisRuleExclude = exclude
+	addEditorLabel("GENERATED LUA PATTERN PREVIEW · literal phrases, not PCRE", -214)
+	local pattern = Theme:CreateText(editor, "GameFontHighlightSmall", "text")
+	pattern:SetPoint("TOPLEFT", editor, "TOPLEFT", 14, -232)
+	pattern:SetPoint("RIGHT", editor, "RIGHT", -14, 0)
+	pattern:SetHeight(40)
+	pattern:SetJustifyH("LEFT")
+	if pattern.SetWordWrap then pattern:SetWordWrap(true) end
+	self.analysisRulePatternPreview = pattern
+	local patternHit = CreateFrame("Frame", nil, editor)
+	patternHit:SetPoint("TOPLEFT", pattern, "TOPLEFT", 0, 0)
+	patternHit:SetPoint("BOTTOMRIGHT", pattern, "BOTTOMRIGHT", 0, 0)
+	patternHit:EnableMouse(true)
+	patternHit:SetScript("OnEnter", function(self)
+		if not GameTooltip then return end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Generated Lua pattern preview")
+		GameTooltip:AddLine(pattern.analysisFullText or "", 0.82, 0.84, 0.9, true)
+		GameTooltip:Show()
+	end)
+	patternHit:SetScript("OnLeave", function()
+		if GameTooltip then GameTooltip:Hide() end
+	end)
+	addEditorLabel("THIS MESSAGE · gold causes the route, gray is ignored, red vetoes", -279)
+	local sample = Theme:CreateText(editor, "GameFontHighlightSmall", "textMuted")
+	sample:SetPoint("TOPLEFT", editor, "TOPLEFT", 14, -297)
+	sample:SetPoint("RIGHT", editor, "RIGHT", -14, 0)
+	sample:SetHeight(43)
+	sample:SetJustifyH("LEFT")
+	if sample.SetWordWrap then sample:SetWordWrap(true) end
+	self.analysisRuleMessagePreview = sample
+	local sampleHit = CreateFrame("Frame", nil, editor)
+	sampleHit:SetPoint("TOPLEFT", sample, "TOPLEFT", 0, 0)
+	sampleHit:SetPoint("BOTTOMRIGHT", sample, "BOTTOMRIGHT", 0, 0)
+	sampleHit:EnableMouse(true)
+	sampleHit:SetScript("OnEnter", function(self)
+		if not GameTooltip then return end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Normalized visible message")
+		GameTooltip:AddLine(sample.analysisFullText or "", 0.82, 0.84, 0.9, true)
+		GameTooltip:Show()
+	end)
+	sampleHit:SetScript("OnLeave", function()
+		if GameTooltip then GameTooltip:Hide() end
+	end)
+
+	local status = Theme:CreateText(editor, "GameFontHighlightSmall", "textMuted")
+	status:SetPoint("BOTTOMLEFT", editor, "BOTTOMLEFT", 14, 33)
+	status:SetPoint("RIGHT", editor, "RIGHT", -14, 0)
+	status:SetHeight(18)
+	self.analysisRuleStatus = status
+	local save = createTightButton(editor, "SAVE RULE", 20, true)
+	save:SetPoint("BOTTOMLEFT", editor, "BOTTOMLEFT", 14, 10)
+	save:SetScript("OnClick", function() Dock:SaveMessageRoutePatternRule() end)
+	self.analysisRuleSave = save
+	local undo = createTightButton(editor, "UNDO RULE", 20, false)
+	undo:SetPoint("LEFT", save, "RIGHT", 8, 0)
+	undo:SetScript("OnClick", function() Dock:UndoMessageRoutePatternRule() end)
+	self.analysisRuleUndo = undo
+	local cancel = createTightButton(editor, "CANCEL", 20, false)
+	cancel:SetPoint("BOTTOMRIGHT", editor, "BOTTOMRIGHT", -14, 10)
+	cancel:SetScript("OnClick", function() editor:Hide() end)
+
+	local menu = Theme:CreatePanel(editor, "surfaceRaised", "gold")
+	menu:SetSize(344, 1)
+	menu:SetPoint("TOPLEFT", destination, "BOTTOMLEFT", 0, -3)
+	menu:SetFrameLevel(editor:GetFrameLevel() + 3)
+	menu:EnableMouse(true)
+	menu:Hide()
+	self.analysisRuleDestinationMenu = menu
+	self.analysisRuleDestinationMenuButtons = {}
+	for index = 1, 8 do
+		local choice = Theme:CreateButton(menu, "", 166, 18, false)
+		local row = math.floor((index - 1) / 2)
+		local column = (index - 1) % 2
+		choice:SetPoint("TOPLEFT", menu, "TOPLEFT", 4 + column * 170, -4 - row * 20)
+		choice:SetScript("OnClick", function(button)
+			if button.routeDestination then
+				Dock:SetMessageRouteOverrideDestination(button.routeDestination.id, true)
+				menu:Hide()
+			end
+		end)
+		self.analysisRuleDestinationMenuButtons[index] = choice
+	end
+	self:RefreshMessageRoutePatternEditorLayout()
+	return editor
+end
+
+function Dock:ShowMessageRoutePatternEditor()
+	local record = self.analysisRecord
+	if not record or record.event ~= "CHAT_MSG_CHANNEL" then return false, "public-channel-only" end
+	if type(addon.SetMessageRoutePatternRule) ~= "function" or not addon.RoutePatternRules then
+		return false, "unavailable"
+	end
+	local editor = self:EnsureMessageRoutePatternEditor()
+	if not editor then return false, "unavailable" end
+	local existing
+	if self.analysisPatternRuleIndex and type(addon.GetMessageRoutePatternRules) == "function" then
+		local ok, rules = pcall(addon.GetMessageRoutePatternRules, addon)
+		if ok and type(rules) == "table" then existing = rules[self.analysisPatternRuleIndex] end
+	end
+	local sourceEligible = type(record.sourceId) == "string"
+		and string.match(string.lower(record.sourceId), "^channel:[%w%-]+$") ~= nil
+	self.analysisRuleScope:SetValue(existing and existing.sourceId ~= nil
+		or not existing and sourceEligible, true)
+	if self.analysisRuleScope.EnableMouse then
+		self.analysisRuleScope:EnableMouse(sourceEligible)
+	end
+	self.analysisRuleInclude:SetText(existing and routeRulePhraseText(existing.include)
+		or suggestedRouteRulePhrases(record))
+	self.analysisRuleExclude:SetText(existing and routeRulePhraseText(existing.exclude) or "")
+	self.analysisRuleScopeHint:SetText(sourceEligible
+		and ("Source: " .. tostring(record.sourceId) .. ". Uncheck to match every public channel.")
+		or "This message has no stable channel ID; the rule can match public channels only.")
+	if self.analysisPatternRuleIndex then self.analysisRuleUndo:Show()
+	else self.analysisRuleUndo:Hide() end
+	self.analysisRuleDestination:SetLabel(tostring(self:GetMessageRouteOverrideDestinationLabel(
+		self.analysisRouteDestination) or "GENERAL") .. " v")
+	self:RefreshMessageRoutePatternDestinationMenu()
+	self:RefreshMessageRoutePatternEditorLayout()
+	editor:Show()
+	self:RefreshMessageRoutePatternPreview()
+	return true
+end
+
+function Dock:SaveMessageRoutePatternRule()
+	local record = self.analysisRecord
+	if not record or type(addon.SetMessageRoutePatternRule) ~= "function" then
+		return false, "unavailable"
+	end
+	local matches = self:RefreshMessageRoutePatternPreview()
+	if not matches then return false, "sample-does-not-match" end
+	local draft = self:GetMessageRoutePatternDraft()
+	-- Settings rebuilds synchronously and may close both panels. Retain the
+	-- record locally so feedback still follows the selected line afterward.
+	local ok, saved, detail = pcall(addon.SetMessageRoutePatternRule, addon, record,
+		draft, self.analysisPatternRuleIndex)
+	if not ok or saved ~= true then
+		if self.analysisRuleStatus then
+			self.analysisRuleStatus:SetText("Could not save rule: " .. tostring(detail or "failed") .. ".")
+		end
+		return false, detail or "failed"
+	end
+	if self.analysisRuleEditor then self.analysisRuleEditor:Hide() end
+	self:ShowMessageAnalysis(record)
+	if self.analysisFootnote then
+		self.analysisFootnote:SetText("Permanent phrase rule #" .. tostring(detail)
+			.. " saved. Future matching public messages follow it; open RULE... to undo.")
+	end
+	return true, detail
+end
+
+function Dock:UndoMessageRoutePatternRule()
+	local index, record = self.analysisPatternRuleIndex, self.analysisRecord
+	if not index or not record or type(addon.RemoveMessageRoutePatternRule) ~= "function" then
+		return false, "missing"
+	end
+	local ok, removed, reason = pcall(addon.RemoveMessageRoutePatternRule, addon, index)
+	if not ok or removed ~= true then
+		if self.analysisRuleStatus then
+			self.analysisRuleStatus:SetText("Could not undo rule: " .. tostring(reason or "failed") .. ".")
+		end
+		return false, reason or "failed"
+	end
+	if self.analysisRuleEditor then self.analysisRuleEditor:Hide() end
+	self:ShowMessageAnalysis(record)
+	if self.analysisFootnote then
+		self.analysisFootnote:SetText("Permanent phrase rule #" .. tostring(index)
+			.. " removed; remaining route settings were reapplied.")
+	end
 	return true
 end
 
@@ -7801,6 +8266,20 @@ function Dock:DiscardPartialBuild()
 	self.analysisRouteDestinations = nil
 	self.analysisRouteDestination = nil
 	self.analysisRemoveOverride = nil
+	self.analysisRuleButton = nil
+	self.analysisRuleEditor = nil
+	self.analysisRuleDestination = nil
+	self.analysisRuleDestinationMenu = nil
+	self.analysisRuleDestinationMenuButtons = nil
+	self.analysisRuleScope = nil
+	self.analysisRuleInclude = nil
+	self.analysisRuleExclude = nil
+	self.analysisRulePatternPreview = nil
+	self.analysisRuleMessagePreview = nil
+	self.analysisRuleStatus = nil
+	self.analysisRuleSave = nil
+	self.analysisRuleUndo = nil
+	self.analysisPatternRuleIndex = nil
 	self.chatHelpTrigger = nil
 	self.chatHelpMenu = nil
 	self.chatHelpTitle = nil
@@ -8761,9 +9240,14 @@ function Dock:BuildMessageBlockControls()
 	self:BindHeaderHover(close)
 	choices:SetWidth(2 + exact:GetWidth() + 2 + contains:GetWidth() + 2 + close:GetWidth() + 2)
 
-	local analysisPanel = Theme:CreatePanel(self.content, "surfaceRaised", "gold")
-	analysisPanel:SetSize(356, 154)
-	analysisPanel:SetFrameLevel(self.content:GetFrameLevel() + 22)
+	-- The dock itself can shrink to 360x160. Keep the inspector attached to the
+	-- dock lifecycle but centered in the screen, where every evidence row and
+	-- action remains readable at that minimum chat size.
+	local analysisPanel = Theme:CreatePanel(self.frame, "surfaceRaised", "gold")
+	analysisPanel:SetSize(500, 316)
+	analysisPanel:SetFrameStrata("DIALOG")
+	analysisPanel:SetFrameLevel(self.frame:GetFrameLevel() + 22)
+	if analysisPanel.SetClampedToScreen then analysisPanel:SetClampedToScreen(true) end
 	analysisPanel:EnableMouse(true)
 	analysisPanel:Hide()
 	self.analysisPanel = analysisPanel
@@ -8777,10 +9261,10 @@ function Dock:BuildMessageBlockControls()
 	end)
 
 	local analysisTitle = Theme:CreateText(analysisPanel, "GameFontNormalSmall", "goldBright")
-	analysisTitle:SetPoint("TOPLEFT", analysisPanel, "TOPLEFT", 7, -6)
+	analysisTitle:SetPoint("TOPLEFT", analysisPanel, "TOPLEFT", 14, -11)
 	analysisTitle:SetText("MESSAGE ANALYSIS")
 	local analysisClose = createTightButton(analysisPanel, "CLOSE", 18, false)
-	analysisClose:SetPoint("TOPRIGHT", analysisPanel, "TOPRIGHT", -4, -3)
+	analysisClose:SetPoint("TOPRIGHT", analysisPanel, "TOPRIGHT", -10, -7)
 	analysisClose:SetScript("OnClick", function()
 		Dock:HideMessageBlockControls()
 	end)
@@ -8796,21 +9280,22 @@ function Dock:BuildMessageBlockControls()
 	if analysisTitle.SetWordWrap then analysisTitle:SetWordWrap(false) end
 	self.analysisReport = analysisReport
 
-	local function addAnalysisRow(labelText, top)
+	local function addAnalysisRow(labelText, top, rowHeight)
 		local label = Theme:CreateText(analysisPanel, "GameFontNormalSmall", "gold")
-		label:SetPoint("TOPLEFT", analysisPanel, "TOPLEFT", 7, top)
-		label:SetWidth(54)
+		label:SetPoint("TOPLEFT", analysisPanel, "TOPLEFT", 14, top)
+		label:SetPoint("RIGHT", analysisPanel, "RIGHT", -14, 0)
 		label:SetJustifyH("LEFT")
 		label:SetText(labelText)
 		local value = Theme:CreateText(analysisPanel, "GameFontHighlightSmall", "text")
-		value:SetPoint("TOPLEFT", analysisPanel, "TOPLEFT", 63, top)
-		value:SetPoint("RIGHT", analysisPanel, "RIGHT", -7, 0)
+		value:SetPoint("TOPLEFT", analysisPanel, "TOPLEFT", 14, top - 17)
+		value:SetPoint("RIGHT", analysisPanel, "RIGHT", -14, 0)
+		value:SetHeight(rowHeight)
 		value:SetJustifyH("LEFT")
-		if value.SetWordWrap then value:SetWordWrap(false) end
+		if value.SetWordWrap then value:SetWordWrap(true) end
 		local hit = CreateFrame("Frame", nil, analysisPanel)
-		hit:SetPoint("TOPLEFT", analysisPanel, "TOPLEFT", 63, top)
-		hit:SetPoint("RIGHT", analysisPanel, "RIGHT", -7, 0)
-		hit:SetHeight(18)
+		hit:SetPoint("TOPLEFT", analysisPanel, "TOPLEFT", 14, top - 17)
+		hit:SetPoint("RIGHT", analysisPanel, "RIGHT", -14, 0)
+		hit:SetHeight(rowHeight)
 		hit:EnableMouse(true)
 		hit.analysisTooltipTitle = labelText
 		hit:SetScript("OnEnter", function(self)
@@ -8827,18 +9312,20 @@ function Dock:BuildMessageBlockControls()
 		value.analysisHit = hit
 		return value
 	end
-	self.analysisSource = addAnalysisRow("SOURCE", -30)
-	self.analysisRoute = addAnalysisRow("ROUTE", -52)
-	self.analysisSignals = addAnalysisRow("MATCH", -74)
-	self.analysisWhy = addAnalysisRow("WHY", -96)
+	self.analysisSource = addAnalysisRow("SOURCE", -42, 24)
+	self.analysisRoute = addAnalysisRow("ROUTE", -91, 20)
+	self.analysisSignals = addAnalysisRow("MATCHED EVIDENCE", -137, 36)
+	self.analysisWhy = addAnalysisRow("WHY THIS ROUTE", -199, 36)
 	local analysisFootnote = Theme:CreateText(analysisPanel, "GameFontHighlightSmall", "textMuted")
-	analysisFootnote:SetPoint("BOTTOMLEFT", analysisPanel, "BOTTOMLEFT", 7, 29)
-	analysisFootnote:SetPoint("RIGHT", analysisPanel, "RIGHT", -7, 0)
-	analysisFootnote:SetText("Exact public text only; case and extra spaces are ignored.")
+	analysisFootnote:SetPoint("BOTTOMLEFT", analysisPanel, "BOTTOMLEFT", 14, 34)
+	analysisFootnote:SetPoint("RIGHT", analysisPanel, "RIGHT", -14, 0)
+	analysisFootnote:SetHeight(24)
+	if analysisFootnote.SetWordWrap then analysisFootnote:SetWordWrap(true) end
+	analysisFootnote:SetText("MOVE fixes identical text. RULE sets reusable phrase conditions.")
 	self.analysisFootnote = analysisFootnote
 
 	local routeTo = Theme:CreateText(analysisPanel, "GameFontNormalSmall", "gold")
-	routeTo:SetPoint("BOTTOMLEFT", analysisPanel, "BOTTOMLEFT", 7, 7)
+	routeTo:SetPoint("BOTTOMLEFT", analysisPanel, "BOTTOMLEFT", 14, 12)
 	routeTo:SetText("TO:")
 	local routeSelector = Theme:CreateButton(analysisPanel, "GENERAL v", 148, 18, false)
 	routeSelector:SetPoint("LEFT", routeTo, "RIGHT", 3, 0)
@@ -8862,6 +9349,12 @@ function Dock:BuildMessageBlockControls()
 	self.analysisRouteMove = moveRoute
 	self.analysisRouteControls = { routeTo, routeSelector, moveRoute }
 	self.analysisRemoveOverride = removeRoute
+	local ruleButton = createTightButton(analysisPanel, "RULE...", 18, false)
+	ruleButton:SetPoint("LEFT", removeRoute, "RIGHT", 10, 0)
+	ruleButton:SetScript("OnClick", function() Dock:ShowMessageRoutePatternEditor() end)
+	self:BindHeaderHover(ruleButton)
+	self.analysisRuleButton = ruleButton
+	table.insert(self.analysisRouteControls, ruleButton)
 
 	-- A real compact selector keeps exact-message corrections readable.  It
 	-- deliberately lists only destinations that make sense for public-channel

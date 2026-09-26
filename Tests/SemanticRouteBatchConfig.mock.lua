@@ -31,9 +31,13 @@ local cancel = config.semanticRouteCancelButton
 local lfg = config.semanticRouteToggles.groupFinder
 local trade = config.semanticRouteToggles.trade
 local pvp = config.semanticRouteToggles.pvp
+local guildInvites = config.semanticRouteToggles.guildInvites
 assert(lfg.point[4] + lfg.width + 8 <= trade.point[4]
-	and trade.point[4] + trade.width + 8 <= pvp.point[4]
-	and pvp.point[4] + pvp.width + 8 <= work.width - 8,
+	and pvp.point[4] + pvp.width + 8 <= guildInvites.point[4]
+	and trade.point[4] + trade.width + 8 <= work.width - 8
+	and guildInvites.point[4] + guildInvites.width + 8 <= work.width - 8
+	and pvp.point[5] < lfg.point[5]
+	and guildInvites.point[5] < trade.point[5],
 	"wide-font route switches overlap or cross the panel gutter")
 assert(apply.point[4] + apply.width + 8 <= cancel.point[4]
 	and cancel.point[4] + cancel.width + 8 <= work.width - 8,

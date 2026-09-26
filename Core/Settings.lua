@@ -39,7 +39,7 @@ local RETIRED_NEWCOMERS_VIEW_SCHEMA = 1
 local VIEW_SOURCE_MEMBERSHIP_SCHEMA = 1
 local MESSENGER_APPEARANCE_SCHEMA = 1
 local TELL_TARGET_SETTINGS_SCHEMA = 1
-local LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA = 1
+local LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA = 2
 local MESSENGER_TAB_NAME_DEFAULT_LENGTH = 14
 local MESSENGER_TAB_NAME_MIN_LENGTH = 4
 local MESSENGER_TAB_NAME_MAX_LENGTH = 32
@@ -93,18 +93,19 @@ local defaults = {
 		schema = LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA,
 		enabled = true,
 		destination = "system",
+		addonCommandsEnabled = true,
 	},
 	-- This is intentionally Smart Chat presentation state, not the legacy
 	-- ChatFont module's native-frame profile.  An absent font inherits the
 	-- current ChatFontNormal face/size/flags; a selected value is the raw
 	-- LibSharedMedia font key resolved at render time.
 	textAppearance = {
-		schema = 3,
+		schema = 4,
 		size = 0,
 		outline = "INHERIT",
 		-- ScrollingMessageFrame:SetSpacing is pixel padding between rendered
 		-- lines. 0 keeps lines tight; 8 is deliberately the compact safe cap.
-		spacing = 1,
+		spacing = 3,
 		-- Entry gaps are logical blank rows, distinct from ScrollingMessageFrame's
 		-- pixel gap between every rendered line. Zero preserves the established
 		-- compact layout until a player deliberately opts in.
@@ -342,10 +343,12 @@ local defaults = {
 	-- consulted for whispers, Battle.net, local UI feedback, or add-on traffic.
 	messageRouteOverrides = {},
 	messageRouteOverrideSchema = 1,
+	messageRoutePatternRules = {},
 	-- Per-category inference only affects text classified from public channels.
 	-- Exact route corrections and purpose-built channel routes keep working.
 	semanticRoutes = {
 		groupFinder = true,
+		guildInvites = true,
 		pvp = true,
 		trade = true,
 	},
@@ -945,7 +948,7 @@ local NEW_MESSAGE_INDICATOR_FONTS = {
 
 -- Smart Chat text uses LibSharedMedia keys and an exact installed-SharedMedia
 -- fallback map. An absent key inherits whatever ChatFontNormal resolves to.
-local SMART_CHAT_TEXT_APPEARANCE_SCHEMA = 3
+local SMART_CHAT_TEXT_APPEARANCE_SCHEMA = 4
 local SOURCE_COLUMN_ALIGNMENT_DEFAULT_FONT = "SourceCodePro (Regular)"
 local SMART_CHAT_TEXT_OUTLINES = {
 	INHERIT = true,
@@ -1296,6 +1299,11 @@ local function normalizeSmartChatTextAppearance(appearance)
 	if type(appearance) ~= "table" then
 		appearance = {}
 	end
+	-- The original factory 1px gap makes adjacent alternating entries read as
+	-- touching. Move that old default to a restrained 3px; retain every other
+	-- saved value, including deliberately compact zero and larger custom gaps.
+	local oldFactorySpacing = (tonumber(appearance.schema) or 0) < SMART_CHAT_TEXT_APPEARANCE_SCHEMA
+		and tonumber(appearance.spacing) == 1
 	appearance.font = normalizeSmartChatTextFont(appearance.font)
 	if appearance.font == nil then
 		appearance.font = fallback.font
@@ -1309,6 +1317,7 @@ local function normalizeSmartChatTextAppearance(appearance)
 	if appearance.spacing == nil then
 		appearance.spacing = fallback.spacing
 	end
+	if oldFactorySpacing then appearance.spacing = fallback.spacing end
 	appearance.entryGapRows = normalizeSmartChatEntryGapRows(appearance.entryGapRows)
 	if appearance.entryGapRows == nil then
 		appearance.entryGapRows = fallback.entryGapRows
@@ -2796,12 +2805,16 @@ function addon:IsRecordIncludedBySource(viewId, record, settings)
 		override = options.sources[sourceId]
 	end
 	if override ~= nil then return override == true end
-	-- A sale classified to Trade leaves General by default, even if it was
-	-- posted in a broad public channel whose ordinary conversation lives in G.
-	-- A deliberate positive CONTENTS override above still mirrors the entire
-	-- source, preserving the player's explicit choice.
+	-- Command responses have one origin tab by default. A deliberate CONTENTS
+	-- check above is the only way to mirror them elsewhere.
+	if sourceId == "system:addon-command" then
+		return viewId == record.localCommandView
+	end
+	-- A classified public message leaves General by default, even when posted
+	-- in General's source channel. A deliberate positive CONTENTS override
+	-- above still mirrors the source into General when the player wants it.
 	if viewId == "general" and record.event == "CHAT_MSG_CHANNEL"
-		and record.view == "trade" then
+		and record.view ~= "general" then
 		return false
 	end
 	return isDefaultSourceEnabled(settings, viewId, sourceId, record.sourceGroup)
@@ -3701,11 +3714,14 @@ local function normalizeLocalCommandOutput(settings)
 		destination = "system"
 	end
 	local enabled = stored.enabled ~= false
+	local addonCommandsEnabled = stored.addonCommandsEnabled ~= false
 	local needsRepair = stored.schema ~= LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA
 		or stored.enabled ~= enabled or stored.destination ~= destination
+		or stored.addonCommandsEnabled ~= addonCommandsEnabled
 	if not needsRepair then
 		for key in pairs(stored) do
-			if key ~= "schema" and key ~= "enabled" and key ~= "destination" then
+			if key ~= "schema" and key ~= "enabled" and key ~= "destination"
+				and key ~= "addonCommandsEnabled" then
 				needsRepair = true
 				break
 			end
@@ -3716,6 +3732,7 @@ local function normalizeLocalCommandOutput(settings)
 			schema = LOCAL_COMMAND_OUTPUT_SETTINGS_SCHEMA,
 			enabled = enabled,
 			destination = destination,
+			addonCommandsEnabled = addonCommandsEnabled,
 		}
 		settings.localCommandOutput = stored
 	end
@@ -4010,6 +4027,11 @@ function addon:GetSmartSettings()
 	-- This one-time bridge lets existing compact profiles become the matching
 	-- new module setting without treating all historical profiles as opt-in.
 	local rawDock = type(profile.smartChat.dock) == "table" and profile.smartChat.dock or nil
+	local rawTextAppearance = type(rawget(profile.smartChat, "textAppearance")) == "table"
+		and rawget(profile.smartChat, "textAppearance") or nil
+	local migrateFactoryTextSpacing = rawTextAppearance
+		and (tonumber(rawget(rawTextAppearance, "schema")) or 0) < SMART_CHAT_TEXT_APPEARANCE_SCHEMA
+		and tonumber(rawget(rawTextAppearance, "spacing")) == 1
 	local rawBands = rawDock and rawget(rawDock, "messageBands")
 	local migrateMessageBandCoverage = type(rawBands) ~= "table"
 		or (tonumber(rawget(rawBands, "coverageSchema")) or 0) < MESSAGE_BAND_COVERAGE_SCHEMA
@@ -4065,6 +4087,7 @@ function addon:GetSmartSettings()
 		previousKeywordColorGroups = copy(profile.smartChat.keywordColorGroups)
 	end
 	applyDefaults(profile.smartChat, defaults)
+	if migrateFactoryTextSpacing then profile.smartChat.textAppearance.spacing = defaults.textAppearance.spacing end
 	if migrateMessageBandCoverage then
 		-- applyDefaults writes the new schema before normalization, so capture the
 		-- old raw state above and promote its right-edge coverage explicitly.
@@ -4394,6 +4417,14 @@ function addon:GetMessengerSettings()
 		resolvedComposerVisibility = resolveMessengerMode(settings.composerVisibility, autoHide),
 		appearance = copy(normalizeMessengerAppearance(settings)),
 	}
+end
+
+function addon:SetAddonCommandOutputEnabled(enabled)
+	if type(enabled) ~= "boolean" then return false, "boolean-required" end
+	local settings = normalizeLocalCommandOutput(self:GetSmartSettings())
+	settings.addonCommandsEnabled = enabled
+	refreshLocalCommandCapture(self)
+	return true, enabled
 end
 
 -- Opt-in storage is intentionally separate from chat history. Disabling a
@@ -5026,7 +5057,7 @@ function addon:RemoveMessageRouteOverride(record)
 	return true
 end
 
-local semanticRouteIds = { groupFinder = true, pvp = true, trade = true }
+local semanticRouteIds = { groupFinder = true, guildInvites = true, pvp = true, trade = true }
 
 function addon:GetSemanticRouteEnabled(routeId)
 	if not semanticRouteIds[routeId] then
@@ -5050,6 +5081,125 @@ function addon:SetSemanticRouteEnabled(routeId, enabled)
 	local ok, reason = self:ApplySemanticRouteChanges({ [routeId] = enabled })
 	if not ok then return false, reason end
 	return true, enabled
+end
+
+local function getValidatedMessageRoutePatternRules(owner)
+	local matcher = owner.RoutePatternRules
+	if not matcher or type(matcher.ValidateSet) ~= "function" then return {} end
+	local stored = owner:GetSmartSettings().messageRoutePatternRules
+	local cache = owner._messageRoutePatternCache
+	if cache and cache.stored == stored then return cache.rules end
+	local valid = matcher:ValidateSet(stored)
+	valid = valid or {}
+	owner._messageRoutePatternCache = { stored = stored, rules = valid }
+	return valid
+end
+
+function addon:GetMessageRoutePatternRules()
+	return copy(getValidatedMessageRoutePatternRules(self))
+end
+
+function addon:GetMessageRoutePatternOverride(record)
+	if type(record) ~= "table" or record.event ~= "CHAT_MSG_CHANNEL" then return nil end
+	local matcher = self.RoutePatternRules
+	if not matcher then return nil end
+	local rules = getValidatedMessageRoutePatternRules(self)
+	if #rules == 0 then return nil end
+	local text = matcher:NormalizeText(record.text or record.normalized)
+	if not text then return nil end
+	-- Latest deliberate correction wins when two safe phrase rules overlap.
+	for index = #rules, 1, -1 do
+		local rule = rules[index]
+		if not rule.sourceId or rule.sourceId == string.lower(tostring(record.sourceId or "")) then
+			local matches = true
+			for phraseIndex = 1, #rule.include do
+				if not string.find(text, rule.include[phraseIndex], 1, true) then
+					matches = false
+					break
+				end
+			end
+			if matches then
+				for phraseIndex = 1, #rule.exclude do
+					if string.find(text, rule.exclude[phraseIndex], 1, true) then
+						matches = false
+						break
+					end
+				end
+			end
+			if matches then
+				local preview = matcher:Preview(rule, record)
+				return rule.destination, index, preview
+			end
+		end
+	end
+	return nil
+end
+
+function addon:SetMessageRoutePatternRule(record, rawRule, replaceIndex)
+	if type(record) ~= "table" or record.event ~= "CHAT_MSG_CHANNEL" then
+		return false, "public-channel-only"
+	end
+	local matcher = self.RoutePatternRules
+	if not matcher then return false, "unavailable" end
+	local rule, reason = matcher:Validate(rawRule)
+	if not rule then return false, reason end
+	local matched = matcher:Match(rule, record)
+	if not matched then return false, "sample-does-not-match" end
+	local settings = self:GetSmartSettings()
+	local rules = self:GetMessageRoutePatternRules()
+	local targetIndex
+	if replaceIndex ~= nil then
+		targetIndex = tonumber(replaceIndex)
+		if not targetIndex or targetIndex % 1 ~= 0
+			or targetIndex < 1 or targetIndex > #rules then
+			return false, "missing"
+		end
+	else
+		if #rules >= matcher.MAX_RULES then return false, "limit" end
+		targetIndex = #rules + 1
+	end
+	rules[targetIndex] = rule
+	local valid, validationReason = matcher:ValidateSet(rules)
+	if not valid then return false, validationReason end
+	local previousRules = settings.messageRoutePatternRules
+	local overrides = normalizeMessageRouteOverrides(settings)
+	local key = normalizeMessageRouteOverrideText(record.normalized or record.text)
+	local previousExact = key and overrides[key] or nil
+	settings.messageRoutePatternRules = valid
+	self._messageRoutePatternCache = nil
+	-- The new general rule is the correction for this sample; an older exact
+	-- correction of the same line must not silently shadow it.
+	if key then overrides[key] = nil end
+	local refreshed = pcall(refreshMessageRouteOverridePresentation, self)
+	if not refreshed then
+		settings.messageRoutePatternRules = previousRules
+		self._messageRoutePatternCache = nil
+		if key then overrides[key] = previousExact end
+		pcall(refreshMessageRouteOverridePresentation, self)
+		return false, "refresh-failed"
+	end
+	return true, targetIndex
+end
+
+function addon:RemoveMessageRoutePatternRule(index)
+	index = tonumber(index)
+	local rules = self:GetMessageRoutePatternRules()
+	if not index or index % 1 ~= 0 or index < 1 or index > #rules then
+		return false, "missing"
+	end
+	table.remove(rules, index)
+	local settings = self:GetSmartSettings()
+	local previousRules = settings.messageRoutePatternRules
+	settings.messageRoutePatternRules = rules
+	self._messageRoutePatternCache = nil
+	local refreshed = pcall(refreshMessageRouteOverridePresentation, self)
+	if not refreshed then
+		settings.messageRoutePatternRules = previousRules
+		self._messageRoutePatternCache = nil
+		pcall(refreshMessageRouteOverridePresentation, self)
+		return false, "refresh-failed"
+	end
+	return true
 end
 
 -- Explicit Semantic Routes batch only. Validate every edit before replacing

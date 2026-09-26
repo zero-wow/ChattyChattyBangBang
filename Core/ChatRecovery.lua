@@ -99,7 +99,10 @@ function Recovery:UpdateDiagnostics()
 	if type(db) ~= "table" then return end
 	db.chatRecovery = {
 		session = db.session, pending = #(self.pending or {}),
-		recovered = self.recovered or 0, unresolved = self.unresolved or 0,
+		recovered = self.recovered or 0, notDelivered = self.notDelivered or 0,
+		unresolved = self.unresolved or 0,
+		noLineId = self.noLineId or 0, expired = self.expired or 0,
+		evicted = self.evicted or 0,
 		fallbackFailed = self.fallbackFailed == true,
 		time = time and time() or 0,
 	}
@@ -123,6 +126,7 @@ function Recovery:Queue(event, ...)
 	local lineId = safeArgument(11, ...)
 	if type(lineId) ~= "number" or lineId <= 0 then
 		self.unresolved = self.unresolved + 1
+		self.noLineId = (self.noLineId or 0) + 1
 	else
 		local key = event .. ":" .. tostring(lineId)
 		if not self.keys[key] then
@@ -141,6 +145,7 @@ function Recovery:Queue(event, ...)
 				local removed = table.remove(self.pending, 1)
 				self.keys[removed.event .. ":" .. tostring(removed.lineId)] = nil
 				self.unresolved = self.unresolved + 1
+				self.evicted = (self.evicted or 0) + 1
 			end
 			self.pending[#self.pending + 1] = item
 			self.keys[key] = true
@@ -194,10 +199,17 @@ function Recovery:Flush()
 			local args = item.arguments
 			args[1], args[2], args[11] = text, sender, item.lineId
 			args[12] = lookup(api.GetChatLineSenderGUID, item.lineId) or args[12]
-			local ok = pcall(engine.CaptureAccessible, engine, item.event,
+			local ok, delivered = pcall(engine.CaptureAccessible, engine, item.event,
 				item.epoch, unpackValues(args, 1, 14))
 			if ok then
-				self.recovered = (self.recovered or 0) + 1
+				-- A readable line may still be held or blocked by the normal
+				-- delivery policy. It has been handled, but is not restored to
+				-- normal chat; retrying it would re-run stateful filters.
+				if type(delivered) == "table" then
+					self.recovered = (self.recovered or 0) + 1
+				else
+					self.notDelivered = (self.notDelivered or 0) + 1
+				end
 				self.keys[item.event .. ":" .. tostring(item.lineId)] = nil
 				table.remove(self.pending, index)
 			else
@@ -206,6 +218,7 @@ function Recovery:Flush()
 		end
 		if item.attempts >= MAX_ATTEMPTS and self.pending[index] == item then
 			self.unresolved = self.unresolved + 1
+			self.expired = (self.expired or 0) + 1
 			self.keys[item.event .. ":" .. tostring(item.lineId)] = nil
 			table.remove(self.pending, index)
 		end
@@ -221,7 +234,10 @@ end
 
 function Recovery:GetStatus()
 	return { pending = #(self.pending or {}), recovered = self.recovered or 0,
+		notDelivered = self.notDelivered or 0,
 		unresolved = self.unresolved or 0, fallbackFailed = self.fallbackFailed == true,
+		noLineId = self.noLineId or 0, expired = self.expired or 0,
+		evicted = self.evicted or 0,
 		lockdown = inLockdown() }
 end
 
@@ -251,6 +267,9 @@ function Recovery:Stop()
 	self.pending = {}
 	self.keys = {}
 	self.unresolved = 0
+	self.noLineId = 0
+	self.expired = 0
+	self.evicted = 0
 	self.fallbackFailed = false
 	self.noticeShown = false
 	local dock = addon.SmartDock

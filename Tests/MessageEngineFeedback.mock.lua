@@ -283,17 +283,18 @@ assert(dungeonRecruiting.category == "groupFinder"
 -- Configuration consumes a compact read-only catalog rather than carrying a
 -- second copy of MessageEngine's built-in vocabulary and thresholds.
 local semanticCatalog = ChattyChattyBangBang:GetSemanticRouteCatalog()
-assert(#semanticCatalog == 3
+assert(#semanticCatalog == 4
 	and semanticCatalog[1].id == "groupFinder" and semanticCatalog[1].label == "Group Finder"
 	and semanticCatalog[2].id == "trade" and semanticCatalog[2].label == "Trade"
-	and semanticCatalog[3].id == "pvp" and semanticCatalog[3].label == "PVP",
+	and semanticCatalog[3].id == "pvp" and semanticCatalog[3].label == "PVP"
+	and semanticCatalog[4].id == "guildInvites" and semanticCatalog[4].label == "Guild Invites",
 	"semantic route catalog order or stable route identity changed")
 assert(semanticCatalog[1].threshold == dungeonRecruiting.threshold.groupFinder
 	and semanticCatalog[2].threshold == dungeonRecruiting.threshold.trade
 	and semanticCatalog[3].threshold == dungeonRecruiting.threshold.pvp,
 	"semantic route catalog thresholds drifted from live analysis")
 assert(semanticCatalog[1].enabled == true and semanticCatalog[2].enabled == true
-	and semanticCatalog[3].enabled == true,
+	and semanticCatalog[3].enabled == true and semanticCatalog[4].enabled == true,
 	"semantic route catalog did not use the classifier's default enabled state")
 assert(type(semanticCatalog[1].explanation) == "string" and semanticCatalog[1].explanation ~= ""
 	and type(semanticCatalog[1].categories) == "table" and #semanticCatalog[1].categories > 0
@@ -302,7 +303,8 @@ assert(type(semanticCatalog[1].explanation) == "string" and semanticCatalog[1].e
 assert(semanticCatalog[1].explanation:find("routes here directly", 1, true)
 	and semanticCatalog[2].explanation:find("fallback home", 1, true)
 	and semanticCatalog[2].explanation:find("peel", 1, true)
-	and semanticCatalog[3].explanation:find("route here directly", 1, true),
+	and semanticCatalog[3].explanation:find("route here directly", 1, true)
+	and semanticCatalog[4].explanation:find("guild identity", 1, true),
 	"semantic route catalog did not explain direct versus topic-based routing")
 local lfgCatalogPoints = {}
 for _, category in ipairs(semanticCatalog[1].categories) do
@@ -344,7 +346,7 @@ ChattyChattyBangBang.GetSemanticRouteEnabled = function(_, routeId)
 end
 local catalogWithTradeOff = ChattyChattyBangBang:GetSemanticRouteCatalog()
 assert(catalogWithTradeOff[1].enabled == true and catalogWithTradeOff[2].enabled == false
-	and catalogWithTradeOff[3].enabled == true,
+	and catalogWithTradeOff[3].enabled == true and catalogWithTradeOff[4].enabled == true,
 	"semantic route catalog did not read the live enabled state")
 ChattyChattyBangBang.GetSemanticRouteEnabled = nil
 
@@ -352,6 +354,19 @@ assert(ChattyChattyBangBang:AnalyzeSemanticRoute("Keystone discussion").category
 	"Keystone alone was incorrectly treated as a group advertisement")
 assert(ChattyChattyBangBang:AnalyzeSemanticRoute("WTS Keystone boost").category == "trade",
 	"commercial wording did not outweigh incidental Keystone language")
+
+local guildAdvert = channelRecord("[Guild: Baby Wipes] is a new guild, we're 8/8 normal venomous abyss and heroic tidebound. raid is saturday 7pm - 9pm pacific. lf healers and dps, hmu if interested", "General - Silvermoon City")
+assert(guildAdvert.view == "guildInvites",
+	"guild advertisement with later LF healer/DPS needs was stolen by Group Finder")
+local guildAdvertAnalysis = assert(engine:AnalyzeRecord(guildAdvert))
+assert(guildAdvertAnalysis.category == "guildInvites"
+	and guildAdvertAnalysis.semantic.isGuildAdvert
+	and table.concat(guildAdvertAnalysis.reasons, " "):find("guild needs", 1, true),
+	"guild advertisement analysis did not explain why the guild identity outranks group roles")
+assert(channelRecord("LF healer and DPS for guild raid tonight", "General - Silvermoon City").view == "groupFinder",
+	"one-off guild raid was mistaken for a guild recruitment ad")
+assert(channelRecord("LF a new guild, I play healer", "General - Silvermoon City").view ~= "guildInvites",
+	"a player seeking a guild was mistaken for a guild invitation")
 
 -- BUYING/SELLING alone remains deliberately one point short. A structurally
 -- transactional ad, supported market link, amount, or CTA closes that 6/7 gap

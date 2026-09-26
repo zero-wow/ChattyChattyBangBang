@@ -155,10 +155,10 @@ assert(routed and routed.view == "groupFinder" and routed.views.groupFinder,
 	"semantic fixture did not route to Group Finder")
 assert(routed.views.general == nil and routed.views[sourceFeed.id] == nil,
 	"query-time source membership was incorrectly copied into classifier membership")
-assert(engine:GetMessages("general")[1] == routed
+assert(#engine:GetMessages("general") == 0
 	and engine:GetMessages("groupFinder")[1] == routed
 	and engine:GetMessages(sourceFeed.id)[1] == routed,
-	"semantic route did not union source home, primary route, and custom feed")
+	"semantic route leaked into General by default or lost the explicit custom feed")
 assert(engine.count == 1 and engine.byId[routed.id] == routed
 	and settings.history.sources["channel:ascension"].count == 1,
 	"additive views physically duplicated the semantic record")
@@ -180,9 +180,9 @@ assert(addon:SetViewSourceEnabled("general", "channel:ascension", nil),
 assert((not settings.viewOptions.general
 		or not settings.viewOptions.general.sources
 		or settings.viewOptions.general.sources["channel:ascension"] == nil)
-	and engine:GetMessages("general")[1] == routed
+	and #engine:GetMessages("general") == 0
 	and rebuilds == before + 1,
-	"nil did not restore General's inherited source home immediately")
+	"AUTO reset mirrored semantically routed content into General without a Contents check")
 
 assert(addon:SetMessageRouteOverride(routed, "trade"),
 	"manual primary-route correction was rejected")

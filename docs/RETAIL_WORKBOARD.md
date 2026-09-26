@@ -8,14 +8,25 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Progress:** 94/100 locally verified; 5 in progress; 0 queued; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
-**Latest follow-up:** 🟢 A colored orb now marks each visible Smart Chat entry in its own gutter; click opens route analysis/correction and an explicit 50-item, privacy-limited SavedVariables review queue. Local mock and package checks pass. 🟣 Orb placement, tint, popup usability, and `/reload` persistence still await Zero's in-game check. Earlier alternating-band and Settings `SetSize` fixes also remain unverified in-game (M29–M30).
+**Latest follow-up:** 🟢 Add-on slash-command replies now copy into the tab where the command ran; guild ads with later role requests route to Guild Invites; a larger analysis inspector previews safe permanent phrase rules. Alternating bands stay with whole messages, and old factory 1px text spacing becomes 3px. Catch-up status now separates restored, withheld without a line ID, expired, and filtered/held lines. 🟣 All visual behavior, live slash-command output, and Retail recovery still await Zero's in-game check; no `/reload` or log scan was run.
+
+### Focused follow-up (26 September)
+
+| Status | Feature |
+| --- | --- |
+| 🟢 | Screen-centered Message Analysis and editable ALL/NONE phrase-rule preview with source scope, save, and undo; exact MOVE remains separate. |
+| 🟢 | Guild recruitment introduction outranks incidental `LF healers/DPS`; default General no longer mirrors any re-routed public line, while an explicit Contents check still can. |
+| 🟢 | Add-on slash-command replies copy into their typed Chatty tab without re-routing unrelated native chat; immediate default-frame output only. |
+| 🟢 | Logical-message bands no longer spill over neighboring entries; old factory line gap moves from 1px to 3px, and configured whole-entry gaps remain optional. |
+| 🟡 | Retail catch-up is best-effort: the client may never expose some secret text or a usable line ID. Counters now distinguish reasons; this does not recreate unavailable lines. |
+| 🟣 | In-game appearance, actual slash-command reply timing, and recovery after player-triggered `/reload` need Zero's verification. |
 
 ## Add — missing capabilities
 
 | ID | Status | Feature |
 | --- | --- | --- |
 | A01 | 🟡 | Known event-registration failures now reveal Blizzard chat and Overview shows tracked coverage; direct add-on output and untracked native notices can still be hidden until A02 or a broader fallback policy is solved. |
-| A02 | 🟡 | Senderless Blizzard client notices can now recover by line ID after lockdown; player-authored lines still require a sender. Existing opt-in DebugMessage bridge is safe, but direct third-party AddMessage output still lacks a reliable source; blanket interception risks duplicates. In-game payload behavior remains unverified. |
+| A02 | 🟡 | Senderless Blizzard client notices can recover by line ID after lockdown; player-authored lines still require a sender. Immediate output inside add-on slash handlers now has a scoped bridge, but delayed/direct third-party AddMessage output still lacks a reliable origin; blanket interception risks duplicates. In-game payload behavior remains unverified. |
 | A03 | 🟢 | First-class Battle.net Messenger sessions and replies, keyed by account ID; mocked identity, send, and failure paths pass. In-game behavior remains unverified. |
 | A04 | 🟢 | Account-ID quarantine retains first contacts before native hiding; only verified friends bypass, unsafe payloads stay visible. In-game behavior remains unverified. |
 | A05 | 🟢 | Readable Community chat now routes with stable club/stream source IDs, defaults to General, and preserves saved source choices; focused mocks pass. Lockdown fallback and in-game behavior remain unverified. |
@@ -82,7 +93,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | I06 | 🟢 | Short-lived memory-only social trust cache cuts repeat roster checks, invalidates on roster/profile changes, and fails closed when membership is unverified; whisper mocks pass. |
 | I07 | 🟢 | Messenger's 12-tab limit evicts only disposable inactive tabs; drafts, unread, NEW, and unresolved sends stay protected. If all tabs are protected, a bounded notice explains why a new tab was not opened; focused mocks pass. |
 | I08 | 🟢 | Engine and SmartDock now share route/Contents membership for displayed lines and unread counts, with blocked/local-ignore/held exclusions. Mirror and exclusion mocks pass. |
-| I09 | 🟢 | Semantic Routes offers opt-in BATCH EDIT for Trade/LFG/PvP toggles: staged edits apply with one history reclassification, stale drafts are refused, and failure rolls back routes, membership, and unread state. Single switches and Shift > ANALYZE corrections stay immediate; mocks pass. |
+| I09 | 🟢 | Semantic Routes offers opt-in BATCH EDIT for Trade/LFG/PvP/Guild Invites toggles: staged edits apply with one history reclassification, stale drafts are refused, and failure rolls back routes, membership, and unread state. Single switches and Shift > ANALYZE corrections stay immediate; mocks pass. |
 | I10 | 🟢 | Theme/chat-color repaint bursts coalesce to one next-frame redraw; new messages, tab changes, paging, and resize remain synchronous, with combat fallback. Redraw mocks pass. |
 | I11 | 🟢 | Periodic global cleanup avoids full sweeps on every line while the observed term keeps exact rolling expiry; focused threshold and sweep-count mocks pass. |
 | I12 | 🟢 | The 64 learned sources favor recent use and protect explicit tab choices; persisted recency is sampled, not rewritten per line. Retention mocks pass. |

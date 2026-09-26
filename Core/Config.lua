@@ -5119,7 +5119,7 @@ local function getSmartChatTextAppearanceOptions()
 			{ id = "THICKOUTLINE", label = "THICK OUTLINE" },
 		},
 		size = { minimum = 8, maximum = 32, inherit = 0 },
-		spacing = { minimum = 0, maximum = 8, default = 1 },
+		spacing = { minimum = 0, maximum = 8, default = 3 },
 		entryGapRows = { minimum = 0, maximum = 2, default = 0 },
 	}
 end
@@ -5131,7 +5131,7 @@ local function getSmartChatTextAppearance(scope)
 			return appearance
 		end
 	end
-	return { size = 0, outline = "INHERIT", spacing = 1, entryGapRows = 0 }
+	return { size = 0, outline = "INHERIT", spacing = 3, entryGapRows = 0 }
 end
 
 local function getSmartChatTextAppearanceOverride(scope)
@@ -8627,6 +8627,7 @@ local SEMANTIC_ROUTE_OPTIONS = {
 	{ id = "groupFinder", label = "GROUP FINDER", description = "LF/LFM, roles, dungeons, raids, and keystones." },
 	{ id = "trade", label = "TRADE", description = "Buying, selling, prices, and services." },
 	{ id = "pvp", label = "PVP", description = "Battleground, arena, queue, rating, and objective terms." },
+	{ id = "guildInvites", label = "GUILD INVITES", description = "Guild introductions and recruiting invitations, even when they ask for roles." },
 }
 
 local function semanticRouteCall(method, ...)
@@ -8743,6 +8744,7 @@ function Config:BeginSemanticRouteBatch()
 	self.semanticRouteBatchDraft = draft
 	self.semanticRouteBatchBaseline = {
 		groupFinder = draft.groupFinder, trade = draft.trade, pvp = draft.pvp,
+		guildInvites = draft.guildInvites,
 	}
 	self:RefreshSemanticRoutesPage(true)
 	self:SetSemanticRoutesStatus("Batch edit on. Choose routes, then APPLY ROUTES once or CANCEL.", "textMuted")
@@ -8893,7 +8895,7 @@ end
 function Config:BuildSemanticRoutesPage()
 	local page = self:CreatePage("semantic")
 	self.semanticRoutesPage = page
-	createHeading(page, "Semantic Routes", "Scores message topics for Group Finder, Trade, and PVP. Dedicated Defense, LFG, and guild-recruitment sources remain direct.")
+	createHeading(page, "Semantic Routes", "Sorts public chat into Group Finder, Trade, PVP, and Guild Invites. Dedicated channel sources remain direct.")
 
 	local work = createQuietShellPanel(page, "surface")
 	work:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -PAGE_TOP)
@@ -8904,15 +8906,16 @@ function Config:BuildSemanticRoutesPage()
 	routeTitle:SetText("AUTOMATIC INFERENCE")
 	self.semanticRouteToggles = {}
 	local routeLayout = {
-		{ x = 8, width = 190, descriptionWidth = 190 },
-		{ x = 210, width = 142, descriptionWidth = 142 },
-		{ x = 370, width = 100, descriptionWidth = 220 },
+		{ x = 8, y = -28, width = 280, descriptionWidth = 280 },
+		{ x = 324, y = -28, width = 280, descriptionWidth = 280 },
+		{ x = 8, y = -86, width = 280, descriptionWidth = 280 },
+		{ x = 324, y = -86, width = 280, descriptionWidth = 280 },
 	}
 	for index = 1, #SEMANTIC_ROUTE_OPTIONS do
 		local option = SEMANTIC_ROUTE_OPTIONS[index]
 		local layout = routeLayout[index]
 		local toggle = Theme:CreateCompactToggle(work, option.label, layout.width)
-		toggle:SetPoint("TOPLEFT", work, "TOPLEFT", layout.x, -28)
+		toggle:SetPoint("TOPLEFT", work, "TOPLEFT", layout.x, layout.y)
 		toggle.OnValueChanged = function(_, value)
 			Config:SetSemanticRouteEnabled(option.id, value)
 		end
@@ -8924,26 +8927,26 @@ function Config:BuildSemanticRoutesPage()
 		description:SetText(option.description)
 	end
 	self.semanticRouteBatchButton = Theme:CreateTightButton(work, "BATCH EDIT", 22, false)
-	self.semanticRouteBatchButton:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -124)
+	self.semanticRouteBatchButton:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -148)
 	self.semanticRouteBatchButton:SetScript("OnClick", function() Config:BeginSemanticRouteBatch() end)
 	setControlTooltip(self.semanticRouteBatchButton, "Batch semantic routes",
-		"Stage Trade, Group Finder, and PVP inference switches, then re-sort retained messages once. Shift > ANALYZE manual corrections remain immediate.")
+		"Stage automatic topic routes, then re-sort retained messages once. Shift > ANALYZE manual corrections remain immediate.")
 	self.semanticRouteApplyButton = Theme:CreateTightButton(work, "APPLY ROUTES", 22, true)
-	self.semanticRouteApplyButton:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -124)
+	self.semanticRouteApplyButton:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -148)
 	self.semanticRouteApplyButton:SetScript("OnClick", function() Config:ApplySemanticRouteBatch() end)
 	self.semanticRouteCancelButton = Theme:CreateTightButton(work, "CANCEL", 22, false)
-	self.semanticRouteCancelButton:SetPoint("TOPLEFT", work, "TOPLEFT", 187, -124)
+	self.semanticRouteCancelButton:SetPoint("TOPLEFT", work, "TOPLEFT", 187, -148)
 	self.semanticRouteCancelButton:SetScript("OnClick", function() Config:CancelSemanticRouteBatch() end)
 	self.semanticRoutesAvailability = Theme:CreateText(work, "GameFontHighlightSmall", "textMuted")
-	self.semanticRoutesAvailability:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -160)
+	self.semanticRoutesAvailability:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -184)
 	self.semanticRoutesAvailability:SetWidth(PAGE_WIDTH - 16)
 	self.semanticRoutesAvailability:SetJustifyH("LEFT")
 
 	local testTitle = Theme:CreateText(work, "GameFontNormalSmall", "gold")
-	testTitle:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -194)
+	testTitle:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -218)
 	testTitle:SetText("TEST A MESSAGE")
 	self.semanticRoutesTestInput = Theme:CreateEditBox(work, 452, 22, false)
-	self.semanticRoutesTestInput:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -218)
+	self.semanticRoutesTestInput:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -242)
 	self.semanticRoutesTestInput:SetMaxLetters(240)
 	self.semanticRoutesTestInput:SetText("LF tank / DPS [Keystone: example]")
 	self.semanticRoutesTestInput:HookScript("OnEnterPressed", function(self)
@@ -8956,7 +8959,7 @@ function Config:BuildSemanticRoutesPage()
 	analyze:SetScript("OnClick", function() Config:AnalyzeSemanticRouteText() end)
 
 	self.semanticRoutesResult = Theme:CreateText(work, "GameFontNormalSmall", "goldBright")
-	self.semanticRoutesResult:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -251)
+	self.semanticRoutesResult:SetPoint("TOPLEFT", work, "TOPLEFT", 8, -275)
 	self.semanticRoutesEvidence = Theme:CreateText(work, "GameFontHighlightSmall", "text")
 	self.semanticRoutesEvidence:SetPoint("TOPLEFT", self.semanticRoutesResult, "BOTTOMLEFT", 0, -8)
 	self.semanticRoutesEvidence:SetWidth(PAGE_WIDTH - 16)
@@ -14927,7 +14930,11 @@ function Config:RefreshIntegrationsPage()
 	end
 	commandOutput = commandOutput or settings.localCommandOutput or {}
 	local enabled = commandOutput.enabled ~= false
+	local addonCommandsEnabled = commandOutput.addonCommandsEnabled ~= false
 	local destination = commandOutput.destination == "active" and "active" or "system"
+	if self.addonCommandOutputToggle then
+		self.addonCommandOutputToggle:SetValue(addonCommandsEnabled, true)
+	end
 	if self.localCommandOutputToggle then
 		self.localCommandOutputToggle:SetValue(enabled, true)
 	end
@@ -14940,7 +14947,7 @@ function Config:RefreshIntegrationsPage()
 
 	if not enabled then
 		self:SetIntegrationsStatus(
-			"Capture is off. Blizzard still prints normally, but hidden native chat may make that output invisible.",
+			"Diagnostic capture is off. Add-on commands use their own switch above; Blizzard still prints normally.",
 			"warning")
 	elseif destination == "active" then
 		self:SetIntegrationsStatus(
@@ -14980,14 +14987,14 @@ function Config:BuildIntegrationsPage()
 	detail:SetJustifyH("LEFT")
 	detail:SetText("Any LDB display can expose the same left, right, and middle-click controls.")
 
-	-- Diagnostic command output is deliberately isolated in one quiet surface:
-	-- the controls configure only /run, /script, and /dump, never the broad
+	-- Local command output is deliberately isolated in one quiet surface:
+	-- the controls configure only a slash-handler-scoped capture, never the broad
 	-- DEFAULT_CHAT_FRAME:AddMessage stream. Every child retains an eight-pixel
 	-- gutter from the panel edge, with destination buttons on their own row so
 	-- wider fonts cannot collide with the capture toggle.
 	local commandPanel = createQuietShellPanel(page, "surface")
 	commandPanel:SetPoint("TOPLEFT", ldb, "BOTTOMLEFT", 0, -10)
-	commandPanel:SetSize(PAGE_WIDTH, 150)
+	commandPanel:SetSize(PAGE_WIDTH, 184)
 	self.localCommandOutputPanel = commandPanel
 
 	local commandTitle = Theme:CreateText(commandPanel, "GameFontNormalSmall", "gold")
@@ -14999,11 +15006,30 @@ function Config:BuildIntegrationsPage()
 	commandDetail:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -25)
 	commandDetail:SetSize(PAGE_WIDTH - 16, 24)
 	commandDetail:SetJustifyH("LEFT")
-	commandDetail:SetText("Catch text printed by /run, /script, and /dump without intercepting ordinary chat or other add-ons.")
+	commandDetail:SetText("Keep command replies visible in Chatty without copying ordinary chat-frame output.")
 	self.localCommandOutputDetail = commandDetail
 
+	local addonCapture = Theme:CreateCompactToggle(commandPanel,
+		"ADD-ON COMMAND REPLIES TO THE TAB YOU TYPED IN", PAGE_WIDTH - 16)
+	addonCapture:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -57)
+	addonCapture.OnValueChanged = function(_, value)
+		if type(addon.SetAddonCommandOutputEnabled) ~= "function" then
+			Config:RefreshIntegrationsPage()
+			Config:SetIntegrationsStatus("Add-on command capture is unavailable in this build.", "warning")
+			return
+		end
+		local ok, accepted = pcall(addon.SetAddonCommandOutputEnabled, addon, value and true or false)
+		Config:RefreshIntegrationsPage()
+		if not ok or accepted == false then
+			Config:SetIntegrationsStatus("Add-on command capture could not be changed.", "warning")
+		end
+	end
+	setControlTooltip(addonCapture, "Show add-on command replies here",
+		"Copies immediate text printed to the default chat frame while an add-on slash command runs. Delayed replies cannot always be tied to the tab where you typed.")
+	self.addonCommandOutputToggle = addonCapture
+
 	local capture = Theme:CreateCompactToggle(commandPanel, "CAPTURE /RUN + /DUMP OUTPUT", PAGE_WIDTH - 16)
-	capture:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -57)
+	capture:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -84)
 	capture.OnValueChanged = function(_, value)
 		if type(addon.SetLocalCommandOutputCaptureEnabled) ~= "function" then
 			Config:RefreshIntegrationsPage()
@@ -15023,14 +15049,14 @@ function Config:BuildIntegrationsPage()
 	self.localCommandOutputToggle = capture
 
 	local destinationLabel = Theme:CreateText(commandPanel, "GameFontHighlightSmall", "textMuted")
-	destinationLabel:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -88)
+	destinationLabel:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -115)
 	destinationLabel:SetWidth(96)
 	destinationLabel:SetJustifyH("LEFT")
 	destinationLabel:SetText("PRIMARY TAB")
 	self.localCommandOutputDestinationLabel = destinationLabel
 
 	local systemButton = Theme:CreateTightButton(commandPanel, "SYSTEM (SYS)", 20, false)
-	systemButton:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 112, -84)
+	systemButton:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 112, -111)
 	setActionStyle(systemButton, "choice", "Route command output to System",
 		"Uses SYSTEM as the primary message route. Any additional CONTENTS selections remain additive.")
 	self.localCommandOutputSystemButton = systemButton
@@ -15058,8 +15084,8 @@ function Config:BuildIntegrationsPage()
 	activeButton:SetScript("OnClick", function() chooseDestination("active") end)
 
 	self.integrationsStatus = Theme:CreateText(commandPanel, "GameFontHighlightSmall", "textMuted")
-	self.integrationsStatus:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -114)
-	self.integrationsStatus:SetSize(PAGE_WIDTH - 16, 28)
+	self.integrationsStatus:SetPoint("TOPLEFT", commandPanel, "TOPLEFT", 8, -142)
+	self.integrationsStatus:SetSize(PAGE_WIDTH - 16, 34)
 	self.integrationsStatus:SetJustifyH("LEFT")
 	if self.integrationsStatus.SetJustifyV then self.integrationsStatus:SetJustifyV("TOP") end
 
@@ -15508,10 +15534,20 @@ function Config:RefreshDeskPage()
 				elseif (tonumber(status.unresolved) or 0) > 0 then
 					guidance = guidance .. " Check Blizzard chat for those lines; Chatty cannot recreate missing text."
 				end
-				deskNote = string.format("CATCH-UP  %d restored / %d waiting / %d unresolved / %d fallback failures\n%s",
+				if (tonumber(status.unresolved) or 0) > 0 then
+					guidance = guidance .. string.format(" Missing line ID: %d; text expired: %d; queue overflow: %d.",
+						math.max(0, tonumber(status.noLineId) or 0),
+						math.max(0, tonumber(status.expired) or 0),
+						math.max(0, tonumber(status.evicted) or 0))
+				end
+				if (tonumber(status.notDelivered) or 0) > 0 then
+					guidance = guidance .. " Caught-but-not-shown lines were filtered, held, or rejected by Chatty."
+				end
+				deskNote = string.format("CATCH-UP  %d restored / %d waiting / %d unresolved / %d caught but not shown / %d fallback failures\n%s",
 					math.max(0, tonumber(status.recovered) or 0),
 					math.max(0, tonumber(status.pending) or 0),
 					math.max(0, tonumber(status.unresolved) or 0),
+					math.max(0, tonumber(status.notDelivered) or 0),
 					math.max(0, failed), guidance)
 			end
 		end
@@ -16021,6 +16057,7 @@ function Config:ReloadProfile()
 	self.integrationsMinimapToggle = nil
 	self.integrationsLdbPanel = nil
 	self.localCommandOutputPanel = nil
+	self.addonCommandOutputToggle = nil
 	self.localCommandOutputTitle = nil
 	self.localCommandOutputDetail = nil
 	self.localCommandOutputToggle = nil

@@ -235,6 +235,7 @@ local settings = {
 	localCommandOutput = {
 		enabled = true,
 		destination = "system",
+		addonCommandsEnabled = true,
 	},
 	dock = {
 		sourceColumnAlignment = false,
@@ -301,12 +302,19 @@ function addon:GetSmartSettings()
 end
 
 local localCommandCaptureSetterCalls = 0
+local addonCommandCaptureSetterCalls = 0
 local localCommandDestinationSetterCalls = 0
 function addon:GetLocalCommandOutputSettings()
 	return {
 		enabled = settings.localCommandOutput.enabled,
 		destination = settings.localCommandOutput.destination,
+		addonCommandsEnabled = settings.localCommandOutput.addonCommandsEnabled,
 	}
+end
+function addon:SetAddonCommandOutputEnabled(value)
+	addonCommandCaptureSetterCalls = addonCommandCaptureSetterCalls + 1
+	settings.localCommandOutput.addonCommandsEnabled = value and true or false
+	return true, settings.localCommandOutput.addonCommandsEnabled
 end
 function addon:SetLocalCommandOutputCaptureEnabled(value)
 	localCommandCaptureSetterCalls = localCommandCaptureSetterCalls + 1
@@ -435,7 +443,7 @@ function addon:GetViewSourceDefinitions(viewId)
 	}
 end
 
-local semanticEnabled = { groupFinder = true, trade = true, pvp = true }
+local semanticEnabled = { groupFinder = true, trade = true, pvp = true, guildInvites = true }
 function addon:GetSemanticRouteCatalog()
 	return {
 		{
@@ -588,12 +596,14 @@ config:BuildIntegrationsPage()
 assert(config.integrationsPage and config.localCommandOutputPanel,
 	"Chat Access did not build the local-command output settings")
 assert(config.localCommandOutputPanel.width == 636
-	and config.localCommandOutputPanel.height == 150
+	and config.localCommandOutputPanel.height == 184
 	and config.localCommandOutputPanel.point[4] == 0
 	and config.localCommandOutputPanel.point[5] == -10,
 	"local-command settings lost their bounded panel or launcher gutter")
 assert(config.localCommandOutputTitle.point[4] == 8
 	and config.localCommandOutputDetail.point[4] == 8
+	and config.addonCommandOutputToggle.point[4] == 8
+	and config.addonCommandOutputToggle.width == 620
 	and config.localCommandOutputToggle.point[4] == 8
 	and config.localCommandOutputToggle.width == 620
 	and config.integrationsStatus.point[4] == 8
@@ -606,10 +616,11 @@ assert(config.localCommandOutputSystemButton.point[4] == 112
 	and config.localCommandOutputActiveButton.point[4] == 6
 	and commandChoiceRight <= 628,
 	"wide-font command destination choices overlap or cross the right gutter")
-assert(config.integrationsStatus.point[5] == -114
-	and math.abs(config.integrationsStatus.point[5]) + config.integrationsStatus.height <= 142,
+assert(config.integrationsStatus.point[5] == -142
+	and math.abs(config.integrationsStatus.point[5]) + config.integrationsStatus.height <= 176,
 	"local-command status text crossed the panel's bottom gutter")
-assert(config.localCommandOutputToggle.checked
+assert(config.addonCommandOutputToggle.checked
+	and config.localCommandOutputToggle.checked
 	and config.localCommandOutputSystemButton.theme[2] == "gold"
 	and config.localCommandOutputActiveButton.theme[2] ~= "gold",
 	"Chat Access did not load the saved System destination")
@@ -623,8 +634,12 @@ assert(localCommandDestinationSetterCalls == 1
 config.localCommandOutputToggle:SetValue(false)
 assert(localCommandCaptureSetterCalls == 1
 	and settings.localCommandOutput.enabled == false
-	and config.integrationsStatus:GetText():find("Capture is off", 1, true),
+	and config.integrationsStatus:GetText():find("Diagnostic capture is off", 1, true),
 	"command-output capture switch did not save or explain its disabled state")
+config.addonCommandOutputToggle:SetValue(false)
+assert(addonCommandCaptureSetterCalls == 1
+	and settings.localCommandOutput.addonCommandsEnabled == false,
+	"add-on command capture switch did not save its independent setting")
 settings.localCommandOutput.enabled = true
 settings.localCommandOutput.destination = "system"
 config:RefreshIntegrationsPage()

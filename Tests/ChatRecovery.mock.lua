@@ -2,6 +2,7 @@
 local secret = {}
 local locked, nativeShown, scheduled, fallbackFails = true, false, nil, false
 local captures = {}
+local suppressDelivery = false
 
 canaccessvalue = function(value) return value ~= secret end
 time = function() return 1700000000 end
@@ -28,6 +29,8 @@ ChattyChattyBangBang = {
 		enabled = true,
 		CaptureAccessible = function(_, event, epoch, ...)
 			captures[#captures + 1] = { event = event, epoch = epoch, args = { ... } }
+			if suppressDelivery then return nil, "quarantine" end
+			return { event = event }
 		end,
 	},
 }
@@ -95,6 +98,12 @@ recovery:Queue("CHAT_MSG_CHANNEL", secret, secret, nil, "General", nil,
 retryOK = recovery:RetryNow()
 assert(retryOK and recovery:GetStatus().pending == 1 and nativeShown,
 	"manual catch-up should safely retry a still-unavailable line without hiding Blizzard chat")
+for _ = 2, 30 do recovery:Flush() end
+assert(recovery:GetStatus().pending == 0 and recovery:GetStatus().unresolved == 3
+	and recovery:GetStatus().recovered == 2 and nativeShown
+	and recovery:GetStatus().noLineId == 2 and recovery:GetStatus().expired == 1
+	and recovery:GetStatus().evicted == 0,
+	"an unavailable line must expire after 30 attempts without counting as restored")
 local stored = ChattyChattyBangBang.Diagnostics.db.chatRecovery
 for key, value in pairs(stored) do
 	assert(key ~= "text" and key ~= "sender" and key ~= "arguments"
@@ -103,6 +112,7 @@ end
 recovery:Stop()
 assert(not nativeShown, "stopping capture did not release native fallback")
 assert(recovery:GetStatus().pending == 0 and recovery:GetStatus().unresolved == 0
+	and recovery:GetStatus().noLineId == 0 and recovery:GetStatus().expired == 0
 	and not recovery:GetStatus().fallbackFailed,
 	"stopping capture left a stale unresolved or fallback-failure state")
 assert(ChattyChattyBangBang.Diagnostics.db.chatRecovery.unresolved == 0,
@@ -145,4 +155,22 @@ recovery:Flush()
 assert(#captures == captureCount and recovery:GetStatus().pending == 1 and nativeShown,
 	"senderless player chat was replayed without its author")
 recovery:Stop()
+
+-- Readable lines rejected by the normal delivery policy are handled once,
+-- not falsely counted as restored or retried through stateful filters.
+local restoredBefore = recovery:GetStatus().recovered
+local captureCountBefore = #captures
+suppressDelivery = true
+recovery:Queue("CHAT_MSG_CHANNEL", secret, secret, nil, "General", nil,
+	nil, nil, 1, "General", nil, 42, secret)
+recovery:Flush()
+assert(recovery:GetStatus().pending == 0
+	and recovery:GetStatus().recovered == restoredBefore
+	and recovery:GetStatus().notDelivered == 1
+	and ChattyChattyBangBang.Diagnostics.db.chatRecovery.notDelivered == 1
+	and #captures == captureCountBefore + 1 and not nativeShown,
+	"policy-held line was replayed or falsely counted as restored")
+recovery:Flush()
+assert(#captures == captureCountBefore + 1,
+	"policy-held line was retried after the capture pipeline rejected it")
 print("ChatRecovery mock tests passed")

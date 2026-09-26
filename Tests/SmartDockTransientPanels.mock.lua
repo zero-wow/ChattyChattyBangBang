@@ -29,6 +29,7 @@ local function frame(width, height)
 	function value:GetHeight() return self.height end
 	function value:SetWidth(nextWidth) self.width = nextWidth end
 	function value:SetHeight(nextHeight) self.height = nextHeight end
+	function value:SetScale(nextScale) self.scale = nextScale end
 	function value:IsShown() return self.shown end
 	function value:IsMouseOver() return self.over == true end
 	function value:Show() self.shown = true end
@@ -330,21 +331,24 @@ dock.active = nil
 dock.visibleState = nil
 dock.collapsedState = nil
 
--- The analysis drawer remains a deliberate overlay, but it must contract inside
--- the outer 360x160 frame instead of crossing a narrow content lane or border.
+-- The dock can be only 360x160, so the readable inspector lives at screen
+-- center rather than shrinking its controls inside the chat-content lane.
 dock.content.width = 300
-dock.analysisPanel = frame(356, 154)
+UIParent = frame(800, 600)
+dock.analysisPanel = frame(500, 316)
 assert(dock:RefreshMessageAnalysisLayout(), "analysis layout refresh failed")
-assert(dock.analysisPanel:GetWidth() == 352 and dock.analysisPanel:GetHeight() == 152,
-	"analysis drawer crossed the minimum outer-frame gutters")
-local analysisPoint = assert(pointFor(dock.analysisPanel, "TOPRIGHT"),
-	"analysis drawer lost its outer-frame anchor")
-assert(analysisPoint[2] == dock.frame,
-	"analysis drawer still clips itself to the shorter message-content lane")
-assert(analysisPoint[4] == -4 and analysisPoint[5] == -4,
-	"analysis drawer lost its right/top border gutters")
-assert(28 + 292 <= dock.analysisPanel:GetWidth() - 4,
-	"analysis route dropdown can cross the narrowed drawer border")
+assert(dock.analysisPanel:GetWidth() == 500 and dock.analysisPanel:GetHeight() == 316,
+	"analysis inspector was compressed by the minimum dock size")
+local analysisPoint = assert(pointFor(dock.analysisPanel, "CENTER"),
+	"analysis inspector lost its screen-centered anchor")
+assert(analysisPoint[2] == UIParent and analysisPoint[4] == 0 and analysisPoint[5] == 0,
+	"analysis inspector did not stay clear of the tiny message-content lane")
+UIParent.width, UIParent.height = 360, 320
+assert(dock:RefreshMessageAnalysisLayout()
+	and dock.analysisPanel:GetWidth() == 500 and dock.analysisPanel:GetHeight() == 316
+	and math.floor(dock.analysisPanel.scale * 500) <= 336
+	and math.floor(dock.analysisPanel.scale * 316) <= 296,
+	"analysis inspector did not reserve screen-edge gutters on a narrow viewport")
 
 -- The alert itself is built by the full UI path; pin its literal anchors here
 -- so its narrow-state text, close target, and border gutters cannot regress.

@@ -16,11 +16,13 @@ local smart = addon:GetSmartSettings()
 local commandOutput = addon:GetLocalCommandOutputSettings()
 
 assert(type(smart.localCommandOutput) == "table"
-	and smart.localCommandOutput.schema == 1
+	and smart.localCommandOutput.schema == 2
 	and smart.localCommandOutput.enabled == true
+	and smart.localCommandOutput.addonCommandsEnabled == true
 	and smart.localCommandOutput.destination == "system",
-	"new profiles did not receive the enabled schema-1 System default")
-assert(commandOutput.schema == 1 and commandOutput.enabled == true
+	"new profiles did not receive the enabled schema-2 System default")
+assert(commandOutput.schema == 2 and commandOutput.enabled == true
+	and commandOutput.addonCommandsEnabled == true
 	and commandOutput.destination == "system",
 	"public getter did not expose the normalized default")
 
@@ -37,7 +39,8 @@ assert(unchanged.enabled == true and unchanged.destination == "system"
 -- Hand-edited or stale non-table data normalizes to a complete safe default.
 smart.localCommandOutput = "broken"
 local normalized = addon:GetLocalCommandOutputSettings()
-assert(normalized.schema == 1 and normalized.enabled == true
+assert(normalized.schema == 2 and normalized.enabled == true
+	and normalized.addonCommandsEnabled == true
 	and normalized.destination == "system"
 	and type(smart.localCommandOutput) == "table",
 	"malformed non-table command settings were not repaired")
@@ -51,9 +54,10 @@ smart.localCommandOutput = {
 	unknown = "discard me",
 }
 normalized = addon:GetLocalCommandOutputSettings()
-assert(normalized.schema == 1 and normalized.enabled == true
+assert(normalized.schema == 2 and normalized.enabled == true
+	and normalized.addonCommandsEnabled == true
 	and normalized.destination == "system" and normalized.unknown == nil,
-	"malformed fields were not normalized into the schema-1 contract")
+	"malformed fields were not normalized into the schema-2 contract")
 
 smart.localCommandOutput = {
 	schema = 0,
@@ -61,7 +65,8 @@ smart.localCommandOutput = {
 	destination = " ACTIVE ",
 }
 normalized = addon:GetLocalCommandOutputSettings()
-assert(normalized.schema == 1 and normalized.enabled == false
+assert(normalized.schema == 2 and normalized.enabled == false
+	and normalized.addonCommandsEnabled == true
 	and normalized.destination == "active",
 	"valid disabled/active preferences were lost during normalization")
 
@@ -105,5 +110,14 @@ ok, value = addon:SetLocalCommandOutputCaptureEnabled(false)
 assert(ok and value == false and smart.localCommandOutput.enabled == false
 	and refreshes == 2,
 	"descriptive enable alias did not persist and refresh command capture")
+
+ok, value = addon:SetAddonCommandOutputEnabled(false)
+assert(ok and value == false and smart.localCommandOutput.addonCommandsEnabled == false
+	and refreshes == 3,
+	"add-on command switch did not persist and refresh independently")
+ok, value = addon:SetAddonCommandOutputEnabled("true")
+assert(not ok and value == "boolean-required"
+	and smart.localCommandOutput.addonCommandsEnabled == false and refreshes == 3,
+	"invalid add-on command switch changed settings")
 
 print("Local command output settings mock tests passed")

@@ -1296,6 +1296,14 @@ local semanticRouteCatalogDefinitions = {
 			{ id = "commercial-counterevidence", label = "Commercial wording counts against this route", points = pvpEvidencePoints.commercialCounter, terms = { "Trade evidence at threshold" } },
 		},
 	},
+	{
+		id = "guildInvites", label = "Guild Invites", threshold = 1,
+		explanation = "A clear guild identity plus recruiting invitation routes here before generic group-role requests. Looking for a guild or a one-off guild raid does not count.",
+		categories = {
+			{ id = "guild-identity", label = "Guild identity", terms = { "[Guild: name]", "our guild", "guild recruitment" } },
+			{ id = "guild-invite", label = "Recruiting invitation", terms = { "new guild", "guild is recruiting", "join our guild", "accepting members" } },
+		},
+	},
 }
 
 local function copySemanticRouteCatalog()
@@ -1396,6 +1404,28 @@ local function selectStrongestSemanticRoute(candidates)
 	return winner and winner.id or nil, winner
 end
 
+local function hasGuildAdvertIntent(rawText)
+	if not string.find(rawText, "guild", 1, true) then return false end
+	local text = rawText
+	local rules = addon.RoutePatternRules
+	if rules and type(rules.NormalizeText) == "function" then
+		local visible = rules:NormalizeText(rawText)
+		if visible then text = visible end
+	end
+	-- Require an actual guild identity plus an invitation/announcement. Role
+	-- requests alone are ambiguous and remain Group Finder evidence.
+	local hasGuildIdentity = string.find(text, "%[%s*guild%s*:")
+		or string.find(text, "%f[%w]our%s+guild%f[^%w]")
+		or string.find(text, "%f[%w]guild%s+recruitment%f[^%w]")
+	local hasInvitation = string.find(text, "%f[%w]new%s+guild%f[^%w]")
+		or string.find(text, "%f[%w]guild%s+is%s+recruiting%f[^%w]")
+		or string.find(text, "%f[%w]guild%s+recruiting%f[^%w]")
+		or string.find(text, "%f[%w]join%s+our%s+guild%f[^%w]")
+		or string.find(text, "%f[%w]accepting%s+members%f[^%w]")
+		or string.find(text, "%f[%w]recruiting%s+members%f[^%w]")
+	return hasGuildIdentity and hasInvitation and true or false
+end
+
 local function analyzeSemanticRoute(text, channel, sourceId, sender)
 	text = string.lower(type(text) == "string" and text or "")
 	channel = string.lower(type(channel) == "string" and channel or "")
@@ -1406,11 +1436,13 @@ local function analyzeSemanticRoute(text, channel, sourceId, sender)
 	local isDefenseChannel = isDefensePublicSource(sourceId, channel)
 	local sourceView = getPublicSourceView(sourceId, channel)
 	local isGuildRecruitmentSource = sourceView == "guildInvites"
+	local isGuildAdvert = hasGuildAdvertIntent(text)
 	local isLfgChannel = contains(channel, "lookingforgroup") or contains(channel, "looking for group")
 	local isTradeChannel = contains(channel, "trade")
 	local lfgEnabled = semanticRouteEnabled("groupFinder")
 	local tradeEnabled = semanticRouteEnabled("trade")
 	local pvpEnabled = semanticRouteEnabled("pvp")
+	local guildInvitesEnabled = semanticRouteEnabled("guildInvites")
 	local semanticCategory, semanticWinner = selectStrongestSemanticRoute({
 		groupFinder = { evidence = lfg, threshold = LFG_ROUTE_THRESHOLD, enabled = lfgEnabled },
 		trade = { evidence = trade, threshold = TRADE_ROUTE_THRESHOLD, enabled = tradeEnabled },
@@ -1431,6 +1463,9 @@ local function analyzeSemanticRoute(text, channel, sourceId, sender)
 	elseif isGuildRecruitmentSource then
 		category = "guildInvites"
 		table.insert(reasons, "Exact GuildRecruitment channel source route.")
+	elseif isGuildAdvert and guildInvitesEnabled then
+		category = "guildInvites"
+		table.insert(reasons, "Guild identity and recruiting invitation appear together; later role requests describe guild needs, not a one-off group.")
 	-- A purpose-built LFG channel is a source route, not semantic inference.
 	elseif isLfgChannel then
 		category = "groupFinder"
@@ -1452,16 +1487,22 @@ local function analyzeSemanticRoute(text, channel, sourceId, sender)
 
 	return {
 		category = category,
-		scores = { groupFinder = lfg.score, trade = trade.score, pvp = pvp.score },
-		threshold = { groupFinder = LFG_ROUTE_THRESHOLD, trade = TRADE_ROUTE_THRESHOLD, pvp = PVP_ROUTE_THRESHOLD },
-		signals = { groupFinder = lfg.signals, trade = trade.signals, pvp = pvp.signals },
+		scores = { groupFinder = lfg.score, guildInvites = isGuildAdvert and 1 or 0,
+			trade = trade.score, pvp = pvp.score },
+		threshold = { groupFinder = LFG_ROUTE_THRESHOLD, guildInvites = 1,
+			trade = TRADE_ROUTE_THRESHOLD, pvp = PVP_ROUTE_THRESHOLD },
+		signals = { groupFinder = lfg.signals,
+			guildInvites = isGuildAdvert and { "Guild identity + recruiting invitation" } or {},
+			trade = trade.signals, pvp = pvp.signals },
 		intent = lfg.intent,
 		isUnderAttackNotice = isUnderAttackNotice,
 		isDefenseChannel = isDefenseChannel,
 		isGuildRecruitmentSource = isGuildRecruitmentSource,
+		isGuildAdvert = isGuildAdvert,
 		isLfgChannel = isLfgChannel,
 		isTradeChannel = isTradeChannel,
-		enabled = { groupFinder = lfgEnabled, trade = tradeEnabled, pvp = pvpEnabled },
+		enabled = { groupFinder = lfgEnabled, guildInvites = guildInvitesEnabled,
+			trade = tradeEnabled, pvp = pvpEnabled },
 		semanticWinner = semanticWinner,
 		reasons = reasons,
 	}
@@ -1474,7 +1515,8 @@ local function classifyChannel(record)
 		or analysis.isGuildRecruitmentSource or analysis.isLfgChannel
 		or analysis.isTradeChannel and analysis.category == "trade" and not analysis.semanticWinner then
 		reason = "source"
-	elseif analysis.semanticWinner and analysis.category == analysis.semanticWinner.id then
+	elseif analysis.isGuildAdvert and analysis.category == "guildInvites"
+		or analysis.semanticWinner and analysis.category == analysis.semanticWinner.id then
 		reason = "semantic"
 	end
 	return analysis.category, reason
@@ -1549,6 +1591,7 @@ local function clearGeneratedClassification(record)
 	record.isSync = nil
 	record.syncReason = nil
 	record.routeOverrideCategory = nil
+	record.routePatternRuleIndex = nil
 	if type(record.tags) ~= "table" then
 		return
 	end
@@ -2063,10 +2106,19 @@ function Engine:Classify(record)
 	local routeReason = category and "event" or nil
 	if not category and record.event == "CHAT_MSG_CHANNEL" then
 		local override = addon.GetMessageRouteOverride and addon:GetMessageRouteOverride(record)
+		local patternCategory, patternIndex
+		if not override and addon.GetMessageRoutePatternOverride then
+			patternCategory, patternIndex = addon:GetMessageRoutePatternOverride(record)
+		end
 		if override then
 			category = override
 			routeReason = "override"
 			record.routeOverrideCategory = override
+		elseif patternCategory then
+			category = patternCategory
+			routeReason = "pattern-rule"
+			record.routeOverrideCategory = patternCategory
+			record.routePatternRuleIndex = patternIndex
 		else
 			category, routeReason = classifyChannel(record)
 		end
@@ -2114,7 +2166,9 @@ function Engine:Classify(record)
 			routeReason = "provider"
 		end
 	end
-	self:ApplyCustomViews(record)
+	-- A slash-command result belongs to the tab where the player typed it.
+	-- Arbitrary words in diagnostic output must not trigger a custom route.
+	self:ApplyCustomViews(record, record.sourceId == "system:addon-command")
 
 	-- Command output remains System-classified and keeps its independently
 	-- configurable source, but its primary presentation tab may be the tab that
@@ -2182,6 +2236,7 @@ function Engine:AnalyzeRecord(record)
 		local hasLf = hasWord(normalized, "lf") or hasWord(normalized, "lfm") or hasWord(normalized, "lfg")
 		local hasLfCount = string.find(normalized, "%f[%w]lf%d+%f[^%w]") ~= nil
 
+		table.insert(signals, string.format("GUILD INVITES SCORE %d / %d", semanticAnalysis.scores.guildInvites, semanticAnalysis.threshold.guildInvites))
 		table.insert(signals, string.format("GROUP FINDER SCORE %d / %d", semanticAnalysis.scores.groupFinder, semanticAnalysis.threshold.groupFinder))
 		for index = 1, #semanticAnalysis.signals.groupFinder do
 			table.insert(signals, "LFG " .. semanticAnalysis.signals.groupFinder[index])
@@ -2215,6 +2270,9 @@ function Engine:AnalyzeRecord(record)
 		if isGuildRecruitmentSource then
 			table.insert(signals, "GUILD INVITES exact GuildRecruitment source")
 		end
+		if semanticAnalysis.isGuildAdvert then
+			table.insert(signals, "GUILD INVITES guild identity + recruiting invitation")
+		end
 		if isUnderAttackNotice then
 			table.insert(signals, "PVP exact zone-defense notice")
 		end
@@ -2223,9 +2281,17 @@ function Engine:AnalyzeRecord(record)
 		end
 
 		local override = addon.GetMessageRouteOverride and addon:GetMessageRouteOverride(record)
+		local patternCategory, patternIndex
+		if not override and addon.GetMessageRoutePatternOverride then
+			patternCategory, patternIndex = addon:GetMessageRoutePatternOverride(record)
+		end
 		if override then
 			computedCategory = override
 			table.insert(reasons, "Exact public-channel route override: " .. override .. ".")
+		elseif patternCategory then
+			computedCategory = patternCategory
+			table.insert(reasons, "Saved phrase rule #" .. tostring(patternIndex)
+				.. " routed this public message to " .. patternCategory .. ".")
 		elseif isUnderAttackNotice then
 			computedCategory = "pvp"
 			table.insert(reasons, "Exact zone-defense notice route to PVP before semantic inference.")
@@ -2293,6 +2359,7 @@ function Engine:AnalyzeRecord(record)
 		signals = signals,
 		customViews = customViews,
 		routeOverrideCategory = analysisOverride,
+		routePatternRuleIndex = record.routePatternRuleIndex,
 		blocked = record.blockedByBlockControl and true or false,
 		blockReason = record.blockReason,
 		semantic = semanticAnalysis,
@@ -2372,6 +2439,7 @@ function Engine:GetLocalCommandOutputSettings()
 			return {
 				enabled = settings.enabled ~= false,
 				destination = settings.destination == "active" and "active" or "system",
+				addonCommandsEnabled = settings.addonCommandsEnabled ~= false,
 			}
 		end
 	end
@@ -2380,6 +2448,7 @@ function Engine:GetLocalCommandOutputSettings()
 	return {
 		enabled = not settings or settings.enabled ~= false,
 		destination = settings and settings.destination == "active" and "active" or "system",
+		addonCommandsEnabled = not settings or settings.addonCommandsEnabled ~= false,
 	}
 end
 
@@ -2402,7 +2471,7 @@ function Engine:ResolveLocalCommandOutputView(settings)
 	return normalizeLocalCommandOutputView(viewId)
 end
 
-function Engine:CaptureLocalFeedback(text, destinationView)
+function Engine:CaptureLocalFeedback(text, destinationView, commandKind)
 	-- Intentionally direct: print() / DEFAULT_CHAT_FRAME:AddMessage() are not
 	-- chat events. The general public bridge remains explicit; the command
 	-- bridge below observes AddMessage only inside /run, /script, or /dump.
@@ -2427,8 +2496,8 @@ function Engine:CaptureLocalFeedback(text, destinationView)
 		normalized = string.lower(text),
 		direction = "incoming",
 		sourceGroup = "system",
-		sourceId = "system:local-debug",
-		sourceLabel = "Local add-on feedback",
+		sourceId = commandKind == "addon" and "system:addon-command" or "system:local-debug",
+		sourceLabel = commandKind == "addon" and "Add-on command result" or "Local add-on feedback",
 		localCommandView = type(destinationView) == "string"
 			and normalizeLocalCommandOutputView(destinationView) or nil,
 	}
@@ -2443,13 +2512,13 @@ end
 
 function Engine:CaptureLocalCommandFrameOutput(text)
 	local stack = self.localCommandCaptureViews
-	local destinationView = type(stack) == "table" and stack[#stack] or nil
-	if not self.enabled or type(destinationView) ~= "string" then
+	local context = type(stack) == "table" and stack[#stack] or nil
+	if not self.enabled or type(context) ~= "table" or type(context.view) ~= "string" then
 		return nil, "inactive"
 	end
 	-- A presentation/settings fault must never turn a working Blizzard command
 	-- into a failed /run or /dump after its native output has already printed.
-	local ok, record, reason = pcall(self.CaptureLocalFeedback, self, text, destinationView)
+	local ok, record, reason = pcall(self.CaptureLocalFeedback, self, text, context.view, context.kind)
 	if ok then
 		return record, reason
 	end
@@ -2462,16 +2531,29 @@ local localCommandAliases = {
 	["/dump"] = true,
 }
 
-local function getLocalCommandSlashKeys()
-	local keys, seen, aliasesByKey = {}, {}, {}
+local function isAddonSlashHandler(handler)
+	if type(handler) ~= "function" or type(debug) ~= "table"
+		or type(debug.getinfo) ~= "function" then return false end
+	local ok, info = pcall(debug.getinfo, handler, "S")
+	if not ok or type(info) ~= "table" or type(info.source) ~= "string" then return false end
+	local source = string.lower(string.gsub(info.source, "\\", "/"))
+	return string.find(source, "interface/addons/", 1, true) ~= nil
+end
+
+local function getLocalCommandSlashKeys(slashCommands)
+	local keys, seen, aliasesByKey, kindsByKey = {}, {}, {}, {}
 	for globalName, alias in pairs(_G) do
 		local key = type(globalName) == "string"
 			and string.match(globalName, "^SLASH_(.-)%d+$") or nil
 		local normalizedAlias = type(alias) == "string"
 			and string.lower(trim(alias, 24)) or nil
-		if key and localCommandAliases[normalizedAlias] then
+		local commandKind = key and type(slashCommands[key]) == "function"
+			and (localCommandAliases[normalizedAlias] and "diagnostic"
+				or isAddonSlashHandler(slashCommands[key]) and "addon") or nil
+		if key and commandKind then
 			aliasesByKey[key] = aliasesByKey[key] or {}
 			table.insert(aliasesByKey[key], normalizedAlias)
+			kindsByKey[key] = commandKind
 			if not seen[key] then
 				seen[key] = true
 				table.insert(keys, key)
@@ -2479,7 +2561,7 @@ local function getLocalCommandSlashKeys()
 		end
 	end
 	table.sort(keys)
-	return keys, aliasesByKey
+	return keys, aliasesByKey, kindsByKey
 end
 
 function Engine:RefreshLocalCommandCapture()
@@ -2501,25 +2583,30 @@ function Engine:RefreshLocalCommandCapture()
 		return
 	end
 	self.localCommandSlashWrappers = self.localCommandSlashWrappers or {}
-	local slashKeys, aliasesByKey = getLocalCommandSlashKeys()
+	local slashKeys, aliasesByKey, kindsByKey = getLocalCommandSlashKeys(slashCommands)
 	for _, key in ipairs(slashKeys) do
 		local current = slashCommands[key]
 		local existing = self.localCommandSlashWrappers[key]
 		if type(current) == "function" and (not existing or current ~= existing.wrapper) then
 			local original = current
+			local commandKind = kindsByKey[key]
 			local wrapper = function(...)
-				local destinationView = false
+				local context = false
 				if Engine.enabled then
 					local settingsOk, settings = pcall(Engine.GetLocalCommandOutputSettings, Engine)
-					if settingsOk and type(settings) == "table" and settings.enabled then
-						local viewOk, resolved = pcall(Engine.ResolveLocalCommandOutputView, Engine, settings)
+					if settingsOk and type(settings) == "table"
+						and ((commandKind == "diagnostic" and settings.enabled)
+							or (commandKind == "addon" and settings.addonCommandsEnabled)) then
+						local routeSettings = commandKind == "addon"
+							and { destination = "active" } or settings
+						local viewOk, resolved = pcall(Engine.ResolveLocalCommandOutputView, Engine, routeSettings)
 						if viewOk and type(resolved) == "string" then
-							destinationView = resolved
+							context = { view = resolved, kind = commandKind }
 						end
 					end
 				end
 				Engine.localCommandCaptureViews = Engine.localCommandCaptureViews or {}
-				table.insert(Engine.localCommandCaptureViews, destinationView)
+				table.insert(Engine.localCommandCaptureViews, context)
 				local ok, first, second, third, fourth, fifth = pcall(original, ...)
 				table.remove(Engine.localCommandCaptureViews)
 				if not ok then
@@ -2534,7 +2621,7 @@ function Engine:RefreshLocalCommandCapture()
 			slashCommands[key] = wrapper
 			-- Wrath caches resolved slash handlers separately. Merely replacing
 			-- SlashCmdList leaves an already-used /run or /dump pointing at the old
-			-- function, so invalidate only the three aliases we deliberately own.
+			-- function, so invalidate only aliases whose handler we deliberately wrap.
 			local slashHash = _G.hash_SlashCmdList
 			if type(slashHash) == "table" then
 				for _, alias in ipairs(aliasesByKey[key] or {}) do
@@ -3489,6 +3576,8 @@ function Engine:RecordBelongsToView(record, viewId, settings)
 		and addon:IsRecordAllowedInView(viewId, record, settings) == false then
 		return false
 	end
+	if record.sourceId == "system:addon-command"
+		and record.localCommandView == viewId then return true end
 
 	local memberships = record.views
 	if type(memberships) == "table" then

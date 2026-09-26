@@ -20,6 +20,7 @@ local settings = {
 	localCommandOutput = {
 		enabled = true,
 		destination = "system",
+		addonCommandsEnabled = true,
 	},
 }
 
@@ -328,5 +329,38 @@ SlashCmdList.SCRIPT("recovered")
 assert(#nativeMessages == 20 and #received == 9,
 	"command output did not recover after transient settings/capture failures")
 assertLocalRecord(received[9], "fail-open: recovered", "trade")
+
+-- Only a handler actually loaded from Interface/AddOns is eligible for the
+-- add-on bridge; an unrelated native/test slash command remains untouched.
+local loader = loadstring or load
+SLASH_FAKEADDON1 = "/fakeaddon"
+SlashCmdList.FAKEADDON = assert(loader([[
+	return function(message)
+		DEFAULT_CHAT_FRAME:AddMessage("addon: " .. message)
+		ChattyChattyBangBang.SmartDock.activeView = "general"
+	end
+]], "@Interface/AddOns/FakeAddon/Commands.lua"))()
+local originalAddonHandler = SlashCmdList.FAKEADDON
+hash_SlashCmdList["/FAKEADDON"] = originalAddonHandler
+ChattyChattyBangBang.SmartDock.activeView = "trade"
+engine:RefreshLocalCommandCapture()
+assert(SlashCmdList.FAKEADDON ~= originalAddonHandler
+	and hash_SlashCmdList["/FAKEADDON"] == nil,
+	"add-on slash handler was not hooked or its cached alias stayed stale")
+SlashCmdList.FAKEADDON("first")
+assert(#received == 10 and #nativeMessages == 21,
+	"add-on output was not copied once while retaining the native line")
+assert(received[10].sourceId == "system:addon-command"
+	and received[10].sourceLabel == "Add-on command result"
+	and received[10].view == "trade" and received[10].localCommandView == "trade",
+	"add-on command result did not retain the tab selected before its handler ran")
+assert(engine:RecordBelongsToView(received[10], "trade")
+	and not engine:RecordBelongsToView(received[10], "system"),
+	"add-on command output leaked into System or disappeared from the typed tab")
+settings.localCommandOutput.addonCommandsEnabled = false
+engine:RefreshLocalCommandCapture()
+SlashCmdList.FAKEADDON("disabled")
+assert(#received == 10 and #nativeMessages == 22,
+	"disabled add-on command capture suppressed native output or made a record")
 
 print("Local command output mock tests passed")

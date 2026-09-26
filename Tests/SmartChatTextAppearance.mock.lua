@@ -50,7 +50,7 @@ local addon = ChattyChattyBangBang
 local settings = addon:GetSmartSettings()
 local defaultAppearance = addon:GetSmartChatTextAppearance("global")
 assert(defaultAppearance.font == nil and defaultAppearance.size == 0 and defaultAppearance.outline == "INHERIT"
-	and defaultAppearance.spacing == 1 and defaultAppearance.entryGapRows == 0,
+	and defaultAppearance.spacing == 3 and defaultAppearance.entryGapRows == 0,
 	"global Smart Chat text should inherit the current chat font by default")
 
 local options = addon:GetSmartChatTextAppearanceOptions()
@@ -197,9 +197,23 @@ settings = addon:GetSmartSettings()
 appearance = addon:GetSmartChatTextAppearance("global")
 assert(appearance.font == "Mono Test" and settings.textAppearance.font == "Mono Test",
 	"legacy lsm:<name> text setting was not normalized to the raw LSM key")
-assert(appearance.spacing == 1 and settings.textAppearance.spacing == 1,
-	"legacy or decimal line gaps did not normalize to the compact whole-pixel default")
+assert(appearance.spacing == 3 and settings.textAppearance.spacing == 3,
+	"legacy or decimal line gaps did not normalize to the comfortable whole-pixel default")
 assert(appearance.entryGapRows == 0 and settings.textAppearance.entryGapRows == 0,
 	"invalid legacy entry gap did not normalize to the compact default")
+
+addon.db.profile.smartChat = { textAppearance = { schema = 3, spacing = 1 } }
+appearance = addon:GetSmartChatTextAppearance("global")
+assert(appearance.spacing == 3 and addon.db.profile.smartChat.textAppearance.schema == 4,
+	"old factory 1px spacing did not migrate to a readable 3px")
+addon.db.profile.smartChat = { textAppearance = { spacing = 1 } }
+assert(addon:GetSmartChatTextAppearance("global").spacing == 3,
+	"schema-less old factory spacing escaped the one-time comfort migration")
+addon.db.profile.smartChat = { textAppearance = { schema = 3, spacing = 0 } }
+assert(addon:GetSmartChatTextAppearance("global").spacing == 0,
+	"deliberate compact 0px spacing was overwritten by the padding migration")
+addon.db.profile.smartChat = { textAppearance = { schema = 4, spacing = 1 } }
+assert(addon:GetSmartChatTextAppearance("global").spacing == 1,
+	"post-migration deliberate 1px spacing was overwritten")
 
 print("Smart Chat text appearance mock: PASS")
