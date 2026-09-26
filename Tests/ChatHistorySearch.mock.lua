@@ -99,8 +99,9 @@ addon.BlockControl = {
 expect(engine:ReapplyBlockRules() == 1,
 	"manual block did not purge retained normal history")
 expect(#engine:SearchHistory({ text = "500g" }).records == 0
+	and #engine:SearchHistory({ sender = "Seller-A", exactSender = true }).records == 0
 	and #addon.BlockControl.archived == 1,
-	"blocked text was searchable in normal history or not archived")
+	"blocked text or sender history was searchable in normal history or not archived")
 addon.BlockControl.ShouldBlock = function() return false end
 engine:ResetForProfile()
 expect(#engine:SearchHistory({ text = "500g" }).records == 0
@@ -122,5 +123,17 @@ expect(#engine:SearchHistory({ text = "evicted-needle" }).records == 0,
 engine:ClearHistory()
 expect(#engine:SearchHistory({ text = "later" }).records == 0,
 	"cleared history remained searchable")
+
+-- Player-name HISTORY uses an exact sender boundary. A substring search must
+-- remain available in ordinary FIND, but Ada must not include Adaline.
+local ada = add("first message", "Ada", "channel:general", "General", secondDate, "general")
+add("similarly named", "Adaline", "channel:general", "General", secondDate, "general")
+local adaAgain = add("second message", "ada", "channel:trade", "Trade", secondDate, "trade")
+search = engine:SearchHistory({ sender = "ADA", exactSender = true })
+expect(#search.records == 2 and search.records[1] == adaAgain and search.records[2] == ada,
+	"exact sender history mixed another player's retained messages or lost case-insensitive matching")
+expect(#engine:SearchHistory({ sender = "ADA" }).records == 3
+	and #engine:SearchHistory({ sender = "", exactSender = true }).records == 0,
+	"ordinary sender substring search changed or empty exact sender exposed the full transcript")
 
 print("Chat history search mock tests passed")

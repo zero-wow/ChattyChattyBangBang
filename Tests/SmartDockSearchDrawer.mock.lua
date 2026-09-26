@@ -209,4 +209,34 @@ assert(layout:find('resultButton:SetPoint("TOPLEFT", drawer, "TOPLEFT", 4, -49)'
 assert(49 + 18 <= 70 - 3 and 25 + 23 + 19 <= 70 - 3,
 	"result or date filter would cross the minimum drawer's bottom border")
 
+-- The player-name HISTORY action reuses this bounded reader across all tabs.
+-- Its exact sender filter is explicit; stale FIND filters cannot leak in.
+dock.HideChatHelpMenu = function() end
+dock.HideDisplayHoverHint = function() end
+dock.UpdateSourceColumnAlignmentControl = function() end
+dock.RefreshTransientMessageLayout = function(self) self.senderHistoryLayoutRefreshed = true end
+dock.searchOpen = false
+dock.searchTextEdit.text = "stale text"
+dock.searchSenderEdit.text = "stale sender"
+dock.searchSourceEdit.text = "stale source"
+dock.searchDateEdit.text = "2025-01-01"
+dock.searchCurrentTabOnly = true
+addon.MessageEngine.SearchHistory = function(_, query)
+	lastQuery = query
+	return { records = { records[1] }, hasMore = false }
+end
+assert(dock:OpenSenderHistory({ sender = "Mira" }) and dock.searchOpen
+	and dock.senderHistoryLayoutRefreshed and dock.activeView == "general",
+	"sender HISTORY did not open a separate retained preview without switching chat tabs")
+assert(lastQuery.sender == "Mira" and lastQuery.exactSender == true
+	and lastQuery.text == "" and lastQuery.source == "" and lastQuery.date == ""
+	and lastQuery.viewId == nil and lastQuery.limit == 20,
+	"sender HISTORY did not clear stale filters or request exact, bounded all-tab history")
+assert(dock.searchTitle.text == "HISTORY: Mira"
+	and dock.searchResultButton.text:find("Keystone invitation 1", 1, true),
+	"sender HISTORY lacks a clear heading or matching preview")
+assert(not dock:ToggleSearchDrawer(true) and dock.searchSenderHistory == nil
+	and dock.searchSenderEdit.text == "",
+	"closing player HISTORY left a sticky exact-sender filter in ordinary FIND")
+
 print("SmartDock retained-history search drawer mock passed")

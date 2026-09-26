@@ -7214,9 +7214,101 @@ function Config:SetAlertEditorEnabled(enabled)
 	end
 end
 
+function Config:RefreshAlertPreviewSources(reset)
+	if not self.alertPreviewSource then return end
+	local rule = findAlertRule(self.selectedAlertRuleId)
+	reset = reset or self.alertPreviewRuleId ~= (rule and rule.id or nil)
+	self.alertPreviewRuleId = rule and rule.id or nil
+	local sources = {}
+	if rule then
+		local seen = {}
+		for _, definition in ipairs(self:GetAlertSourceDefinitions(rule.id)) do
+			local id = definition.id or definition.sourceId
+			if id and not seen[id] then
+				seen[id] = true
+				sources[#sources + 1] = { id = id, label = definition.label or definition.sourceLabel or id }
+			end
+		end
+		for id, selected in pairs(rule.sources or {}) do
+			if selected and not seen[id] then
+				sources[#sources + 1] = { id = id, label = id }
+			end
+		end
+	end
+	if rule and rule.allSources ~= false then
+		table.insert(sources, 1, { label = "ANY SOURCE" })
+	end
+	self.alertPreviewSources = sources
+	local selected = not reset and self.alertPreviewSourceId or nil
+	local index
+	for sourceIndex = 1, #sources do
+		if sources[sourceIndex].id == selected then index = sourceIndex break end
+	end
+	if not index then
+		index = 1
+		if rule and rule.allSources == false then
+			for sourceIndex = 1, #sources do
+				if rule.sources[sources[sourceIndex].id] then index = sourceIndex break end
+			end
+		end
+	end
+	self.alertPreviewSourceIndex = index
+	self.alertPreviewSourceId = sources[index] and sources[index].id or nil
+	self.alertPreviewSource:SetText(sources[index] and sources[index].label or "NO KNOWN SOURCES")
+	local paging = #sources > 1
+	if self.alertPreviewPrevious then
+		if paging then self.alertPreviewPrevious:Show() else self.alertPreviewPrevious:Hide() end
+	end
+	if self.alertPreviewNext then
+		if paging then self.alertPreviewNext:Show() else self.alertPreviewNext:Hide() end
+	end
+end
+
+function Config:SetAlertPreviewState(label, reason, colorName)
+	self.alertPreviewResult:SetText(label)
+	self.alertPreviewReason:SetText(reason)
+	Theme.texts[self.alertPreviewResult] = colorName
+	local r, g, b, a = Theme:GetColor(colorName)
+	self.alertPreviewResult:SetTextColor(r, g, b, a)
+end
+
+function Config:CheckAlertPreview()
+	if not self.alertPreviewResult then return end
+	local sample = self.alertPreviewEdit and self.alertPreviewEdit:GetText() or ""
+	if not self.selectedAlertRuleId or not addon.PreviewAlertRule then
+		self:SetAlertPreviewState("CHOOSE A RULE", "Select an alert on the left to try a message.", "textMuted")
+		return
+	end
+	local draft = {
+		terms = parseTerms(self.alertTermsEdit:GetText()),
+		enabled = self.alertEnabledToggle.checked == true,
+		matchAll = self.alertMatchAllToggle.checked == true,
+		wholeTerms = self.alertWholeTermsToggle.checked == true,
+		allSources = self.alertAllSourcesToggle.checked == true,
+	}
+	local ok, result = pcall(addon.PreviewAlertRule, addon,
+		self.selectedAlertRuleId, sample, self.alertPreviewSourceId, draft)
+	if not ok or type(result) ~= "table" then
+		self:SetAlertPreviewState("PREVIEW UNAVAILABLE", "The alert rule could not be checked right now.", "warning")
+		return
+	end
+	self:SetAlertPreviewState(result.matched and "WOULD ALERT" or "NO ALERT",
+		result.reason or "", result.matched and "success" or "textMuted")
+end
+
+function Config:StepAlertPreviewSource(delta)
+	local sources = self.alertPreviewSources or {}
+	if #sources < 2 then return end
+	local index = ((self.alertPreviewSourceIndex or 1) + delta - 1) % #sources + 1
+	self.alertPreviewSourceIndex = index
+	self.alertPreviewSourceId = sources[index].id
+	self.alertPreviewSource:SetText(sources[index].label)
+	self:CheckAlertPreview()
+end
+
 function Config:RefreshAlertInspectorPane()
 	local mode = self.alertInspectorMode
-	if mode ~= "notify" and mode ~= "sources" and mode ~= "global" then
+	if mode ~= "notify" and mode ~= "sources" and mode ~= "preview" and mode ~= "global" then
 		mode = "words"
 	end
 	self.alertInspectorMode = mode
@@ -7239,11 +7331,12 @@ function Config:RefreshAlertInspectorPane()
 end
 
 function Config:SetAlertInspectorPane(mode)
-	if mode ~= "words" and mode ~= "notify" and mode ~= "sources" and mode ~= "global" then
+	if mode ~= "words" and mode ~= "notify" and mode ~= "sources" and mode ~= "preview" and mode ~= "global" then
 		return
 	end
 	self.alertInspectorMode = mode
 	self:RefreshAlertInspectorPane()
+	if mode == "preview" then self:CheckAlertPreview() end
 end
 
 function Config:RefreshAlertNotifyHelp()
@@ -7335,6 +7428,7 @@ function Config:LoadAlertEditor(ruleId)
 		self.alertTermsEdit:SetText("")
 		self.alertEnabledToggle:SetValue(false, true)
 		self.alertMatchAllToggle:SetValue(false, true)
+		self.alertWholeTermsToggle:SetValue(false, true)
 		self.alertAllSourcesToggle:SetValue(true, true)
 		self.alertRevealToggle:SetValue(false, true)
 		self.alertRuleSoundToggle:SetValue(false, true)
@@ -7344,16 +7438,20 @@ function Config:LoadAlertEditor(ruleId)
 			self.alertDeleteButton:Disable()
 		end
 		self:RefreshAlertSources()
+		self:RefreshAlertPreviewSources(true)
+		self:CheckAlertPreview()
 		self:RefreshAlertNotifyHelp()
 		self:RefreshAlertInspectorPane()
 		return false
 	end
+	local changedRule = self.selectedAlertRuleId ~= rule.id
 	self.selectedAlertRuleId = rule.id
 	self.alertEditorTitle:SetText("EDIT " .. string.upper(rule.name or rule.id))
 	self.alertNameEdit:SetText(rule.name or "")
 	self.alertTermsEdit:SetText(alertTermsText(rule.terms))
 	self.alertEnabledToggle:SetValue(rule.enabled ~= false, true)
 	self.alertMatchAllToggle:SetValue(rule.matchAll == true, true)
+	self.alertWholeTermsToggle:SetValue(rule.wholeTerms == true, true)
 	self.alertAllSourcesToggle:SetValue(rule.allSources ~= false, true)
 	self.alertRevealToggle:SetValue(rule.revealDock ~= false, true)
 	self.alertRuleSoundToggle:SetValue(rule.sound == true, true)
@@ -7364,6 +7462,8 @@ function Config:LoadAlertEditor(ruleId)
 		setTightButtonLabel(self.alertDeleteButton, "DELETE")
 	end
 	self:RefreshAlertSources()
+	self:RefreshAlertPreviewSources(changedRule)
+	self:CheckAlertPreview()
 	self:RefreshAlertNotifyHelp()
 	self:RefreshAlertInspectorPane()
 	return true
@@ -7443,6 +7543,7 @@ function Config:SaveAlertRule(quiet)
 		terms = terms,
 		enabled = self.alertEnabledToggle.checked == true,
 		matchAll = self.alertMatchAllToggle.checked == true,
+		wholeTerms = self.alertWholeTermsToggle.checked == true,
 		allSources = self.alertAllSourcesToggle.checked == true,
 		revealDock = self.alertRevealToggle.checked == true,
 		sound = self.alertRuleSoundToggle.checked == true,
@@ -8215,8 +8316,13 @@ function Config:BuildAlertsPage()
 	sourcesTab:SetScript("OnClick", function() Config:SetAlertInspectorPane("sources") end)
 	setActionStyle(sourcesTab, "choice", "Sources for this rule", "Watch every source or limit this alert to exact chat sources.")
 	self.alertInspectorButtons.sources = sourcesTab
-	local globalTab = Theme:CreateTightButton(work, "GLOBAL BEHAVIOR", 20, false)
-	globalTab:SetPoint("LEFT", sourcesTab, "RIGHT", CONTROL_GAP, 0)
+	local previewTab = Theme:CreateTightButton(work, "TRY IT", 20, false)
+	previewTab:SetPoint("LEFT", sourcesTab, "RIGHT", CONTROL_GAP, 0)
+	previewTab:SetScript("OnClick", function() Config:SetAlertInspectorPane("preview") end)
+	setActionStyle(previewTab, "choice", "Try this alert", "Check a sample message without sending or saving it.")
+	self.alertInspectorButtons.preview = previewTab
+	local globalTab = Theme:CreateTightButton(work, "GLOBAL", 20, false)
+	globalTab:SetPoint("LEFT", previewTab, "RIGHT", CONTROL_GAP, 0)
 	globalTab:SetScript("OnClick", function() Config:SetAlertInspectorPane("global") end)
 	setActionStyle(globalTab, "choice", "Global notification behavior", "Set the reveal gate, sound-for-all override, and automatic hide time shared by alert rules.")
 	self.alertInspectorButtons.global = globalTab
@@ -8233,6 +8339,10 @@ function Config:BuildAlertsPage()
 	sourcesPane:SetPoint("TOPLEFT", work, "TOPLEFT", 188, -82)
 	sourcesPane:SetSize(422, 254)
 	self.alertInspectorPanes.sources = sourcesPane
+	local previewPane = CreateFrame("Frame", nil, work)
+	previewPane:SetPoint("TOPLEFT", work, "TOPLEFT", 188, -82)
+	previewPane:SetSize(422, 254)
+	self.alertInspectorPanes.preview = previewPane
 	local globalPane = CreateFrame("Frame", nil, work)
 	globalPane:SetPoint("TOPLEFT", work, "TOPLEFT", 188, -82)
 	globalPane:SetSize(422, 254)
@@ -8265,19 +8375,23 @@ function Config:BuildAlertsPage()
 	self.alertUsePlayerNameButton:SetPoint("TOPLEFT", wordsPane, "TOPLEFT", 158, -92)
 	setActionStyle(self.alertUsePlayerNameButton, "quiet", "Add your current character", "Appends [PLAYER_NAME] without replacing the terms already in this rule.")
 	self.alertUsePlayerNameButton:SetScript("OnClick", function() Config:AddPlayerNameToAlertTerms() end)
+	self.alertWholeTermsToggle = Theme:CreateCompactToggle(wordsPane, "WHOLE WORDS / PHRASES", 214)
+	self.alertWholeTermsToggle:SetPoint("TOPLEFT", wordsPane, "TOPLEFT", 0, -121)
+	setControlTooltip(self.alertWholeTermsToggle, "Avoid partial-word matches", "When on, 'ann' matches 'hi Ann!' but not 'anniversary'. Phrases still use their exact word order.")
 	local wordsHint = Theme:CreateText(wordsPane, "GameFontHighlightSmall", "textMuted")
-	wordsHint:SetPoint("TOPLEFT", wordsPane, "TOPLEFT", 0, -124)
+	wordsHint:SetPoint("TOPLEFT", wordsPane, "TOPLEFT", 0, -149)
 	wordsHint:SetWidth(422)
 	wordsHint:SetJustifyH("LEFT")
-	wordsHint:SetText("[PLAYER_NAME] resolves when a message arrives, so the same rule follows whichever character is logged in.")
+	wordsHint:SetText("[PLAYER_NAME] follows your current character. TRY IT checks these settings before you save.")
 	local function commitRuleToggle()
 		Config:SaveAlertRule(true)
 	end
 	self.alertEnabledToggle.OnValueChanged = commitRuleToggle
 	self.alertMatchAllToggle.OnValueChanged = commitRuleToggle
+	self.alertWholeTermsToggle.OnValueChanged = commitRuleToggle
 	self.alertSaveButton = Theme:CreateTightButton(wordsPane, "SAVE RULE", 20, true)
 	setActionStyle(self.alertSaveButton, "primary", "Save this alert", "Applies the current rule immediately.")
-	self.alertSaveButton:SetPoint("TOPLEFT", wordsPane, "TOPLEFT", 0, -174)
+	self.alertSaveButton:SetPoint("TOPLEFT", wordsPane, "TOPLEFT", 0, -187)
 	self.alertSaveButton:SetScript("OnClick", function() Config:SaveAlertRule(false) end)
 	self.alertDeleteButton = Theme:CreateTightButton(wordsPane, "DELETE", 20, false)
 	setActionStyle(self.alertDeleteButton, "danger", "Delete this alert", "Removes the selected alert rule after confirmation.")
@@ -8367,6 +8481,53 @@ function Config:BuildAlertsPage()
 		Config:RefreshAlertSources()
 	end)
 
+	local previewTitle = Theme:CreateText(previewPane, "GameFontNormalSmall", "gold")
+	previewTitle:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, 0)
+	previewTitle:SetText("TRY A MESSAGE")
+	local previewHelp = Theme:CreateText(previewPane, "GameFontHighlightSmall", "textMuted")
+	previewHelp:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -20)
+	previewHelp:SetWidth(422)
+	previewHelp:SetJustifyH("LEFT")
+	previewHelp:SetText("Test the current words and source before saving. Nothing is sent or stored.")
+	local sampleLabel = Theme:CreateText(previewPane, "GameFontHighlightSmall", "textMuted")
+	sampleLabel:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -56)
+	sampleLabel:SetText("SAMPLE MESSAGE")
+	self.alertPreviewEdit = Theme:CreateEditBox(previewPane, 422, 24, false)
+	self.alertPreviewEdit:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -72)
+	self.alertPreviewEdit:SetMaxLetters(512)
+	setControlTooltip(self.alertPreviewEdit, "Sample message", "This text stays only in this open settings panel. It is not sent, saved, or added to chat history.")
+	local sourceLabel = Theme:CreateText(previewPane, "GameFontHighlightSmall", "textMuted")
+	sourceLabel:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -111)
+	sourceLabel:SetText("SOURCE TO TEST")
+	self.alertPreviewPrevious = Theme:CreateTightButton(previewPane, "<", 22, false)
+	self.alertPreviewPrevious:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -129)
+	self.alertPreviewPrevious:SetScript("OnClick", function() Config:StepAlertPreviewSource(-1) end)
+	self.alertPreviewSource = Theme:CreateText(previewPane, "GameFontHighlightSmall", "text")
+	self.alertPreviewSource:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 36, -132)
+	self.alertPreviewSource:SetSize(340, 17)
+	self.alertPreviewSource:SetJustifyH("LEFT")
+	if self.alertPreviewSource.SetWordWrap then self.alertPreviewSource:SetWordWrap(false) end
+	if self.alertPreviewSource.SetMaxLines then self.alertPreviewSource:SetMaxLines(1) end
+	self.alertPreviewNext = Theme:CreateTightButton(previewPane, ">", 22, false)
+	self.alertPreviewNext:SetPoint("TOPRIGHT", previewPane, "TOPRIGHT", 0, -129)
+	self.alertPreviewNext:SetScript("OnClick", function() Config:StepAlertPreviewSource(1) end)
+	local checkPreview = Theme:CreateTightButton(previewPane, "CHECK MATCH", 22, true)
+	checkPreview:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -164)
+	checkPreview:SetScript("OnClick", function() Config:CheckAlertPreview() end)
+	setActionStyle(checkPreview, "primary", "Check sample", "Uses the current editor choices without saving the sample or alert rule.")
+	self.alertPreviewButton = checkPreview
+	self.alertPreviewResult = Theme:CreateText(previewPane, "GameFontNormalSmall", "textMuted")
+	self.alertPreviewResult:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -195)
+	self.alertPreviewResult:SetSize(422, 17)
+	self.alertPreviewReason = Theme:CreateText(previewPane, "GameFontHighlightSmall", "textMuted")
+	self.alertPreviewReason:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -215)
+	self.alertPreviewReason:SetSize(422, 20)
+	self.alertPreviewReason:SetJustifyH("LEFT")
+	local previewLimit = Theme:CreateText(previewPane, "GameFontHighlightSmall", "textMuted")
+	previewLimit:SetPoint("TOPLEFT", previewPane, "TOPLEFT", 0, -239)
+	previewLimit:SetSize(422, 14)
+	previewLimit:SetText("Preview excludes self, ignored senders, and Sync message checks.")
+
 	local globalTitle = Theme:CreateText(globalPane, "GameFontNormalSmall", "gold")
 	globalTitle:SetPoint("TOPLEFT", globalPane, "TOPLEFT", 0, 0)
 	globalTitle:SetText("GLOBAL BEHAVIOR")
@@ -8423,9 +8584,10 @@ function Config:BuildAlertsPage()
 	self.alertsStatus:SetWidth(422)
 	self.alertsStatus:SetJustifyH("LEFT")
 	self.alertEditorControls = {
-		self.alertNameEdit, self.alertTermsEdit, self.alertEnabledToggle, self.alertMatchAllToggle,
+		self.alertNameEdit, self.alertTermsEdit, self.alertEnabledToggle, self.alertMatchAllToggle, self.alertWholeTermsToggle,
 		self.alertAllSourcesToggle, self.alertRevealToggle, self.alertRuleSoundToggle,
 		self.alertSaveButton, self.alertDeleteButton, self.alertUsePlayerNameButton,
+		self.alertPreviewEdit, self.alertPreviewButton,
 	}
 	self.alertNameEdit:SetScript("OnTabPressed", function() Config.alertTermsEdit:SetFocus() end)
 	self.alertTermsEdit:SetScript("OnEnterPressed", function(self) self:ClearFocus() Config:SaveAlertRule(false) end)
@@ -10007,6 +10169,12 @@ function Config:RefreshMessengerPage()
 		end
 		self.messengerTabNameMaxLengthEdit:SetText(tostring(tabNameMaxLength))
 	end
+	if self.messengerPersistDraftsToggle then
+		self.messengerPersistDraftsToggle:SetValue(settings.persistDrafts == true, true)
+	end
+	if self.messengerPersistReplyTargetsToggle then
+		self.messengerPersistReplyTargetsToggle:SetValue(settings.persistReplyTargets == true, true)
+	end
 	if self.messengerChromeAutoHideToggle then
 		self.messengerChromeAutoHideToggle:SetValue(settings.chromeAutoHide == true, true)
 	end
@@ -10278,6 +10446,45 @@ function Config:BuildMessengerPage()
 	end
 	self.messengerTabNameMaxLengthEdit:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
 	self.messengerTabNameMaxLengthEdit:HookScript("OnEditFocusLost", commitMessengerTabNameMaxLength)
+
+	local memoryTitle = addTab(Theme:CreateText(page, "GameFontNormalSmall", "gold"))
+	memoryTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -236)
+	memoryTitle:SetText("AFTER RELOAD — OPTIONAL")
+
+	self.messengerPersistDraftsToggle = addTab(Theme:CreateCompactToggle(page, "REMEMBER UNSENT REPLIES", PAGE_WIDTH))
+	self.messengerPersistDraftsToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -264)
+	self.messengerPersistDraftsToggle.OnValueChanged = function(_, value)
+		setMessengerBoolean("SetMessengerDraftPersistenceEnabled", "persistDrafts", value)
+		Config:RefreshMessengerPage()
+	end
+	setControlTooltip(self.messengerPersistDraftsToggle, "Remember unsent replies",
+		"OFF by default. When on, Chatty saves up to 12 unsent reply fields (at most 255 typed characters each) in this WoW profile so they return when you reopen that person's tab. This stores private text on disk.")
+
+	self.messengerPersistReplyTargetsToggle = addTab(Theme:CreateCompactToggle(page, "REMEMBER REPLY TABS", PAGE_WIDTH))
+	self.messengerPersistReplyTargetsToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -296)
+	self.messengerPersistReplyTargetsToggle.OnValueChanged = function(_, value)
+		setMessengerBoolean("SetMessengerReplyTargetPersistenceEnabled", "persistReplyTargets", value)
+		Config:RefreshMessengerPage()
+	end
+	setControlTooltip(self.messengerPersistReplyTargetsToggle, "Remember reply tabs",
+		"OFF by default. When on, Chatty saves up to 12 Messenger reply targets and the selected tab across reload. It stores names or Battle.net account IDs, not chat text; unsent text needs the separate setting above.")
+
+	local memoryDetail = addTab(Theme:CreateText(page, "GameFontHighlightSmall", "textMuted"))
+	memoryDetail:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -333)
+	memoryDetail:SetSize(PAGE_WIDTH, 38)
+	memoryDetail:SetJustifyH("LEFT")
+	if memoryDetail.SetJustifyV then memoryDetail:SetJustifyV("TOP") end
+	memoryDetail:SetText("Both start OFF. Turning either one off erases its saved data immediately; it does not close live tabs or delete chat history.")
+
+	self.messengerClearSavedStateButton = addTab(Theme:CreateTightButton(page, "CLEAR SAVED REPLIES + TABS", 22, false))
+	self.messengerClearSavedStateButton:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -383)
+	self.messengerClearSavedStateButton:SetScript("OnClick", function()
+		if type(addon.ClearMessengerSavedState) == "function" then addon:ClearMessengerSavedState() end
+		Config:RefreshMessengerPage()
+		Config.messengerStatus:SetText("Saved Messenger replies and tabs cleared. Current open tabs stay visible.")
+	end)
+	setControlTooltip(self.messengerClearSavedStateButton, "Clear remembered Messenger state",
+		"Erases saved unsent replies and reply targets now. Current open tabs and their text stay visible; while a remember option stays on, later edits or tab changes can save them again.")
 
 	local visibilityControls = {}
 	local function addVisibility(control)
@@ -14728,6 +14935,7 @@ function Config:ReloadProfile()
 	self.alertTermsEdit = nil
 	self.alertEnabledToggle = nil
 	self.alertMatchAllToggle = nil
+	self.alertWholeTermsToggle = nil
 	self.alertAllSourcesToggle = nil
 	self.alertRevealToggle = nil
 	self.alertRuleSoundToggle = nil
@@ -14741,6 +14949,17 @@ function Config:ReloadProfile()
 	self.alertSourceCount = nil
 	self.alertSourcePrevious = nil
 	self.alertSourceNext = nil
+	self.alertPreviewEdit = nil
+	self.alertPreviewButton = nil
+	self.alertPreviewResult = nil
+	self.alertPreviewReason = nil
+	self.alertPreviewSource = nil
+	self.alertPreviewPrevious = nil
+	self.alertPreviewNext = nil
+	self.alertPreviewSources = nil
+	self.alertPreviewSourceIndex = nil
+	self.alertPreviewSourceId = nil
+	self.alertPreviewRuleId = nil
 	self.alertsStatus = nil
 	self.alertEditorControls = nil
 	self.selectedAlertRuleId = nil

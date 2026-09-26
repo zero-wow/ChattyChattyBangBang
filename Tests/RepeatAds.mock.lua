@@ -59,6 +59,28 @@ assert(chat("CHAT_MSG_WHISPER", sameAd) == false,
 assert(chat("CHAT_MSG_CHANNEL", "WTS?") == false,
 	"short conversational text was treated as a sale advert")
 
+-- Item links plus an explicit gold price identify repeat listings even when
+-- their surrounding words do not use English sale vocabulary.
+local localizedAd = "Sprzedam |Hitem:123|h[Shiny Sword]|h za 50g, napisz do mnie"
+now = now + 1
+assert(chat("CHAT_MSG_CHANNEL", localizedAd, "LocaleSeller-Realm") == false,
+	"first localized linked listing should be visible")
+now = now + 600
+assert(chat("CHAT_MSG_CHANNEL", localizedAd, "LocaleSeller-Realm") == true,
+	"priced linked listing bypassed the repeat-ad rule without English wording")
+local unpricedLink = "Look at |Hitem:124|h[Shiny Sword]|h, it is so cool"
+now = now + 1
+assert(chat("CHAT_MSG_CHANNEL", unpricedLink, "ChatSeller-Realm") == false)
+now = now + 600
+assert(chat("CHAT_MSG_CHANNEL", unpricedLink, "ChatSeller-Realm") == false,
+	"ordinary repeated item-link chat was mistaken for a priced listing")
+local unlinkedPrice = "My repair bill was exactly 50g today"
+now = now + 1
+assert(chat("CHAT_MSG_CHANNEL", unlinkedPrice, "ChatSeller-Realm") == false)
+now = now + 600
+assert(chat("CHAT_MSG_CHANNEL", unlinkedPrice, "ChatSeller-Realm") == false,
+	"ordinary repeated price discussion was mistaken for a linked listing")
+
 -- The same ad gets a little daylight, never a sender-wide mute or ban.
 now = 100 + 3600
 assert(chat("CHAT_MSG_CHANNEL", sameAd) == false, "one-hour follow-up was not allowed")

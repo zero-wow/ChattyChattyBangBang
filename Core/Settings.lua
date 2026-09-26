@@ -255,6 +255,14 @@ local defaults = {
 		actionStripCollapsed = false,
 		actionStripOrientation = "horizontal",
 		tabNameMaxLength = MESSENGER_TAB_NAME_DEFAULT_LENGTH,
+		-- Both kinds of Messenger state are private and opt-in. Drafts are the
+		-- only whisper bodies ever stored by these preferences; reply targets
+		-- contain names/account IDs, never transcript text.
+		persistDrafts = false,
+		persistReplyTargets = false,
+		savedDrafts = {},
+		savedDraftOrder = {},
+		savedReplyTargets = {},
 		appearance = {
 			schema = MESSENGER_APPEARANCE_SCHEMA,
 			transparency = {
@@ -3834,6 +3842,26 @@ local function migrateSmartSettings(settings)
 	conversations.actionStripOrientation = actionStripOrientation
 	conversations.actionStripCollapsed = conversations.actionStripCollapsed == true
 	conversations.tabNameMaxLength = normalizeMessengerTabNameMaxLength(conversations.tabNameMaxLength)
+	conversations.persistDrafts = conversations.persistDrafts == true
+	conversations.persistReplyTargets = conversations.persistReplyTargets == true
+	if not conversations.persistDrafts then
+		if type(conversations.savedDrafts) ~= "table" or next(conversations.savedDrafts) then
+			conversations.savedDrafts = {}
+		end
+		if type(conversations.savedDraftOrder) ~= "table" or next(conversations.savedDraftOrder) then
+			conversations.savedDraftOrder = {}
+		end
+	else
+		if type(conversations.savedDrafts) ~= "table" then conversations.savedDrafts = {} end
+		if type(conversations.savedDraftOrder) ~= "table" then conversations.savedDraftOrder = {} end
+	end
+	if not conversations.persistReplyTargets then
+		if type(conversations.savedReplyTargets) ~= "table" or next(conversations.savedReplyTargets) then
+			conversations.savedReplyTargets = {}
+		end
+	elseif type(conversations.savedReplyTargets) ~= "table" then
+		conversations.savedReplyTargets = {}
+	end
 	conversations.tellTargetEnabled = conversations.tellTargetEnabled ~= false
 	conversations.focusReplyFieldOnCommands = conversations.focusReplyFieldOnCommands ~= false
 	conversations.tellTargetSettingsSchema = math.max(TELL_TARGET_SETTINGS_SCHEMA,
@@ -4308,6 +4336,8 @@ function addon:GetMessengerSettings()
 		deferInCombat = settings.deferInCombat ~= false,
 		tellTargetEnabled = settings.tellTargetEnabled ~= false,
 		focusReplyFieldOnCommands = settings.focusReplyFieldOnCommands ~= false,
+		persistDrafts = settings.persistDrafts == true,
+		persistReplyTargets = settings.persistReplyTargets == true,
 		chromeAutoHide = autoHide,
 		actionButtonStyle = settings.actionButtonStyle == "icons" and "icons" or "text",
 		actionStripCollapsed = settings.actionStripCollapsed == true,
@@ -4324,6 +4354,40 @@ function addon:GetMessengerSettings()
 		resolvedComposerVisibility = resolveMessengerMode(settings.composerVisibility, autoHide),
 		appearance = copy(normalizeMessengerAppearance(settings)),
 	}
+end
+
+-- Opt-in storage is intentionally separate from chat history. Disabling a
+-- preference immediately erases that SavedVariables payload; live unsent
+-- text and tabs remain available until the player closes or reloads them.
+function addon:SetMessengerDraftPersistenceEnabled(enabled)
+	if type(enabled) ~= "boolean" then return false, "boolean-required" end
+	local settings = self:GetSmartSettings().conversations
+	settings.persistDrafts = enabled
+	if not enabled then
+		settings.savedDrafts = {}
+		settings.savedDraftOrder = {}
+	end
+	refreshMessenger(self)
+	return true, enabled
+end
+
+function addon:SetMessengerReplyTargetPersistenceEnabled(enabled)
+	if type(enabled) ~= "boolean" then return false, "boolean-required" end
+	local settings = self:GetSmartSettings().conversations
+	settings.persistReplyTargets = enabled
+	if not enabled then
+		settings.savedReplyTargets = {}
+	end
+	refreshMessenger(self)
+	return true, enabled
+end
+
+function addon:ClearMessengerSavedState()
+	local settings = self:GetSmartSettings().conversations
+	settings.savedDrafts = {}
+	settings.savedDraftOrder = {}
+	settings.savedReplyTargets = {}
+	return true
 end
 
 function addon:GetTellTargetSettings()

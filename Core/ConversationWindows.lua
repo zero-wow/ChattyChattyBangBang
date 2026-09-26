@@ -18,6 +18,9 @@ local Window = {}
 Window.__index = Window
 
 local MAX_TABS = 12
+local MAX_SAVED_SCAN = MAX_TABS * 4
+local MAX_SAVED_DRAFT_BYTES = 1024
+local MAX_SAVED_NAME_BYTES = 96
 local MAX_HISTORY = 200
 local MAX_PENDING = 12
 local SEND_ECHO_TIMEOUT = 15
@@ -265,9 +268,131 @@ local function setTightButtonLabel(button, label)
 end
 
 local function getConversationSettings()
-	local settings = addon:GetSmartSettings()
+	local settings = addon.GetPreparedSmartSettings and addon:GetPreparedSmartSettings()
+		or addon:GetSmartSettings()
 	settings.conversations = settings.conversations or {}
 	return settings.conversations
+end
+
+local function validSavedKey(key)
+	return type(key) == "string" and #key > 0 and #key <= MAX_SAVED_NAME_BYTES
+		and not string.find(key, "[%c|]")
+end
+
+local function removeOrderedKey(order, key)
+	if type(order) ~= "table" then return end
+	for index = #order, 1, -1 do
+		if order[index] == key then table.remove(order, index) end
+	end
+end
+
+function Manager:RememberDraft(session)
+	if not session or not validSavedKey(session.playerKey) then return end
+	local settings = getConversationSettings()
+	if settings.persistDrafts ~= true then return end
+	settings.savedDrafts = type(settings.savedDrafts) == "table" and settings.savedDrafts or {}
+	settings.savedDraftOrder = type(settings.savedDraftOrder) == "table" and settings.savedDraftOrder or {}
+	local key = session.playerKey
+	local text = tostring(session.draft or "")
+	removeOrderedKey(settings.savedDraftOrder, key)
+	if text == "" or #text > MAX_SAVED_DRAFT_BYTES then
+		settings.savedDrafts[key] = nil
+		return
+	end
+	settings.savedDrafts[key] = text
+	table.insert(settings.savedDraftOrder, key)
+	while #settings.savedDraftOrder > MAX_TABS do
+		settings.savedDrafts[table.remove(settings.savedDraftOrder, 1)] = nil
+	end
+end
+
+function Manager:SanitizeSavedDrafts()
+	local settings = getConversationSettings()
+	if settings.persistDrafts ~= true then return end
+	local source = type(settings.savedDrafts) == "table" and settings.savedDrafts or {}
+	local order = type(settings.savedDraftOrder) == "table" and settings.savedDraftOrder or {}
+	local safe, safeOrder, seen = {}, {}, {}
+	for index = 1, math.min(#order, MAX_SAVED_SCAN) do
+		local key = order[index]
+		local text = source[key]
+		if #safeOrder >= MAX_TABS then break end
+		if validSavedKey(key) and not seen[key] and type(text) == "string"
+			and text ~= "" and #text <= MAX_SAVED_DRAFT_BYTES then
+			safe[key] = text
+			seen[key] = true
+			table.insert(safeOrder, key)
+		end
+	end
+	settings.savedDrafts = safe
+	settings.savedDraftOrder = safeOrder
+end
+
+function Manager:ForgetSavedSession(key)
+	if not validSavedKey(key) then return end
+	local settings = getConversationSettings()
+	if type(settings.savedDrafts) == "table" then settings.savedDrafts[key] = nil end
+	removeOrderedKey(settings.savedDraftOrder, key)
+end
+
+function Manager:RememberReplyTargets()
+	if self.restoringSavedRoutes then return end
+	local settings = getConversationSettings()
+	if settings.persistReplyTargets ~= true then return end
+	local snapshot = { order = {}, items = {} }
+	for _, key in ipairs(self.tabOrder or {}) do
+		local session = self.sessionsByKey and self.sessionsByKey[key]
+		local name = session and cleanPlayerName(session.playerName)
+		if validSavedKey(key) and name and #name <= MAX_SAVED_NAME_BYTES
+			and not string.find(name, "[%c|]") and #snapshot.order < MAX_TABS then
+			local accountID = session.bnetAccountID and validBnetAccountID(session.bnetAccountID)
+			if (accountID and key == "bnet:" .. tostring(accountID))
+				or (not accountID and playerKey(name) == key) then
+				table.insert(snapshot.order, key)
+				snapshot.items[key] = { name = name, bnetAccountID = accountID }
+			end
+		end
+	end
+	local activeKey = self.shell and self.shell.playerKey
+	snapshot.activeKey = snapshot.items[activeKey] and activeKey or nil
+	settings.savedReplyTargets = snapshot
+end
+
+function Manager:RestoreSavedReplyTargets()
+	local settings = getConversationSettings()
+	if settings.persistReplyTargets ~= true then return end
+	local stored = settings.savedReplyTargets
+	if type(stored) ~= "table" or type(stored.order) ~= "table"
+		or type(stored.items) ~= "table" then return end
+	local desired = {}
+	local seen = {}
+	for index = 1, math.min(#stored.order, MAX_SAVED_SCAN) do
+		local key = stored.order[index]
+		local item = stored.items[key]
+		if #desired >= MAX_TABS then break end
+		if validSavedKey(key) and not seen[key] and type(item) == "table" then
+			local name = cleanPlayerName(item.name)
+			local accountID = item.bnetAccountID and validBnetAccountID(item.bnetAccountID)
+			if name and #name <= MAX_SAVED_NAME_BYTES and not string.find(name, "[%c|]")
+				and ((accountID and key == "bnet:" .. tostring(accountID))
+					or (not accountID and playerKey(name) == key))
+				and not isLocallyIgnored(name, accountID) then
+				seen[key] = true
+				table.insert(desired, { key = key, name = name, bnetAccountID = accountID })
+			end
+		end
+	end
+	local selectedKey = stored.activeKey
+	self.restoringSavedRoutes = true
+	for _, item in ipairs(desired) do
+		self:AcquireSession(item.name, item.bnetAccountID)
+	end
+	if seen[selectedKey] then
+		self:SelectSession(selectedKey)
+	elseif desired[1] then
+		self:SelectSession(desired[1].key)
+	end
+	self.restoringSavedRoutes = nil
+	self:RememberReplyTargets()
 end
 
 local function getActionButtonStyle()
@@ -1346,6 +1471,7 @@ function Window:SelectSession(session)
 	local previous = self:GetActiveSession()
 	if previous and self.editBox then
 		previous.draft = self.editBox:GetText() or ""
+		Manager:RememberDraft(previous)
 		self:SaveReaderPosition(previous)
 	end
 
@@ -1369,6 +1495,7 @@ function Window:SelectSession(session)
 		end
 	end
 	self:ApplyChromeLayout(true)
+	Manager:RememberReplyTargets()
 end
 
 function Window:Show(record)
@@ -1451,6 +1578,7 @@ function Window:Send()
 	end
 
 	session.draft = ""
+	Manager:RememberDraft(session)
 	-- A synchronous chat hook may select another Messenger tab. The whisper was
 	-- still sent to the captured target, but the shared edit box now belongs to
 	-- the new session and must not be cleared or focused by the old send.
@@ -2391,6 +2519,7 @@ function Manager:BuildWindow()
 		local session = window:GetActiveSession()
 		if session then
 			session.draft = self:GetText() or ""
+			Manager:RememberDraft(session)
 		end
 	end)
 	window.editBox = editBox
@@ -2477,6 +2606,7 @@ function Manager:RemoveSession(key, suppressSelection)
 	if not session then
 		return
 	end
+	self:ForgetSavedSession(key)
 
 	local shell = self.shell
 	local removedIndex
@@ -2494,6 +2624,7 @@ function Manager:RemoveSession(key, suppressSelection)
 	self.windowsByKey[key] = nil
 	self.fullNoticeKeys = {}
 	self.fullNoticeOrder = {}
+	self:RememberReplyTargets()
 
 	if not shell then
 		return
@@ -2536,6 +2667,7 @@ function Manager:AcquireSession(name, bnetAccountID)
 		-- changes or another character has the same name.
 		if bnetAccountID and cleanPlayerName(name) then
 			existing.playerName = cleanPlayerName(name)
+			self:RememberReplyTargets()
 		end
 		return existing
 	end
@@ -2589,11 +2721,18 @@ function Manager:AcquireSession(name, bnetAccountID)
 		lastUsed = now(),
 		frame = shell.frame, -- light compatibility for legacy callers
 	}
+	local settings = getConversationSettings()
+	local savedDraft = settings.persistDrafts and type(settings.savedDrafts) == "table"
+		and settings.savedDrafts[key]
+	if type(savedDraft) == "string" and #savedDraft <= MAX_SAVED_DRAFT_BYTES then
+		session.draft = savedDraft
+	end
 	self.sessionsByKey[key] = session
 	self.windowsByKey[key] = shell
 	table.insert(self.tabOrder, key)
 	shell:CreateTab(session)
 	shell:RefreshTabs()
+	self:RememberReplyTargets()
 	return session
 end
 
@@ -2853,6 +2992,11 @@ end
 
 function Manager:ApplySettings()
 	self:RefreshTellTargetCommand()
+	self:SanitizeSavedDrafts()
+	for _, key in ipairs(self.tabOrder or {}) do
+		self:RememberDraft(self.sessionsByKey and self.sessionsByKey[key])
+	end
+	self:RememberReplyTargets()
 	if self.shell then
 		self.shell.actionsCompactForWidth = nil
 		self.shell:ApplyChromeLayout(true)
@@ -2870,6 +3014,8 @@ function Manager:SetEnabled(enabled)
 	end
 	self.enabled = enabled and true or false
 	if self.enabled then
+		self:SanitizeSavedDrafts()
+		self:RestoreSavedReplyTargets()
 		self:ApplySettings()
 		return true
 	end

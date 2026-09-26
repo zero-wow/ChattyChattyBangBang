@@ -69,7 +69,7 @@ local function button(width)
 		SetPoint = function(self, ...) self.point = { ... } end,
 	}
 end
-dock.playerActionButtons = { button(50), button(45), button(70), button(80), button(75) }
+dock.playerActionButtons = { button(50), button(55), button(45), button(70), button(80), button(75) }
 panel.width = 400
 local laidOut, compact = dock:RefreshPlayerActionsLayout()
 assert(laidOut and not compact and panel.height == 46,
@@ -85,6 +85,9 @@ assert(dock.playerActionButtons[1].point[5] == 24
 	and dock.playerActionButtons[4].point[1] == "BOTTOMLEFT"
 	and dock.playerActionButtons[4].point[5] == 4,
 	"narrow player-action rows overlap or use the wrong bounds")
+assert(dock.playerActionButtons[6].point[1] == "LEFT"
+	and dock.playerActionButtons[6].point[4] == 2,
+	"sixth action lost its second-row gutter")
 
 local linked
 dock.ShowPlayerActions = function(_, record) linked = record end
@@ -102,7 +105,7 @@ dock:HandleHyperlink("ccbburl:not-a-valid-url", "invalid", "LeftButton")
 assert(delegated == nil, "Chatty copy link was sent to Blizzard's SetItemRef path")
 
 local source = assert(io.open("Core/SmartDock.lua", "rb")):read("*a"):gsub("\r\n", "\n")
-for _, label in ipairs({ "WHISPER", "INVITE", "ADD FRIEND", "CHATTY MUTE", "WOW IGNORE" }) do
+for _, label in ipairs({ "WHISPER", "HISTORY", "INVITE", "ADD FRIEND", "CHATTY MUTE", "WOW IGNORE" }) do
 	assert(string.find(source, 'label = "' .. label .. '"', 1, true), "missing explicit action label: " .. label)
 end
 assert(string.find(source, "Dock:HidePlayerActions()\n\t\t\taction.action(record)", 1, true),

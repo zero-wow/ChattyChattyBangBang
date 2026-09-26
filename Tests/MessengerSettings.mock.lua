@@ -9,6 +9,15 @@ local exported = addon:GetMessengerSettings()
 local appearanceTargets = { "window", "title", "tabs", "chat", "reply", "border" }
 
 assert(exported.chromeAutoHide == false, "Messenger chrome auto-hide should be opt-in")
+assert(exported.persistDrafts == false and exported.persistReplyTargets == false,
+	"private Messenger drafts and reply targets must default to disk storage OFF")
+settings.savedDrafts.legacy = "stray private text"
+settings.savedDraftOrder[1] = "legacy"
+settings.savedReplyTargets = { order = { "legacy" }, items = { legacy = { name = "Legacy" } } }
+addon:GetSmartSettings()
+assert(next(settings.savedDrafts) == nil and next(settings.savedDraftOrder) == nil
+	and next(settings.savedReplyTargets) == nil,
+	"default-off old profiles must discard stray Messenger persistence payloads")
 assert(settings.tellTargetEnabled == true and settings.focusReplyFieldOnCommands == true
 	and settings.tellTargetSettingsSchema == 1,
 	"Tell Target and slash-command focus should default on with the current schema")
@@ -69,6 +78,33 @@ local tellTargetRefreshes = 0
 addon.TellTarget = {
 	ApplySettings = function() tellTargetRefreshes = tellTargetRefreshes + 1 end,
 }
+
+local persistenceOK, persistenceValue = addon:SetMessengerDraftPersistenceEnabled(true)
+assert(persistenceOK and persistenceValue == true and settings.persistDrafts == true,
+	"enabling opt-in Messenger draft storage did not persist")
+settings.savedDrafts.alice = "private unsent text"
+settings.savedDraftOrder[1] = "alice"
+persistenceOK, persistenceValue = addon:SetMessengerDraftPersistenceEnabled(false)
+assert(persistenceOK and persistenceValue == false and next(settings.savedDrafts) == nil
+	and next(settings.savedDraftOrder) == nil,
+	"disabling draft storage did not immediately erase private saved text")
+persistenceOK, persistenceValue = addon:SetMessengerReplyTargetPersistenceEnabled(true)
+assert(persistenceOK and persistenceValue == true and settings.persistReplyTargets == true,
+	"enabling opt-in reply-target storage did not persist")
+settings.savedReplyTargets = { order = { "alice" }, items = { alice = { name = "Alice" } } }
+persistenceOK, persistenceValue = addon:SetMessengerReplyTargetPersistenceEnabled(false)
+assert(persistenceOK and persistenceValue == false and next(settings.savedReplyTargets) == nil,
+	"disabling reply-target storage did not immediately erase saved identities")
+assert(addon:SetMessengerDraftPersistenceEnabled(true)
+	and addon:SetMessengerReplyTargetPersistenceEnabled(true))
+settings.savedDrafts.alice = "private"
+settings.savedReplyTargets = { order = { "alice" }, items = { alice = { name = "Alice" } } }
+assert(addon:ClearMessengerSavedState() and next(settings.savedDrafts) == nil
+	and next(settings.savedReplyTargets) == nil,
+	"clear saved state must erase both stored text and identities")
+assert(addon:SetMessengerDraftPersistenceEnabled(false)
+	and addon:SetMessengerReplyTargetPersistenceEnabled(false))
+refreshes = 0
 
 local ok, value = addon:SetTellTargetEnabled(false)
 assert(ok and value == false and settings.tellTargetEnabled == false

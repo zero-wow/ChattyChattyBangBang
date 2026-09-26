@@ -152,6 +152,13 @@ function addon:SetAlertRuleSourceEnabled(ruleId, sourceId, enabled)
 	end
 	return false
 end
+function addon:PreviewAlertRule(ruleId, sample, sourceId, draft)
+	self.previewCall = { ruleId = ruleId, sample = sample, sourceId = sourceId, draft = draft }
+	if sourceId ~= "source-1" then
+		return { matched = false, reason = "This source is not selected for this rule." }
+	end
+	return { matched = sample == "need keystone", reason = sample == "need keystone" and "Matched keystone." or "No term matched." }
+end
 
 addon.AlertEngine = {
 	stats = { matches = 2, matchedRecords = 1 },
@@ -172,6 +179,7 @@ config:BuildAlertsPage()
 assert(config.alertInspectorMode == "words" and config.alertInspectorPanes.words:IsShown(),
 	"Alerts did not open on its primary WORDS task")
 assert(not config.alertInspectorPanes.notify:IsShown() and not config.alertInspectorPanes.sources:IsShown()
+	and not config.alertInspectorPanes.preview:IsShown()
 	and not config.alertInspectorPanes.global:IsShown(),
 	"inactive alert inspectors were visible together")
 for _, pane in pairs(config.alertInspectorPanes) do
@@ -187,6 +195,15 @@ assert(config.alertNameEdit.parent == config.alertInspectorPanes.words
 	and config.alertTermsEdit.parent == config.alertInspectorPanes.words
 	and config.alertSaveButton.parent == config.alertInspectorPanes.words,
 	"word fields or actions leaked outside the WORDS inspector")
+assert(config.alertWholeTermsToggle.parent == config.alertInspectorPanes.words
+	and math.abs(config.alertWholeTermsToggle.point[5]) + config.alertWholeTermsToggle.height <= 254,
+	"precise-match toggle escaped the WORDS inspector")
+local tabWidth = 0
+for _, name in ipairs({ "words", "notify", "sources", "preview", "global" }) do
+	tabWidth = tabWidth + config.alertInspectorButtons[name].width
+end
+assert(tabWidth + (4 * 6) <= 422,
+	"Alerts inspector tabs overflow the fixed 422px editor")
 
 config.alertInspectorButtons.words.scripts.OnClick()
 config.alertUsePlayerNameButton.scripts.OnClick()
@@ -195,6 +212,8 @@ assert(config.alertTermsEdit:GetText() == "keystone, [PLAYER_NAME]",
 config.alertUsePlayerNameButton.scripts.OnClick()
 assert(config.alertTermsEdit:GetText() == "keystone, [PLAYER_NAME]",
 	"ADD MY NAME duplicated an existing player variable")
+config.alertWholeTermsToggle:SetValue(true)
+assert(rules[1].wholeTerms == true, "WHOLE WORDS toggle did not save to this rule")
 
 config.alertInspectorButtons.notify.scripts.OnClick()
 assert(config.alertInspectorMode == "notify" and config.alertInspectorPanes.notify:IsShown()
@@ -222,6 +241,33 @@ for index, row in ipairs(config.alertSourceRows) do
 end
 assert(config.alertSourcePrevious:IsShown() and config.alertSourceNext:IsShown(),
 	"multi-page source list hid its pager")
+
+config.alertInspectorButtons.preview.scripts.OnClick()
+assert(config.alertInspectorMode == "preview" and config.alertInspectorPanes.preview:IsShown()
+	and not config.alertInspectorPanes.sources:IsShown(),
+	"TRY IT did not replace the previous inspector exclusively")
+assert(config.alertPreviewEdit.parent == config.alertInspectorPanes.preview
+	and config.alertPreviewButton.parent == config.alertInspectorPanes.preview,
+	"preview controls leaked outside the TRY IT pane")
+for _, control in ipairs({ config.alertPreviewEdit, config.alertPreviewButton,
+	config.alertPreviewResult, config.alertPreviewReason, config.alertPreviewSource }) do
+	local x, y = control.point[4], math.abs(control.point[5])
+	assert(x + control.width <= 422 and y + control.height <= 254,
+		"preview control escaped the 422x254 inspector")
+end
+assert(config.alertPreviewSourceId == "source-1", "preview did not select an allowed source first")
+config.alertPreviewEdit:SetText("need keystone")
+config.alertPreviewButton.scripts.OnClick()
+assert(config.alertPreviewResult:GetText() == "WOULD ALERT"
+	and addon.previewCall.sample == "need keystone" and addon.previewCall.draft.wholeTerms == true,
+	"TRY IT did not test the current sample and editor settings")
+config.alertPreviewNext.scripts.OnClick()
+assert(config.alertPreviewSourceId == "source-2"
+	and config.alertPreviewResult:GetText() == "NO ALERT"
+	and config.alertPreviewReason:GetText():find("not selected", 1, true),
+	"source switcher did not explain why the rule would not trigger")
+assert(not settings.alerts.previewSample and not rules[1].previewSample,
+	"sample message was persisted in alert settings")
 
 config.alertInspectorButtons.global.scripts.OnClick()
 assert(config.alertInspectorMode == "global" and config.alertInspectorPanes.global:IsShown()

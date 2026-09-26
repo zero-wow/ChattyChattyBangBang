@@ -4468,6 +4468,23 @@ local function setAnalysisRowText(row, value)
 	end
 end
 
+local analysisViewLabels = {
+	general = "General", trade = "Trade", pvp = "PvP", group = "Group",
+	guild = "Guild", system = "System", loot = "Loot", sync = "Sync",
+	groupFinder = "Group Finder", guildInvites = "Guild Invites",
+	conversations = "Messenger",
+}
+local analysisCaptureReasons = {
+	event = "message event", source = "channel source", semantic = "semantic score",
+	override = "manual correction", provider = "compatibility provider",
+	["local-command"] = "command output setting", sync = "sync protocol",
+	general = "General fallback",
+}
+local function analysisViewLabel(viewId)
+	if not viewId then return "Unknown" end
+	return analysisViewLabels[viewId] or tostring(viewId)
+end
+
 function Dock:RefreshMessageAnalysisLayout()
 	local panel = self.analysisPanel
 	local host = self.frame or self.content
@@ -4515,8 +4532,21 @@ function Dock:ShowMessageAnalysis(record)
 		why = why .. " Blocked: " .. tostring(analysis.blockReason or "message rule") .. "."
 	end
 	setAnalysisRowText(self.analysisSource, source)
-	setAnalysisRowText(self.analysisRoute, tostring(analysis.category or "general") .. " -> " .. tostring(analysis.view or "general"))
+	local capturedView = analysisViewLabel(analysis.captureRouteView)
+	local currentView = analysisViewLabel(analysis.view or "general")
+	setAnalysisRowText(self.analysisRoute, "THEN " .. capturedView .. "  |  NOW " .. currentView)
+	if self.analysisRoute.analysisHit then
+		self.analysisRoute.analysisHit.analysisFullText = analysis.captureRouteView
+			and ("THEN: " .. capturedView .. " (" .. tostring(analysis.captureRouteCategory or "general")
+				.. ", " .. tostring(analysisCaptureReasons[analysis.captureRouteReason] or "captured route")
+				.. ")\nNOW: " .. currentView .. " (" .. tostring(analysis.category or "general") .. ")")
+			or ("THEN: Unknown (saved before route tracking)\nNOW: " .. currentView
+				.. " (" .. tostring(analysis.category or "general") .. ")")
+	end
 	setAnalysisRowText(self.analysisSignals, signals)
+	if not analysis.captureRouteView then
+		why = why .. " Original route unavailable for this older saved line."
+	end
 	setAnalysisRowText(self.analysisWhy, why)
 	local canOverride = record.event == "CHAT_MSG_CHANNEL"
 		and type(addon.SetMessageRouteOverride) == "function"
@@ -7314,6 +7344,7 @@ function Dock:DiscardPartialBuild()
 	self.searchSelectedRecord = nil
 	self.searchFilterMode = nil
 	self.searchOpen = nil
+	self.searchSenderHistory = nil
 	self.historyPager = nil
 	self.historyOlderButton = nil
 	self.historyNewerButton = nil
@@ -8125,6 +8156,11 @@ function Dock:BuildPlayerActions()
 			action = function(record) Dock:SetConversationTarget(record) end,
 		},
 		{
+			label = "HISTORY",
+			tooltip = "Preview this player's retained messages across your chat tabs. Blocked and held messages stay private.",
+			action = function(record) Dock:OpenSenderHistory(record) end,
+		},
+		{
 			label = "INVITE",
 			tooltip = "Invite this player to your group.",
 			action = function(record) addon.Compatibility:InvitePlayer(record.sender) end,
@@ -8608,6 +8644,7 @@ function Dock:GetSearchQuery(cursor)
 	return {
 		text = self.searchTextEdit and self.searchTextEdit:GetText() or "",
 		sender = self.searchSenderEdit and self.searchSenderEdit:GetText() or "",
+		exactSender = self.searchSenderHistory ~= nil,
 		source = self.searchSourceEdit and self.searchSourceEdit:GetText() or "",
 		date = self.searchDateEdit and self.searchDateEdit:GetText() or "",
 		viewId = self.searchCurrentTabOnly and self.activeView or nil,
@@ -8736,8 +8773,10 @@ function Dock:RefreshSearchDrawer()
 		else
 			self.searchTitle:SetPoint("TOPLEFT", self.searchDrawer, "TOPLEFT", 5, -5)
 			self.searchTitle:SetPoint("RIGHT", self.searchDrawer, "RIGHT", -144, 0)
-			self.searchTitle:SetText(record and ("FIND " .. tostring(index) .. "/" .. tostring(#records))
-				or "FIND")
+			self.searchTitle:SetText(self.searchSenderHistory
+				and ("HISTORY: " .. searchSingleLine(self.searchSenderEdit
+					and self.searchSenderEdit:GetText() or self.searchSenderHistory))
+				or (record and ("FIND " .. tostring(index) .. "/" .. tostring(#records)) or "FIND"))
 		end
 	end
 	setSearchButtonLabel(self.searchTabOnlyButton, self.searchCurrentTabOnly and "TAB" or "ALL")
@@ -8781,7 +8820,13 @@ function Dock:ToggleSearchDrawer(forceClosed)
 	self.searchOpen = open
 	self.searchSelectedRecord = nil
 	self.searchFilterMode = false
-	if not open then self:ClearSearchFocus() end
+	if not open then
+		self:ClearSearchFocus()
+		if self.searchSenderHistory and self.searchSenderEdit then
+			self.searchSenderEdit:SetText("")
+		end
+		self.searchSenderHistory = nil
+	end
 	if open then
 		self:HideChatHelpMenu(false)
 		self:HideDisplayHoverHint()
@@ -8791,6 +8836,29 @@ function Dock:ToggleSearchDrawer(forceClosed)
 	self:RefreshTransientMessageLayout()
 	self:UpdateSourceColumnAlignmentControl()
 	return open
+end
+
+function Dock:OpenSenderHistory(record)
+	if not record or type(record.sender) ~= "string" or record.sender == ""
+		or not self.searchDrawer or not self.searchSenderEdit then return false end
+	-- A player action opens the existing bounded retained-history reader. It is
+	-- a preview, never a tab switch, and cannot pull from the separate blocked
+	-- or held-whisper stores. Clear stale filters so this means that player only.
+	self.searchSenderHistory = record.sender
+	self.searchSenderEdit:SetText(record.sender)
+	if self.searchTextEdit then self.searchTextEdit:SetText("") end
+	if self.searchSourceEdit then self.searchSourceEdit:SetText("") end
+	if self.searchDateEdit then self.searchDateEdit:SetText("") end
+	self.searchCurrentTabOnly = false
+	self.searchOpen = true
+	self.searchSelectedRecord = nil
+	self.searchFilterMode = false
+	self:HideChatHelpMenu(false)
+	self:HideDisplayHoverHint()
+	self:RunSearch(nil, false)
+	self:RefreshTransientMessageLayout()
+	self:UpdateSourceColumnAlignmentControl()
+	return true
 end
 
 function Dock:BuildSearchDrawer()
@@ -9008,6 +9076,10 @@ function Dock:Build()
 		Dock.searchOpen = false
 		Dock.searchSelectedRecord = nil
 		Dock:ClearSearchFocus()
+		if Dock.searchSenderHistory and Dock.searchSenderEdit then
+			Dock.searchSenderEdit:SetText("")
+		end
+		Dock.searchSenderHistory = nil
 		if Dock.searchDrawer then Dock.searchDrawer:Hide() end
 		Dock:RestoreNativeChat()
 		Dock:CancelHeaderHoverRefresh()

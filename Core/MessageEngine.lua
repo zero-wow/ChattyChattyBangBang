@@ -909,6 +909,9 @@ local persistedFields = {
 	"presenceId", "bnetAccountId", "isBNet", "direction",
 	"sourceGroup", "sourceId", "sourceLabel",
 	"isAddonMessage", "addonPrefix", "addonPayload", "addonDistribution",
+	-- Tiny immutable route provenance, not another copy of the message body.
+	-- Old saved lines have no capture route and report that honestly in Analysis.
+	"captureRouteCategory", "captureRouteView", "captureRouteReason",
 	-- /run and /dump may be routed to the tab that was active when they ran.
 	-- Keep that factual primary destination stable when saved history reloads.
 	"localCommandView",
@@ -1401,7 +1404,16 @@ local function analyzeSemanticRoute(text, channel, sourceId, sender)
 end
 
 local function classifyChannel(record)
-	return analyzeSemanticRoute(record.normalized, record.channel, record.sourceId, record.sender).category
+	local analysis = analyzeSemanticRoute(record.normalized, record.channel, record.sourceId, record.sender)
+	local reason = "general"
+	if analysis.isUnderAttackNotice or analysis.isDefenseChannel
+		or analysis.isGuildRecruitmentSource or analysis.isLfgChannel
+		or analysis.isTradeChannel and analysis.category == "trade" and not analysis.semanticWinner then
+		reason = "source"
+	elseif analysis.semanticWinner and analysis.category == analysis.semanticWinner.id then
+		reason = "semantic"
+	end
+	return analysis.category, reason
 end
 
 local viewForCategory = {
@@ -1974,18 +1986,25 @@ function Engine:Classify(record)
 		-- rule mirror them back into a human rail would defeat the point of
 		-- quarantining a noisy source.
 		self:ApplyCustomViews(record, true)
+		if not record.historySequence and not record.captureRouteView then
+			record.captureRouteCategory = record.category
+			record.captureRouteView = record.view
+			record.captureRouteReason = "sync"
+		end
 		return
 	end
 	record.isSync = false
 
 	local category = directCategories[record.event]
+	local routeReason = category and "event" or nil
 	if not category and record.event == "CHAT_MSG_CHANNEL" then
 		local override = addon.GetMessageRouteOverride and addon:GetMessageRouteOverride(record)
 		if override then
 			category = override
+			routeReason = "override"
 			record.routeOverrideCategory = override
 		else
-			category = classifyChannel(record)
+			category, routeReason = classifyChannel(record)
 		end
 	end
 	record.category = category or "general"
@@ -2025,7 +2044,11 @@ function Engine:Classify(record)
 
 	local provider = addon.Compatibility and addon.Compatibility:GetProvider()
 	if provider and provider.ClassifyMessage then
+		local beforeProviderView = record.view
 		provider:ClassifyMessage(record)
+		if record.category ~= (category or "general") or record.view ~= beforeProviderView then
+			routeReason = "provider"
+		end
 	end
 	self:ApplyCustomViews(record)
 
@@ -2044,6 +2067,16 @@ function Engine:Classify(record)
 		record.view = targetView
 		memberships[targetView] = true
 		record.views = memberships
+		routeReason = "local-command"
+	end
+	-- Capture this small factual snapshot once, before Store assigns a history
+	-- sequence. Reclassification and reload may update category/view but cannot
+	-- rewrite the route a line originally used. Legacy saved lines already carry
+	-- historySequence, so their unknown capture route is never fabricated.
+	if not record.historySequence and not record.captureRouteView then
+		record.captureRouteCategory = record.category
+		record.captureRouteView = record.view
+		record.captureRouteReason = routeReason or "general"
 	end
 end
 
@@ -2185,6 +2218,9 @@ function Engine:AnalyzeRecord(record)
 		event = record.event,
 		category = category,
 		view = view,
+		captureRouteCategory = record.captureRouteCategory,
+		captureRouteView = record.captureRouteView,
+		captureRouteReason = record.captureRouteReason,
 		sourceGroup = record.sourceGroup,
 		sourceId = record.sourceId,
 		sourceLabel = record.sourceLabel,
@@ -3153,6 +3189,7 @@ function Engine:SearchHistory(query)
 	local result = { records = {}, scanned = 0, hasMore = false, nextCursor = nil }
 	local textNeedle = searchNeedle(query.text)
 	local senderNeedle = searchNeedle(query.sender)
+	local exactSender = query.exactSender == true
 	local sourceNeedle = searchNeedle(query.source)
 	local onDate = trim(query.date)
 	if onDate ~= "" and not string.match(onDate, "^%d%d%d%d%-%d%d%-%d%d$") then
@@ -3193,9 +3230,16 @@ function Engine:SearchHistory(query)
 			or containsSearchNeedle(record.sourceLabel, sourceNeedle)
 			or containsSearchNeedle(record.channel, sourceNeedle)
 			or containsSearchNeedle(record.channelName, sourceNeedle)
+		local senderMatches
+		if exactSender then
+			senderMatches = senderNeedle ~= "" and type(record.sender) == "string"
+				and string.lower(record.sender) == senderNeedle
+		else
+			senderMatches = containsSearchNeedle(record.sender, senderNeedle)
+		end
 		if not record.blockedByBlockControl
 			and containsSearchNeedle(record.text, textNeedle)
-			and containsSearchNeedle(record.sender, senderNeedle)
+			and senderMatches
 			and sourceMatches and dateMatches
 			and (not fromEpoch or epoch and epoch >= fromEpoch)
 			and (not toEpoch or epoch and epoch <= toEpoch)

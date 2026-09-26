@@ -6,7 +6,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. Purple is for work that cannot be considered locally complete until Zero validates it in-game.
 
-**Progress:** 67/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+**Progress:** 73/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
 ## Add — missing capabilities
 
@@ -21,14 +21,14 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | A07 | 🟢 | Messenger pages 200 records at a time, preserving per-tab scroll/drafts/NEW; 450-entry rollover and small-window mocks pass. |
 | A08 | 🟢 | New Channels shows passively learned public/Community sources; Add Tab, Ignore, and deletion choices preserve existing views. Focused config/routing mocks pass. |
 | A09 | 🟢 | FIND searches retained normal chat by text, sender, source, date, or current tab with bounded paging and a full-message preview; blocked/held private records stay separate. Search and compact-layout mocks pass. |
-| A10 | 🔴 | Sender-history view from player actions. |
+| A10 | 🟢 | Player HISTORY action opens an exact-sender, all-tab preview in the bounded retained-history drawer without changing tabs; blocked records stay excluded. Search/layout mocks pass. |
 | A11 | 🔴 | Bookmarks for retained messages. |
 | A12 | 🔴 | Copy one message and bounded transcript selection/export. |
 | A13 | 🟢 | Safe plain-text web addresses become copy-only links in displayed chat; saved text and WoW hyperlinks remain unchanged. Narrow-popup and link mocks pass. |
 | A14 | 🔴 | Optional hyperlink-hover previews in Smart Chat and Messenger. |
 | A15 | 🔴 | Invite-link actions in message text. |
-| A16 | 🔴 | Optional persistent unsent Messenger drafts. |
-| A17 | 🔴 | Optional persistent per-tab composer routes. |
+| A16 | 🟢 | Opt-in Messenger draft restore is off by default, limited to 12 recipients and 1,024 bytes per draft, and erased on disable/clear/close; privacy and layout mocks pass. |
+| A17 | 🟢 | Opt-in Messenger reply-target restore is off by default; it saves only whisper/Battle.net tab targets and selection, not arbitrary chat types or transcript bodies. Restore/layout mocks pass. |
 | A18 | 🟢 | Up/Down recalls 100 non-private Smart Chat sends with draft restoration; Alt+Up/Down remains Blizzard's command-history path. Mocks pass; Blizzard's separate history may retain outgoing whispers. |
 | A19 | 🔴 | Chat logging controls with private-channel exclusions. |
 | A20 | 🔴 | Different history limits per source. |
@@ -84,9 +84,9 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | I10 | 🔴 | Coalesce rapid full-display redraws. |
 | I11 | 🟢 | Periodic global cleanup avoids full sweeps on every line while the observed term keeps exact rolling expiry; focused threshold and sweep-count mocks pass. |
 | I12 | 🟢 | The 64 learned sources favor recent use and protect explicit tab choices; persisted recency is sampled, not rewritten per line. Retention mocks pass. |
-| I13 | 🔴 | Preserve route-decision provenance: “then” versus “now.” |
-| I14 | 🔴 | Add precise alert matching and a match preview. |
-| I15 | 🔴 | Adapt repeated-ad vocabulary beyond English openings. |
+| I13 | 🟢 | Message Analysis shows original THEN and current NOW routes; a compact capture-route snapshot survives reclassification/reload, while old records honestly show Unknown. Mocks pass. |
+| I14 | 🟢 | Optional whole-word/phrase alerts and a draft-aware TRY IT match preview preserve old substring rules and never send/save the sample; alert and layout mocks pass. |
+| I15 | 🟢 | Repeated public listings with an item link and explicit gold price are caught independent of English sale words; unpriced links and unlinked price chat remain outside the rule. Mocks pass. |
 | I16 | 🔴 | Make keyword discovery Unicode/language aware. |
 | I17 | 🔴 | Clarify and control suggestion-data retention scopes. |
 | I18 | 🔴 | Explain total history footprint beside per-source capacity. |

@@ -33,6 +33,7 @@ local DEFAULT_ALERT_RULE = {
 	enabled = true,
 	terms = { "[PLAYER_NAME]" },
 	matchAll = false,
+	wholeTerms = false,
 	allSources = true,
 	sources = {},
 	revealDock = true,
@@ -128,6 +129,7 @@ local function copyRule(rule)
 		enabled = rule.enabled,
 		terms = copyTerms(rule.terms),
 		matchAll = rule.matchAll,
+		wholeTerms = rule.wholeTerms,
 		allSources = rule.allSources,
 		sources = copySources(rule.sources),
 		revealDock = rule.revealDock,
@@ -226,6 +228,7 @@ local function sanitizeRule(source, id, index)
 		enabled = source.enabled ~= false,
 		terms = normalizeTerms(source.terms),
 		matchAll = source.matchAll and true or false,
+		wholeTerms = source.wholeTerms and true or false,
 		allSources = allSources,
 		sources = allSources and {} or normalizeSources(source.sources),
 		revealDock = source.revealDock ~= false,
@@ -239,6 +242,7 @@ local ruleFields = {
 	enabled = true,
 	terms = true,
 	matchAll = true,
+	wholeTerms = true,
 	allSources = true,
 	sources = true,
 	revealDock = true,
@@ -289,7 +293,8 @@ local function rulesEqual(left, right)
 		end
 	end
 	if left.id ~= right.id or left.name ~= right.name or left.enabled ~= right.enabled
-		or left.matchAll ~= right.matchAll or left.allSources ~= right.allSources
+		or left.matchAll ~= right.matchAll or left.wholeTerms ~= right.wholeTerms
+		or left.allSources ~= right.allSources
 		or left.revealDock ~= right.revealDock or left.sound ~= right.sound then
 		return false
 	end
@@ -477,6 +482,7 @@ function addon:UpdateAlertRule(id, data)
 	data = type(data) == "table" and data or {}
 	local enabled = existing.enabled
 	local matchAll = existing.matchAll
+	local wholeTerms = existing.wholeTerms
 	local allSources = existing.allSources
 	local revealDock = existing.revealDock
 	local sound = existing.sound
@@ -485,6 +491,9 @@ function addon:UpdateAlertRule(id, data)
 	end
 	if data.matchAll ~= nil then
 		matchAll = data.matchAll and true or false
+	end
+	if data.wholeTerms ~= nil then
+		wholeTerms = data.wholeTerms and true or false
 	end
 	if data.allSources ~= nil then
 		allSources = data.allSources and true or false
@@ -501,6 +510,7 @@ function addon:UpdateAlertRule(id, data)
 		enabled = enabled,
 		terms = data.terms ~= nil and data.terms or existing.terms,
 		matchAll = matchAll,
+		wholeTerms = wholeTerms,
 		allSources = allSources,
 		sources = data.sources ~= nil and data.sources or existing.sources,
 		revealDock = revealDock,
@@ -638,6 +648,7 @@ function AlertEngine:RefreshRules(force)
 				name = rule.name,
 				terms = rule.terms,
 				matchAll = rule.matchAll,
+				wholeTerms = rule.wholeTerms,
 				revealDock = rule.revealDock,
 				sound = rule.sound,
 			}
@@ -675,11 +686,36 @@ local function resolveRuleTerm(self, term)
 	return string.lower(name)
 end
 
+local function isWordByte(byte)
+	if not byte then return false end
+	-- UTF-8 bytes must not become accidental word boundaries around names in
+	-- non-English locales. Apostrophes also keep contractions together.
+	return byte >= 128 or (byte >= 48 and byte <= 57)
+		or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+		or byte == 95 or byte == 39
+end
+
+local function containsTerm(normalized, term, wholeTerms)
+	if not wholeTerms then
+		return string.find(normalized, term, 1, true) ~= nil
+	end
+	local from = 1
+	while true do
+		local first, last = string.find(normalized, term, from, true)
+		if not first then return false end
+		if not isWordByte(string.byte(normalized, first - 1))
+			and not isWordByte(string.byte(normalized, last + 1)) then
+			return true
+		end
+		from = first + 1
+	end
+end
+
 local function matchesRule(self, normalized, rule)
 	if rule.matchAll then
 		for index = 1, #rule.terms do
 			local term = resolveRuleTerm(self, rule.terms[index])
-			if not term or not string.find(normalized, term, 1, true) then
+			if not term or not containsTerm(normalized, term, rule.wholeTerms) then
 				return false
 			end
 		end
@@ -687,7 +723,7 @@ local function matchesRule(self, normalized, rule)
 	end
 	for index = 1, #rule.terms do
 		local term = resolveRuleTerm(self, rule.terms[index])
-		if term and string.find(normalized, term, 1, true) then
+		if term and containsTerm(normalized, term, rule.wholeTerms) then
 			return true
 		end
 	end
@@ -705,6 +741,67 @@ local function playAlertSound()
 		return ok and played ~= false
 	end
 	return false
+end
+
+-- A dry run for the settings panel. It shares the live term matcher, but
+-- never creates a record, calls the dock, plays a sound, or stores the sample.
+-- A draft lets the user test editor changes before SAVE RULE.
+function addon:PreviewAlertRule(ruleId, sample, sourceId, draft)
+	local settings = getAlertSettings()
+	local stored = findRule(settings, ruleId)
+	if not stored then return { matched = false, reason = "Choose an alert rule first." } end
+	local source = copyRule(stored)
+	if type(draft) == "table" then
+		for key, value in pairs(draft) do
+			if ruleFields[key] and key ~= "id" and key ~= "sources" then source[key] = value end
+		end
+	end
+	local rule = sanitizeRule(source, stored.id, 1)
+	local normalized = type(sample) == "string" and string.lower(trim(sample, 2048)) or ""
+	if normalized == "" then return { matched = false, reason = "Type a sample message to test this rule." } end
+	if settings.enabled == false or (AlertEngine.initialized and not AlertEngine.enabled) then
+		return { matched = false, reason = "Alerts are off globally." }
+	end
+	if not rule.enabled then return { matched = false, reason = "This alert rule is paused." } end
+	if #rule.terms == 0 then return { matched = false, reason = "Add at least one word or phrase." } end
+	if not rule.allSources then
+		if type(sourceId) ~= "string" or sourceId == "" then
+			return { matched = false, reason = "Choose a source to test this rule." }
+		end
+		if not rule.sources[sourceId] then
+			return { matched = false, reason = "This source is not selected for this rule." }
+		end
+	end
+	local found, missing = {}, {}
+	for index = 1, #rule.terms do
+		local raw = rule.terms[index]
+		local term = resolveRuleTerm(AlertEngine, raw)
+		if term and containsTerm(normalized, term, rule.wholeTerms) then
+			found[#found + 1] = raw
+		else
+			missing[#missing + 1] = raw
+		end
+	end
+	local matched = matchesRule(AlertEngine, normalized, rule)
+	if matched then
+		local matchedLabel = found[1] and string.len(found[1]) <= 36 and found[1] or "a listed term"
+		return {
+			matched = true,
+			reason = rule.matchAll and "Every required term matches." or ("Matched " .. matchedLabel .. "."),
+			found = found,
+			missing = missing,
+		}
+	end
+	local missingLabel = missing[1] and string.len(missing[1]) <= 36 and missing[1] or "a required term"
+	local reason = rule.matchAll and ("Still needs " .. missingLabel .. ".")
+		or "No listed term appears in this message."
+	if rule.wholeTerms and #missing > 0 then
+		local loose = resolveRuleTerm(AlertEngine, missing[1])
+		if loose and containsTerm(normalized, loose, false) then
+			reason = "Found only inside another word; whole words are required."
+		end
+	end
+	return { matched = false, reason = reason, found = found, missing = missing }
 end
 
 function AlertEngine:ProcessRecord(record)

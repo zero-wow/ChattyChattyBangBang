@@ -398,7 +398,7 @@ local function repeatAdText(message)
 	return text
 end
 
-local function isRepeatAdvertisement(text, minimumLength)
+local function isRepeatAdvertisement(text, minimumLength, rawMessage)
 	if type(text) ~= "string" or #text < minimumLength then return false end
 	-- Demand an opening market call, not a long ordinary sentence which merely
 	-- mentions what "WTS" means or says "buying time" conversationally.
@@ -416,6 +416,14 @@ local function isRepeatAdvertisement(text, minimumLength)
 	if string.find(text, "^buying%s+%S")
 		and not string.find(text, "^buying%s+into%s")
 		and not string.find(text, "^buying%s+time%s") then
+		return true
+	end
+	-- A linked item with a stated gold price is an advert regardless of the
+	-- language surrounding it. Require both signals so ordinary item links,
+	-- dungeon levels, and unpriced conversation stay outside this rule.
+	if type(rawMessage) == "string" and string.find(rawMessage, "|Hitem:", 1, true)
+		and (string.find(text, "%d+%s*g%f[%W]")
+			or string.find(text, "%d+%s*gold%f[%W]")) then
 		return true
 	end
 	return string.find(text, "^for%s+sale%s+%S") ~= nil
@@ -1434,7 +1442,7 @@ local function evaluate(self, definition, event, message, sender, channelName, c
 	-- rule never creates a mute strike or an automatic ban.
 	if definition.scope == "channel" and config.repeatAds.enabled then
 		local visibleText = repeatAdText(message)
-		if isRepeatAdvertisement(visibleText, config.repeatAds.minimumLength) then
+		if isRepeatAdvertisement(visibleText, config.repeatAds.minimumLength, message) then
 			local blocked, adKey, capReached = checkRepeatAd(self, senderKey, visibleText,
 				wallTime(), config.repeatAds)
 			if blocked then return true, "repeatAd", senderKey, visibleText, adKey, capReached end
