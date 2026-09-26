@@ -84,8 +84,10 @@ assert(#textures == 2 and dock.messageBandVisibleCount == 2,
 	"wrapped logical records did not produce exactly one band apiece")
 assert(textures[1].points[1][4] == 60,
 	"AFTER PLAYER did not begin at the measured player/message boundary")
-assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -20,
-	"one wrapped entry did not retain one continuous two-line band")
+assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -22,
+	"the wrapped entry lost its continuous band or bottom padding at the top clip")
+assert(textures[2].points[1][5] == -28 and textures[2].points[2][5] == -50,
+	"the bottom-clipped wrapped entry lost its top padding or escaped the viewport")
 assert(textures[1].color[1] == 0.1 and textures[1].color[2] == 0.2
 	and textures[1].color[3] == 0.3 and textures[1].color[4] == 0.22,
 	"message band color or independent alpha was lost")
@@ -95,7 +97,7 @@ assert(textures[1].color[1] == 0.1 and textures[1].color[2] == 0.2
 -- shift down onto unrelated chat entries.
 display.visibleLines = 3
 assert(dock:RefreshMessageBands(), "logical-message count disabled row bands")
-assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -20,
+assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -22,
 	"displayed message count was mistaken for visual rows and shifted the zebra bands")
 display.visibleLines = 5
 
@@ -104,8 +106,8 @@ display.scroll = 2
 assert(dock:RefreshMessageBands(), "scrolled history did not repaint message bands")
 assert(dock.messageBandVisibleCount == 1 and textures[1].shown and textures[2].shown == false,
 	"offscreen alternating records were not released from the bounded pool")
-assert(textures[1].points[1][5] == -20 and textures[1].points[2][5] == -40,
-	"scrolled wrapped entry was not mapped to its exact visible logical span")
+assert(textures[1].points[1][5] == -18 and textures[1].points[2][5] == -42,
+	"scrolled wrapped entry did not gain balanced padding around its visible span")
 
 -- Every configured start boundary is measured from the same formatted leader
 -- used by the visible ScrollingMessageFrame.
@@ -143,6 +145,48 @@ end
 dock:RefreshMessageBands()
 assert(textures[1].points[2][4] == 3,
 	"pre-layout full bleed did not derive the hidden-scrollbar viewport inset")
+
+-- A single-line shade gets the same top and bottom room, even with no entry
+-- gap configured. The native text width and scrollbar lane do not change.
+bandSettings.extendUnderScrollbar = false
+bandSettings.extent = "full"
+dock.displayRecords = {
+	{ record = { text = "one" }, lines = 1, bandAlternate = false },
+	{ record = { sender = "Two", text = "two" }, lines = 1, bandAlternate = true },
+	{ record = { text = "three" }, lines = 1, bandAlternate = false },
+}
+assert(dock:RefreshMessageBands() and dock.messageBandVisibleCount == 1,
+	"single-line alternating entry did not paint")
+assert(textures[1].points[1][5] == -28 and textures[1].points[2][5] == -42
+	and textures[1].points[2][4] == 0,
+	"single-line band did not retain symmetric padding inside the text viewport")
+
+-- A narrow display cannot host an AFTER PLAYER stripe whose prefix is wider
+-- than the text area. Retire the prior texture rather than spilling outward.
+bandSettings.extent = "afterPlayer"
+display.width = 59
+dock.displayMeasurementWidth = display.width
+assert(dock:RefreshMessageBands() and dock.messageBandVisibleCount == 0
+	and textures[1].shown == false,
+	"narrow text viewport left a band outside the readable width")
+display.width = 300
+dock.displayMeasurementWidth = display.width
+bandSettings.extent = "full"
+
+-- Partially visible one-line records clip overhang at each viewport edge.
+display.height = 20
+display.scroll = 1
+dock.displayRecords[1].bandAlternate = true
+dock.displayRecords[2].bandAlternate = false
+assert(dock:RefreshMessageBands() and textures[1].points[1][5] == 0
+	and textures[1].points[2][5] == -12,
+	"top-clipped shade escaped the viewport or lost its visible bottom padding")
+display.scroll = 0
+dock.displayRecords[1].bandAlternate = false
+dock.displayRecords[3].bandAlternate = true
+assert(dock:RefreshMessageBands() and textures[1].points[1][5] == -8
+	and textures[1].points[2][5] == -20,
+	"bottom-clipped shade escaped the viewport or lost its visible top padding")
 
 bandSettings.enabled = false
 assert(dock:RefreshMessageBands() == false and textures[1].shown == false,

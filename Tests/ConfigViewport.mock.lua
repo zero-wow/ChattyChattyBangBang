@@ -16,7 +16,11 @@ function Frame:SetPoint(...)
 end
 function Frame:ClearAllPoints() self.point, self.points = nil, nil end
 function Frame:SetAllPoints(target) self.allPoints = target or true end
-function Frame:SetSize(width, height) self.width, self.height = width, height end
+function Frame:SetSize(width, height)
+	assert(type(width) == "number" and type(height) == "number",
+		"SetSize requires numeric width and height")
+	self.width, self.height = width, height
+end
 function Frame:SetWidth(width) self.width = width end
 function Frame:SetHeight(height) self.height = height end
 function Frame:GetWidth() return self.width or 0 end

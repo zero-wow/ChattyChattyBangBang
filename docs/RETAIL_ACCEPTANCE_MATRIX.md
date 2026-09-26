@@ -45,6 +45,8 @@ automate `/reload` or scan game logs for it.
 | M26 | No | FIND > ALERTS shows only current-session retained alerts, drops blocked/evicted entries, and does not offer inbox copy/export. | ⬜ | — |
 | M27 | No | A linked alt-name group expands only exact player HISTORY results; ordinary FIND, whisper approval, ignore, and block behavior remain separate. Test accented and realm-qualified names. | ⬜ | — |
 | M28 | No | Semantic Routes BATCH EDIT stages Trade/LFG/PvP switches until Apply, Cancel leaves them unchanged, and a successful Apply updates displayed routes and unread badges without duplicated lines. | ⬜ | — |
+| M29 | No | At narrow and normal chat widths, alternating backgrounds leave visible top and bottom room around single-line and wrapped entries; bands clip cleanly at viewport edges and do not move text into the scrollbar lane. | ⬜ | — |
+| M30 | No | `/ccbb` opens settings without a SetSize Lua error at normal and compact UI sizes; `/ccbb tabs` still enters keyboard navigation. | ⬜ | — |
 
 The [replacement audit](RETAIL_REPLACEMENT_AUDIT.md) explains the product
 invariants behind these checks. The [local test inventory](RETAIL_TESTING.md)

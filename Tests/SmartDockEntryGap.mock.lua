@@ -118,8 +118,8 @@ dock.MeasureMessageBandPrefix = function() return 0 end
 dock.AcquireMessageBand = function() return band end
 dock.messageBandPool = { band }
 assert(dock:RefreshMessageBands(), "message bands did not refresh with entry-gap geometry")
-assert(band.points[1][5] == -20 and band.points[2][5] == -40,
-	"alternating band covered the transparent entry gap instead of only content rows")
+assert(band.points[1][5] == -18 and band.points[2][5] == -40,
+	"alternating band did not use a small top gutter while leaving most of the entry gap transparent")
 
 display.height = 10
 display.bottom = 90

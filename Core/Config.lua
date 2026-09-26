@@ -16629,7 +16629,7 @@ function Config:BuildFrame()
 	end
 
 	local frame = Theme:CreatePanel(UIParent, "background", "border")
-	frame:SetSize(CONFIG_FRAME_WIDTH, CONFIG_FRAME_HEIGHT)
+	frame:SetSize(CONFIG_CONTENT_WIDTH + self:GetNavigationWidth() + 18, CONFIG_FRAME_HEIGHT)
 	frame:SetPoint("CENTER", UIParent, "CENTER", 0, 20)
 	frame:SetFrameStrata("DIALOG")
 	frame:SetToplevel(true)

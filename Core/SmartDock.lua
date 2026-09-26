@@ -174,6 +174,9 @@ local MANUAL_WRAP_VALIDATION_PASSES = 4
 -- dock's 720px maximum height can expose fewer than ninety entries at once;
 -- 128 keeps the pool strictly bounded while covering every supported layout.
 local MESSAGE_BAND_POOL_LIMIT = 128
+-- A small decorative gutter around the first and last line of each band.
+-- Clamp it to the live line height so compact fonts retain an unshaded row.
+local MESSAGE_BAND_VERTICAL_PADDING = 3
 -- Shift-hover actions belong to one logical message, even when that message
 -- wraps across several rendered rows. Paint one theme-aware selection behind
 -- the readable glyphs so the BLOCK / ANALYZE target stays unmistakable without
@@ -3859,6 +3862,7 @@ end
 -- Draw only the currently visible alternating entries. One texture spans the
 -- entire clipped logical record, so every wrapped continuation shares exactly
 -- the same band and scrolling cannot turn a long message into zebra stripes.
+-- The overhang never changes native text spacing and stops at viewport edges.
 function Dock:RefreshMessageBands()
 	local appearance = self:GetMessageBandAppearance()
 	local display = self.display
@@ -3878,6 +3882,7 @@ function Dock:RefreshMessageBands()
 		self:HideMessageBands()
 		return false
 	end
+	local verticalPadding = math.min(MESSAGE_BAND_VERTICAL_PADDING, math.floor(lineHeight / 4))
 	local bandRightOffset = 0
 	if appearance.extendUnderScrollbar then
 		local rightInset = tonumber(self.transientMessageRightInset)
@@ -3903,11 +3908,13 @@ function Dock:RefreshMessageBands()
 				used = used + 1
 				local band = self:AcquireMessageBand(used)
 				if band then
-					local top = geometry.topInset
+					local top = math.max(0, geometry.topInset
 						+ (visible.visibleContentFirstLine - geometry.firstVisibleLine) * lineHeight
+						- verticalPadding)
 					local bottom = math.min(displayHeight,
 						geometry.topInset
-						+ (visible.visibleContentLastLine - geometry.firstVisibleLine + 1) * lineHeight)
+						+ (visible.visibleContentLastLine - geometry.firstVisibleLine + 1) * lineHeight
+						+ verticalPadding)
 					band:ClearAllPoints()
 					band:SetPoint("TOPLEFT", display, "TOPLEFT", math.max(0, startX), -top)
 					band:SetPoint("BOTTOMRIGHT", display, "TOPRIGHT", bandRightOffset, -bottom)
