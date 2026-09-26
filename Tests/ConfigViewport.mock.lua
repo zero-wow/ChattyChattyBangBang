@@ -11,8 +11,10 @@ end
 
 function Frame:SetPoint(...)
 	self.point = { ... }
+	self.points = self.points or {}
+	self.points[#self.points + 1] = self.point
 end
-function Frame:ClearAllPoints() self.point = nil end
+function Frame:ClearAllPoints() self.point, self.points = nil, nil end
 function Frame:SetAllPoints(target) self.allPoints = target or true end
 function Frame:SetSize(width, height) self.width, self.height = width, height end
 function Frame:SetWidth(width) self.width = width end
@@ -210,6 +212,30 @@ assert(close and close:GetWidth() == 30 and close:GetHeight() == 30,
 assert(close.point and close.point[1] == "RIGHT" and close.point[3] == "RIGHT"
 	and close.point[4] == -8 and close.parent:GetHeight() == 44,
 	"settings close target lost its header inset or vertical gutter")
+
+local function hasAnchor(widget, point, relative, relativePoint, x, y)
+	for _, anchor in ipairs(widget.points or {}) do
+		if anchor[1] == point and anchor[2] == relative and anchor[3] == relativePoint
+			and anchor[4] == x and anchor[5] == y then
+			return true
+		end
+	end
+	return false
+end
+
+-- The 170px sidebar ends 6 logical pixels before the workspace. The page's
+-- reviewed 636px controls then sit 8px inside the 652px workspace on both
+-- sides; these margins remain visible even at the smallest viewport scale.
+assert(config.sidebar:GetWidth() == 170
+	and hasAnchor(config.sidebar, "TOPLEFT", config.frame, "TOPLEFT", 6, -56)
+	and hasAnchor(config.content, "TOPLEFT", config.sidebar, "TOPRIGHT", 6, 0)
+	and hasAnchor(config.content, "TOPRIGHT", config.frame, "TOPRIGHT", -6, -56)
+	and 8 + 636 + 8 == 840 - (6 + 170 + 6 + 6),
+	"settings workspace or page control lost its explicit divider/edge gutters")
+assert(config.navContent:GetWidth() == 168
+	and config.navigationButtons.desk:GetWidth() == 154
+	and hasAnchor(config.navigationButtons.desk, "TOPLEFT", config.navContent, "TOPLEFT", 6, -42),
+	"sidebar navigation row no longer leaves space before its divider")
 
 -- Both target-client viewport events are registered. A larger display restores
 -- exact 1:1 scale without moving any edge beyond the safe screen area.

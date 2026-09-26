@@ -208,14 +208,17 @@ local function getConversationTarget(record)
 			or validBnetAccountID(record.presenceId)
 		if not accountID then return nil end
 		return cleanPlayerName(record.sender) or cleanPlayerName(record.target)
-			or "Battle.net " .. tostring(accountID), "bnet:" .. tostring(accountID), accountID
+			or "Battle.net " .. tostring(accountID),
+			(Engine.GetConversationKey and Engine:GetConversationKey(record))
+				or "bnet:" .. tostring(accountID), accountID
 	end
 	if record.isBNet or not whisperEvents[record.event] then return nil end
 	-- On Wrath clients arg2 is the other player for both WHISPER and
 	-- WHISPER_INFORM. The target fallback helps private-server variants that
 	-- populate only arg5 for outgoing whispers.
 	local name = cleanPlayerName(record.sender) or cleanPlayerName(record.target)
-	return name, playerKey(name), nil
+	return name, (Engine.GetConversationKey and Engine:GetConversationKey(record))
+		or playerKey(name), nil
 end
 
 local function isLocallyIgnored(name, bnetAccountID)
@@ -763,7 +766,8 @@ function Window:RenderSession(session, preserveReaderState)
 	session.renderedCount = 0
 	session.pendingVisible = 0
 	session.pendingIds = {}
-	if not Engine or not Engine.GetMessages or isLocallyIgnored(session.playerName, session.bnetAccountID) then
+	if not Engine or (not Engine.GetMessages and not Engine.GetConversationPage)
+		or isLocallyIgnored(session.playerName, session.bnetAccountID) then
 		session.historyPage = 1
 		session.historyPageCount = 1
 		self:RefreshHistoryPager(session)
@@ -773,40 +777,54 @@ function Window:RenderSession(session, preserveReaderState)
 		return
 	end
 
-	local records = Engine:GetMessages("conversations") or {}
 	local history = {}
 	local total = 0
-	-- Freeze the page boundaries while reading older history. New arrivals
-	-- stay behind NEW until the reader explicitly jumps to the live page.
-	if not session.historyAnchorId then
-		for index = #records, 1, -1 do
-			if sessionMatches(session, records[index]) then
-				session.historyAnchorId = tonumber(records[index].id)
-				break
+	if Engine.GetConversationPage and Engine.GetConversationCount then
+		-- The engine owns a per-partner rank index. Never sweep every retained
+		-- source just to render one 200-message Messenger page.
+		if not session.historyAnchorId then
+			local _, _, newestId = Engine:GetConversationPage(session.playerKey, 1, 1)
+			session.historyAnchorId = newestId
+		end
+		total = Engine:GetConversationCount(session.playerKey, session.historyAnchorId)
+		session.historyTotal = total
+		session.historyPageCount = math.max(1, math.ceil(total / MAX_HISTORY))
+		session.historyPage = math.max(1, math.min(session.historyPage or 1, session.historyPageCount))
+		history = Engine:GetConversationPage(session.playerKey, session.historyPage,
+			MAX_HISTORY, session.historyAnchorId)
+	else
+		-- Legacy/mock engines still expose the flat conversation view.
+		local records = Engine:GetMessages("conversations") or {}
+		if not session.historyAnchorId then
+			for index = #records, 1, -1 do
+				if sessionMatches(session, records[index]) then
+					session.historyAnchorId = tonumber(records[index].id)
+					break
+				end
 			end
 		end
-	end
-	local function inSnapshot(record)
-		local id = tonumber(record.id)
-		return not session.historyAnchorId or not id or id <= session.historyAnchorId
-	end
-	for index = #records, 1, -1 do
-		if sessionMatches(session, records[index]) and inSnapshot(records[index]) then
-			total = total + 1
+		local function inSnapshot(record)
+			local id = tonumber(record.id)
+			return not session.historyAnchorId or not id or id <= session.historyAnchorId
 		end
-	end
-	session.historyTotal = total
-	session.historyPageCount = math.max(1, math.ceil(total / MAX_HISTORY))
-	session.historyPage = math.max(1, math.min(session.historyPage or 1, session.historyPageCount))
-	local first = (session.historyPage - 1) * MAX_HISTORY + 1
-	local last = first + MAX_HISTORY - 1
-	local matched = 0
-	for index = #records, 1, -1 do
-		local record = records[index]
-		if sessionMatches(session, record) and inSnapshot(record) then
-			matched = matched + 1
-			if matched >= first and matched <= last then history[#history + 1] = record end
-			if matched >= last then break end
+		for index = #records, 1, -1 do
+			if sessionMatches(session, records[index]) and inSnapshot(records[index]) then
+				total = total + 1
+			end
+		end
+		session.historyTotal = total
+		session.historyPageCount = math.max(1, math.ceil(total / MAX_HISTORY))
+		session.historyPage = math.max(1, math.min(session.historyPage or 1, session.historyPageCount))
+		local first = (session.historyPage - 1) * MAX_HISTORY + 1
+		local last = first + MAX_HISTORY - 1
+		local matched = 0
+		for index = #records, 1, -1 do
+			local record = records[index]
+			if sessionMatches(session, record) and inSnapshot(record) then
+				matched = matched + 1
+				if matched >= first and matched <= last then history[#history + 1] = record end
+				if matched >= last then break end
+			end
 		end
 	end
 	self:RefreshHistoryPager(session)
@@ -884,7 +902,9 @@ function Window:AddRecord(record, suppressScrollNotice)
 	end
 	session.renderedCount = math.min(MAX_HISTORY, session.renderedCount + 1)
 	local nextTotal = (session.historyTotal or 0) + 1
-	if Engine and Engine.GetMessages then
+	if Engine and Engine.GetConversationCount then
+		nextTotal = Engine:GetConversationCount(session.playerKey)
+	elseif Engine and Engine.GetMessages then
 		-- The engine can evict an older line at any source capacity, including
 		-- limits between page boundaries (for example 450). Count retained
 		-- records so the pager never advertises an empty older page.
@@ -2643,6 +2663,13 @@ function Manager:OnMessage(record)
 			shell:UpdateRouteLabel(session)
 		end
 		if shell then shell:RefreshTabs() end
+	end
+	-- A whisper can be explicitly excluded from the Conversations view under
+	-- CONTENTS. Keep a pending-send echo honest above, but do not live-append an
+	-- excluded record or raise NEW/unread for a line the next render hides.
+	if Engine and Engine.RecordBelongsToView
+		and not Engine:RecordBelongsToView(record, "conversations") then
+		return
 	end
 	local shellWasShown = shell and shell.frame:IsShown() or false
 	-- Tab intake is not popup behavior. Every incoming whisper gets a session

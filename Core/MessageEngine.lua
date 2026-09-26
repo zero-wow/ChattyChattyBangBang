@@ -22,6 +22,9 @@ local chatEvents = {
 	"CHAT_MSG_AFK",
 	"CHAT_MSG_DND",
 	"CHAT_MSG_CHANNEL",
+	"CHAT_MSG_CHANNEL_LIST",
+	"CHAT_MSG_CHANNEL_NOTICE",
+	"CHAT_MSG_CHANNEL_NOTICE_USER",
 	"CHAT_MSG_COMMUNITIES_CHANNEL",
 	"CHAT_MSG_ADDON",
 	"CHAT_MSG_GUILD",
@@ -115,6 +118,9 @@ local directCategories = {
 	CHAT_MSG_TRADESKILLS = "loot",
 	CHAT_MSG_OPENING = "loot",
 	CHAT_MSG_SYSTEM = "system",
+	CHAT_MSG_CHANNEL_LIST = "system",
+	CHAT_MSG_CHANNEL_NOTICE = "system",
+	CHAT_MSG_CHANNEL_NOTICE_USER = "system",
 	CHAT_MSG_IGNORED = "system",
 	CHAT_MSG_FILTERED = "system",
 	CHAT_MSG_RESTRICTED = "system",
@@ -236,6 +242,9 @@ registerStaticSource("CHAT_MSG_INSTANCE_CHAT", "group", "group:instance", "Insta
 registerStaticSource("CHAT_MSG_INSTANCE_CHAT_LEADER", "group", "group:instance", "Instance chat")
 
 registerStaticSource("CHAT_MSG_SYSTEM", "system", "system:message", "System messages")
+registerStaticSource("CHAT_MSG_CHANNEL_LIST", "system", "system:channel-notices", "Channel notices")
+registerStaticSource("CHAT_MSG_CHANNEL_NOTICE", "system", "system:channel-notices", "Channel notices")
+registerStaticSource("CHAT_MSG_CHANNEL_NOTICE_USER", "system", "system:channel-notices", "Channel notices")
 registerStaticSource("CHAT_MSG_IGNORED", "system", "system:chat-status", "Chat status notices")
 registerStaticSource("CHAT_MSG_FILTERED", "system", "system:chat-status", "Chat status notices")
 registerStaticSource("CHAT_MSG_RESTRICTED", "system", "system:chat-status", "Chat status notices")
@@ -896,7 +905,7 @@ local persistedFields = {
 	-- are derived again from the current rules on restore. One physical record
 	-- is saved under its source even when it belongs to several views.
 	"historySequence", "epoch", "timestamp", "event", "text", "sender", "language",
-	"channel", "channelNumber", "target", "flags", "lineId", "guid", "class",
+	"channel", "channelName", "channelNumber", "target", "flags", "lineId", "guid", "class",
 	"presenceId", "bnetAccountId", "isBNet", "direction",
 	"sourceGroup", "sourceId", "sourceLabel",
 	"isAddonMessage", "addonPrefix", "addonPayload", "addonDistribution",
@@ -2456,6 +2465,7 @@ function Engine:Normalize(event, ...)
 		sender = sender,
 		language = language,
 		channel = channelBaseName or channelName,
+		channelName = channelName,
 		channelNumber = channelNumber,
 		target = target,
 		flags = flags,
@@ -2490,6 +2500,7 @@ local function clearRuntimeHistory(engine)
 	engine.records = {}
 	engine.byId = {}
 	engine.sourceHistories = {}
+	engine.conversationHistories = {}
 	engine.historyHead = nil
 	engine.historyTail = nil
 	engine.count = 0
@@ -2498,8 +2509,147 @@ local function clearRuntimeHistory(engine)
 	engine.writeIndex = 1
 end
 
+local function conversationKeyForRecord(record)
+	if type(record) ~= "table" then return nil end
+	local event = record.event
+	if event == "CHAT_MSG_BN_WHISPER" or event == "CHAT_MSG_BN_WHISPER_INFORM" then
+		if not record.isBNet then return nil end
+		local accountId = usableBnetAccountId(record.bnetAccountId)
+			or usableBnetAccountId(record.presenceId)
+		return accountId and "bnet:" .. accountId or nil
+	end
+	if event ~= "CHAT_MSG_WHISPER" and event ~= "CHAT_MSG_WHISPER_INFORM"
+		or record.isBNet then return nil end
+	local function cleanName(value)
+		local name = tostring(value or "")
+		name = string.gsub(name, "|c%x%x%x%x%x%x%x%x", "")
+		name = string.gsub(name, "|r", "")
+		name = string.gsub(name, "|H.-|h(.-)|h", "%1")
+		return trim(name)
+	end
+	local name = cleanName(record.sender)
+	if name == "" then name = cleanName(record.target) end
+	return name ~= "" and string.lower(name) or nil
+end
+
+local function conversationLowBit(value)
+	local bit = 1
+	while value % (bit * 2) == 0 do bit = bit * 2 end
+	return bit
+end
+
+local function conversationPrefixCount(index, position)
+	local count = 0
+	while position > 0 do
+		count = count + (index.tree[position] or 0)
+		position = position - conversationLowBit(position)
+	end
+	return count
+end
+
+local function conversationAdjustCount(index, position, delta)
+	while position <= index.size do
+		index.tree[position] = (index.tree[position] or 0) + delta
+		position = position + conversationLowBit(position)
+	end
+end
+
+local function conversationAppend(index, record)
+	local position = index.size + 1
+	local blockStart = position - conversationLowBit(position)
+	index.size = position
+	index.entries[position] = { id = tonumber(record.id) or 0, record = record }
+	index.tree[position] = 1 + conversationPrefixCount(index, position - 1)
+		- conversationPrefixCount(index, blockStart)
+	index.count = index.count + 1
+	local memberships = record.views
+	local canonical = type(memberships) == "table" and memberships.conversations == true
+		or type(memberships) ~= "table" and record.view == "conversations"
+	record._conversationCanonical = canonical and true or false
+	if not record._conversationCanonical then
+		index.nonCanonicalCount = (index.nonCanonicalCount or 0) + 1
+	end
+	record._conversationIndex = position
+end
+
+local function conversationCompact(index)
+	local previous = index.entries
+	index.entries, index.tree = {}, {}
+	index.size, index.count, index.dead, index.nonCanonicalCount = 0, 0, 0, 0
+	for position = 1, #previous do
+		local record = previous[position].record
+		if record then conversationAppend(index, record) end
+	end
+end
+
+local function conversationRemove(engine, record)
+	local key = record._conversationKey
+	local index = key and engine.conversationHistories[key]
+	local position = record._conversationIndex
+	if not index or not position then return end
+	local entry = index.entries[position]
+	if not entry or entry.record ~= record then return end
+	entry.record = nil
+	conversationAdjustCount(index, position, -1)
+	index.count = index.count - 1
+	index.dead = index.dead + 1
+	if not record._conversationCanonical then
+		index.nonCanonicalCount = math.max(0, (index.nonCanonicalCount or 0) - 1)
+	end
+	if index.count == 0 then
+		engine.conversationHistories[key] = nil
+	elseif index.dead >= index.size / 2 then
+		conversationCompact(index)
+	end
+	record._conversationIndex = nil
+	record._conversationKey = nil
+	record._conversationCanonical = nil
+end
+
+local function conversationRefreshMembership(engine, record)
+	local key = record._conversationKey
+	local index = key and engine.conversationHistories[key]
+	if not index then return end
+	local memberships = record.views
+	local canonical = type(memberships) == "table" and memberships.conversations == true
+		or type(memberships) ~= "table" and record.view == "conversations"
+	canonical = canonical and true or false
+	if canonical == record._conversationCanonical then return end
+	index.nonCanonicalCount = (index.nonCanonicalCount or 0)
+		+ (canonical and -1 or 1)
+	record._conversationCanonical = canonical
+end
+
+local function conversationFindLastAtMost(index, id)
+	local low, high, result = 1, index.size, 0
+	while low <= high do
+		local middle = math.floor((low + high) / 2)
+		if index.entries[middle].id <= id then
+			result, low = middle, middle + 1
+		else
+			high = middle - 1
+		end
+	end
+	return result
+end
+
+local function conversationSelect(index, rank)
+	local position, bit = 0, 1
+	while bit * 2 <= index.size do bit = bit * 2 end
+	while bit > 0 do
+		local nextPosition = position + bit
+		if nextPosition <= index.size and (index.tree[nextPosition] or 0) < rank then
+			position = nextPosition
+			rank = rank - (index.tree[nextPosition] or 0)
+		end
+		bit = math.floor(bit / 2)
+	end
+	return index.entries[position + 1]
+end
+
 local function unlinkRuntimeRecord(engine, record)
 	if type(record) ~= "table" then return end
+	conversationRemove(engine, record)
 	local previous = record._historyPrevious
 	local nextRecord = record._historyNext
 	if previous then previous._historyNext = nextRecord else engine.historyHead = nextRecord end
@@ -2551,6 +2701,17 @@ local function appendRuntimeRecord(engine, record)
 	engine.records[record.id] = record
 	engine.byId[record.id] = record
 	engine.count = engine.count + 1
+	local conversationKey = conversationKeyForRecord(record)
+	if conversationKey then
+		local conversation = engine.conversationHistories[conversationKey]
+		if not conversation then
+			conversation = { entries = {}, tree = {}, size = 0, count = 0,
+				dead = 0, nonCanonicalCount = 0 }
+			engine.conversationHistories[conversationKey] = conversation
+		end
+		record._conversationKey = conversationKey
+		conversationAppend(conversation, record)
+	end
 	while source.count > engine.capacity and source.head do
 		unlinkRuntimeRecord(engine, source.head)
 	end
@@ -2714,6 +2875,7 @@ function Engine:ReclassifyAll()
 	local record = self.historyHead
 	while record do
 		self:Classify(record)
+		conversationRefreshMembership(self, record)
 		changed = changed + 1
 		record = record._historyNext
 	end
@@ -2722,6 +2884,87 @@ end
 
 function Engine:GetMessageById(id)
 	return self.byId and self.byId[tonumber(id)] or nil
+end
+
+function Engine:GetConversationKey(record)
+	return conversationKeyForRecord(record)
+end
+
+local function conversationSourceExclusions()
+	local settings = addon.GetSmartSettings and addon:GetSmartSettings()
+	local options = settings and settings.viewOptions
+	options = type(options) == "table" and options.conversations
+	local sources = type(options) == "table" and options.sources
+	if type(sources) ~= "table" then return nil end
+	for _, enabled in pairs(sources) do
+		if enabled == false then return sources end
+	end
+	return nil
+end
+
+-- Each partner has a compact rank index. Ordinary append and source-cap
+-- eviction update it without scanning other chat sources or other partners.
+-- A frozen anchor excludes newer arrivals until Messenger's NEW is clicked.
+function Engine:GetConversationCount(key, anchorId)
+	local index = self.conversationHistories and self.conversationHistories[key]
+	if not index then return 0 end
+	anchorId = tonumber(anchorId)
+	local excluded = conversationSourceExclusions()
+	if excluded or (index.nonCanonicalCount or 0) > 0 then
+		-- Explicit source exclusions and provider/custom view changes need the
+		-- full membership rule, but only across this partner's bounded index.
+		local settings = addon.GetSmartSettings and addon:GetSmartSettings()
+		local count = 0
+		for position = 1, index.size do
+			local entry = index.entries[position]
+			local record = entry.record
+			if record and (not anchorId or entry.id <= anchorId)
+				and self:RecordBelongsToView(record, "conversations", settings) then
+				count = count + 1
+			end
+		end
+		return count
+	end
+	if not anchorId then return index.count end
+	return conversationPrefixCount(index, conversationFindLastAtMost(index, anchorId))
+end
+
+function Engine:GetConversationPage(key, page, pageSize, anchorId)
+	local index = self.conversationHistories and self.conversationHistories[key]
+	if not index then return {}, 0, nil end
+	local total = self:GetConversationCount(key, anchorId)
+	local size = math.max(1, math.floor(tonumber(pageSize) or 200))
+	page = math.max(1, math.floor(tonumber(page) or 1))
+	local newest = conversationSelect(index, index.count)
+	local excluded = conversationSourceExclusions()
+	if excluded or (index.nonCanonicalCount or 0) > 0 then
+		local first = (page - 1) * size + 1
+		local last = first + size - 1
+		local reverse, rank = {}, 0
+		anchorId = tonumber(anchorId)
+		local settings = addon.GetSmartSettings and addon:GetSmartSettings()
+		for position = index.size, 1, -1 do
+			local entry = index.entries[position]
+			local record = entry.record
+			if record and (not anchorId or entry.id <= anchorId)
+				and self:RecordBelongsToView(record, "conversations", settings) then
+				rank = rank + 1
+				if rank >= first and rank <= last then reverse[#reverse + 1] = record end
+				if rank >= last then break end
+			end
+		end
+		local records = {}
+		for position = #reverse, 1, -1 do records[#records + 1] = reverse[position] end
+		return records, total, newest and newest.id or nil
+	end
+	local firstRank = total - (page - 1) * size
+	local lastRank = math.max(1, firstRank - size + 1)
+	local records = {}
+	for rank = lastRank, firstRank do
+		local entry = conversationSelect(index, rank)
+		if entry and entry.record then records[#records + 1] = entry.record end
+	end
+	return records, total, newest and newest.id or nil
 end
 
 -- One stored record can be visible through two independent lenses: its

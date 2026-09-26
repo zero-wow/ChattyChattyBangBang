@@ -6,7 +6,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. Purple is for work that cannot be considered locally complete until Zero validates it in-game.
 
-**Progress:** 35/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+**Progress:** 37/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
 ## Add — missing capabilities
 
@@ -66,7 +66,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | F22 | 🔴 | Remove hard-coded level-80 limit in Player Names fallback. |
 | F23 | 🟢 | Modules status must honor each Smart Chat feature toggle. |
 | F24 | 🟢 | Do not call unavailable native fallback “ready.” |
-| F25 | 🟡 | Added more text-bearing Retail chat families and localized ignored/filtered/restricted notices with focused fixtures; raw channel notices and synthetic native output still need formatting or explicit coverage limits. |
+| F25 | 🟡 | Added channel-notice capture plus guarded localized status, ping, Battle.net toast, and channel-notice formatting with focused fixtures; other synthetic native output and in-game payload behavior remain to audit. |
 
 ## Improve — reliability, scale, and workflow
 
@@ -74,8 +74,8 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | --- | --- | --- |
 | I01 | 🟢 | Per-line rendering reuses prepared settings while the public getter keeps its normalization contract; profile-swap and direct-edit mocks pass. |
 | I02 | 🟢 | Blocked archive full-prunes on first use, expiry, bounds change, or explicit review rather than each blocked line; mocks pass. |
-| I03 | 🔴 | Query bounded history pages directly. |
-| I04 | 🔴 | Index Messenger history by conversation partner. |
+| I03 | 🟢 | Messenger queries bounded 200-record pages from a per-partner rank index instead of scanning the full transcript; frozen-page and source-cap mocks pass. |
+| I04 | 🟢 | Per-partner history index updates on append, eviction, retroblock, and reclassification; Contents exclusions and reroutes retain view-membership parity in focused mocks. |
 | I05 | 🔴 | Add an aggregate history budget across sources. |
 | I06 | 🔴 | Cache friend/guild membership for whisper decisions. |
 | I07 | 🟢 | Messenger's 12-tab limit evicts only disposable inactive tabs; drafts, unread, NEW, and unresolved sends stay protected. If all tabs are protected, a bounded notice explains why a new tab was not opened; focused mocks pass. |
@@ -106,10 +106,10 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | P02 | 🔴 | Adapt sidebar width for longer labels. |
 | P03 | 🔴 | Add a subtle sidebar scroll affordance. |
 | P04 | 🟢 | Settings close target is 30×30, with an 8px header inset and a checked minimum physical hit size; layout mocks pass. |
-| P05 | 🟡 | Reserve visible gutters at page edges/dividers; bounds review underway. |
+| P05 | 🟡 | Settings shell now has measured sidebar/divider and symmetric page gutters; every dynamic subpage/disclosure state still needs bounds review. |
 | P06 | 🟢 | Shared settings-control gap increased to 6px; existing right-gutter and viewport bounds mocks pass. |
-| P07 | 🟡 | Let long button labels expand/wrap, with tooltip backup; review underway. |
-| P08 | 🟡 | Distinguish selected, hover, and focus states on subpages; review underway. |
+| P07 | 🟡 | Fixed-width labels now recheck clipping after font changes and reveal full text in tooltips; safe expansion/wrapping remains. |
+| P08 | 🟡 | Selected tabs now have a distinct hover state; keyboard-focus navigation and visible focus remain. |
 | P09 | 🔴 | Show Start Here's seven steps as a progress map. |
 | P10 | 🔴 | Use actual chat typography/colors/bands in Start Here preview. |
 | P11 | 🔴 | Let the Start Here preview grow when text wraps. |

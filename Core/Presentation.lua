@@ -511,6 +511,46 @@ local function formatTrustedTemplate(text, args)
 	return table.concat(output)
 end
 
+local function nativeOutMessageFormat(chatType)
+	local util = _G.ChatFrameUtil
+	if type(util) ~= "table" or type(util.GetOutMessageFormatKey) ~= "function" then
+		return nil
+	end
+	local ok, template = pcall(util.GetOutMessageFormatKey, chatType)
+	return ok and accessibleTemplateValue(template) and template or nil
+end
+
+local function nativeChannelName(record)
+	local channel = record.channelName or record.channel
+	if not accessibleTemplateValue(channel) or type(channel) ~= "string" or channel == "" then
+		return nil
+	end
+	local util = _G.ChatFrameUtil
+	if type(util) == "table" and type(util.ResolvePrefixedChannelName) == "function" then
+		local ok, resolved = pcall(util.ResolvePrefixedChannelName, channel)
+		if ok and accessibleTemplateValue(resolved) and type(resolved) == "string" then
+			return resolved
+		end
+	end
+	return channel
+end
+
+local function nativeChannelNoticeTemplate(notice)
+	if not accessibleTemplateValue(notice) or type(notice) ~= "string"
+		or #notice > 64 or not string.match(notice, "^[A-Z_]+$") then
+		return nil
+	end
+	if notice == "TRIAL_RESTRICTED" then
+		return accessibleTemplateValue(_G.CHAT_TRIAL_RESTRICTED_NOTICE_TRIAL)
+			and _G.CHAT_TRIAL_RESTRICTED_NOTICE_TRIAL or nil
+	end
+	local template = _G["CHAT_" .. notice .. "_NOTICE_BN"]
+	if not accessibleTemplateValue(template) then
+		template = _G["CHAT_" .. notice .. "_NOTICE"]
+	end
+	return accessibleTemplateValue(template) and template or nil
+end
+
 function Presentation:FormatEventText(record)
 	local text = record.text or ""
 	-- These event payloads are status markers, not finished lines. Blizzard's
@@ -527,6 +567,65 @@ function Presentation:FormatEventText(record)
 	if record.event == "CHAT_MSG_RESTRICTED" then
 		local template = _G.CHAT_RESTRICTED_TRIAL
 		return accessibleTemplateValue(template) and template or text
+	end
+	if record.event == "CHAT_MSG_PING" then
+		local template = nativeOutMessageFormat("PING")
+		if template and accessibleTemplateValue(record.sender) and accessibleTemplateValue(text) then
+			return formatTrustedTemplate(template, { record.sender }) .. text
+		end
+		return text
+	end
+	if record.event == "CHAT_MSG_BN_INLINE_TOAST_ALERT" then
+		if not accessibleTemplateValue(text) or type(text) ~= "string"
+			or #text > 64 or not string.match(text, "^[A-Z_]+$") then
+			return text
+		end
+		local template = _G["BN_INLINE_TOAST_" .. text]
+		if not accessibleTemplateValue(template) then return text end
+		if text == "FRIEND_REQUEST" then return template end
+		if text == "FRIEND_PENDING" then
+			if type(_G.BNGetNumFriendInvites) ~= "function" then return text end
+			local ok, invites = pcall(_G.BNGetNumFriendInvites)
+			return ok and accessibleTemplateValue(invites)
+				and formatTrustedTemplate(template, { invites }) or text
+		end
+		if accessibleTemplateValue(record.sender) then
+			return formatTrustedTemplate(template, { record.sender })
+		end
+		return text
+	end
+	if record.event == "CHAT_MSG_CHANNEL_LIST" then
+		local channel = nativeChannelName(record)
+		local template = nativeOutMessageFormat("CHANNEL_LIST")
+		if channel and template and accessibleTemplateValue(record.channelNumber)
+			and accessibleTemplateValue(text) then
+			local number = tonumber(record.channelNumber)
+			if number then
+				-- Only Blizzard's prefix is a format string. Channel-list payloads
+				-- may contain literal percent signs and must remain untouched.
+				return formatTrustedTemplate(template, { number, channel }) .. text
+			end
+		end
+		return text
+	end
+	if record.event == "CHAT_MSG_CHANNEL_NOTICE" or record.event == "CHAT_MSG_CHANNEL_NOTICE_USER" then
+		local template = nativeChannelNoticeTemplate(text)
+		local channel = nativeChannelName(record)
+		if not template or not channel then return text end
+		local number = accessibleTemplateValue(record.channelNumber) and tonumber(record.channelNumber)
+		if record.event == "CHAT_MSG_CHANNEL_NOTICE" then
+			return number and formatTrustedTemplate(template, { number, channel }) or text
+		end
+		if not accessibleTemplateValue(record.sender) then return text end
+		if accessibleTemplateValue(record.target) and record.target ~= "" then
+			return number and formatTrustedTemplate(template,
+				{ number, channel, record.sender, record.target }) or text
+		end
+		if text == "INVITE" then
+			return formatTrustedTemplate(template, { channel, record.sender })
+		end
+		return number and formatTrustedTemplate(template,
+			{ number, channel, record.sender }) or text
 	end
 	-- Blizzard uses a literal $s token (not printf) for guild item notices.
 	-- This event is not captured by the current engine, but historical records

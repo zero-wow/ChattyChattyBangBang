@@ -127,4 +127,19 @@ fixed:SetLabel("AN EVEN LONGER FIXED LABEL")
 assert(fixed:GetWidth() == 42 and fixed._themeLabelClipped,
 	"ordinary fixed-width buttons expanded or lost their safe clipping")
 
+local lateFont = Theme:CreateButton(UIParent, "SOURCE", 58, 20, false)
+metricScale = 1
+lateFont:RefreshTextFit()
+assert(not lateFont._themeLabelClipped, "fixed label unexpectedly clipped before a font change")
+metricScale = 2
+lateFont.scripts.OnShow(lateFont)
+assert(lateFont._themeLabelClipped and lateFont:GetWidth() == 58,
+	"fixed-width label did not detect a late font change on show")
+lateFont.scripts.OnEnter(lateFont)
+assert(GameTooltip.title == "SOURCE", "late-clipped label did not reveal the complete text")
+metricScale = 1
+Theme:Refresh()
+assert(not lateFont._themeLabelClipped,
+	"theme refresh did not remeasure a fixed-width label after font metrics changed")
+
 print("Theme text-fit mock tests passed")

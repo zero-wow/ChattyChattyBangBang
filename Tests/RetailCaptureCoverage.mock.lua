@@ -33,6 +33,9 @@ local cases = {
 	{ "CHAT_MSG_MONSTER_SAY", "system", "system:npc-dialogue" },
 	{ "CHAT_MSG_RAID_BOSS_EMOTE", "system", "system:boss" },
 	{ "CHAT_MSG_IGNORED", "system", "system:chat-status" },
+	{ "CHAT_MSG_CHANNEL_LIST", "system", "system:channel-notices" },
+	{ "CHAT_MSG_CHANNEL_NOTICE", "system", "system:channel-notices" },
+	{ "CHAT_MSG_CHANNEL_NOTICE_USER", "system", "system:channel-notices" },
 	{ "CHAT_MSG_COMBAT_XP_GAIN", "system", "system:progress" },
 	{ "CHAT_MSG_CURRENCY", "loot", "loot:currency" },
 	{ "CHAT_MSG_TRADESKILLS", "loot", "loot:crafting" },
@@ -53,6 +56,13 @@ for _, case in ipairs(cases) do
 	assert(record.view == view and record.sourceId == sourceId,
 		event .. " did not retain its factual source and expected view")
 end
+
+local notice = assert(engine:Normalize("CHAT_MSG_CHANNEL_NOTICE_USER", "INVITE", "Mira",
+	nil, "Trade - City", "Sol", nil, nil, 2, "Trade"))
+assert(notice.channel == "Trade" and notice.channelName == "Trade - City"
+	and notice.channelNumber == 2 and notice.target == "Sol"
+	and notice.view == "system" and notice.sourceId == "system:channel-notices",
+	"channel notice lost the metadata required to render Blizzard's localized notice")
 
 local bnet = assert(engine:Normalize("CHAT_MSG_BN_WHISPER", "hello", "BNetFriend",
 	nil, nil, nil, nil, nil, nil, nil, nil, 77, nil, 501, true))

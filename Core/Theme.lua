@@ -742,6 +742,7 @@ Theme.texts = {}
 Theme.textures = {}
 Theme.callbacks = {}
 Theme.tightButtons = {}
+Theme.buttons = {}
 Theme.scrollBars = {}
 
 local SCROLLBAR_TEXTURE = [[Interface\Buttons\WHITE8x8]]
@@ -1032,10 +1033,10 @@ function Theme:Refresh()
 		if scrollBar then self:ApplyScrollBar(scrollBar) end
 	end
 
-	-- Font objects may be replaced by another addon after Chatty constructed
-	-- its settings frame. Re-measure text-sized controls whenever the theme is
-	-- refreshed so their geometry follows the font that is actually rendered.
-	for button in pairs(self.tightButtons) do
+	-- Font objects may be replaced after construction. Re-measure fixed-width
+	-- labels too: otherwise their clipped state (and full-label tooltip) can be
+	-- stale even though text-sized controls already follow the new metrics.
+	for button in pairs(self.buttons) do
 		if button and button.RefreshTextFit then
 			button:RefreshTextFit()
 		end
@@ -1271,6 +1272,12 @@ function Theme:CreateButton(parent, text, width, height, emphasis)
 			fitText(self)
 		end
 	end
+	self.buttons[button] = true
+	if button.HookScript then
+		button:HookScript("OnShow", function(self)
+			self:RefreshTextFit()
+		end)
+	end
 
 	return button
 end
@@ -1331,6 +1338,21 @@ end
 -- them a shared baseline and let the selected item visually join the content
 -- below instead of drawing another boxed button. The underline is deliberately
 -- restrained: color supports the label, but never becomes the whole control.
+local function paintTabUnderline(button)
+	local underline = button._themeTabUnderline
+	if not underline then return end
+	local colorName = button._themeTabSelected
+		and (button._themeHovered and "goldBright" or "gold") or "accent"
+	Theme.textures[underline] = colorName
+	local r, g, b, a = Theme:GetColor(colorName)
+	underline:SetVertexColor(r, g, b, a)
+	if button._themeTabSelected or button._themeHovered then
+		underline:Show()
+	else
+		underline:Hide()
+	end
+end
+
 function Theme:SetTabState(button, selected)
 	if not button or not button.SetTheme then
 		return
@@ -1355,17 +1377,12 @@ function Theme:SetTabState(button, selected)
 
 		if button.HookScript then
 			button:HookScript("OnEnter", function(self)
-				if not self._themeTabSelected and self._themeTabUnderline then
-					Theme.textures[self._themeTabUnderline] = "accent"
-					local r, g, b, a = Theme:GetColor("accent")
-					self._themeTabUnderline:SetVertexColor(r, g, b, a)
-					self._themeTabUnderline:Show()
-				end
+				self._themeHovered = true
+				paintTabUnderline(self)
 			end)
 			button:HookScript("OnLeave", function(self)
-				if not self._themeTabSelected and self._themeTabUnderline then
-					self._themeTabUnderline:Hide()
-				end
+				self._themeHovered = false
+				paintTabUnderline(self)
 			end)
 		end
 	end
@@ -1373,16 +1390,9 @@ function Theme:SetTabState(button, selected)
 	button._themeTabSelected = selected and true or false
 	button:SetTheme(selected and "surfaceRaised" or "surface", self.NO_BORDER,
 		selected and "goldBright" or "textMuted")
-	button:SetHoverTheme("surfaceRaised", self.NO_BORDER,
+	button:SetHoverTheme(selected and "accentSoft" or "surfaceRaised", self.NO_BORDER,
 		selected and "goldBright" or "text")
-	self.textures[button._themeTabUnderline] = selected and "gold" or "accent"
-	local r, g, b, a = self:GetColor(selected and "gold" or "accent")
-	button._themeTabUnderline:SetVertexColor(r, g, b, a)
-	if selected then
-		button._themeTabUnderline:Show()
-	elseif not button._themeHovered then
-		button._themeTabUnderline:Hide()
-	end
+	paintTabUnderline(button)
 end
 
 -- Text-sized control for toolbars and dense inspectors. Live font metrics set
@@ -1396,11 +1406,6 @@ function Theme:CreateTightButton(parent, text, height, emphasis)
 	button._themeTightMinimumWidth = buttonHeight
 	self.tightButtons[button] = true
 	button:RefreshTextFit()
-	if button.HookScript then
-		button:HookScript("OnShow", function(self)
-			self:RefreshTextFit()
-		end)
-	end
 	return button
 end
 

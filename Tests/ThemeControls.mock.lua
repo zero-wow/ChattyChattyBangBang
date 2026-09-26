@@ -55,5 +55,17 @@ Theme:SetTabState(button, true)
 assert(button._themeTabSelected and button._themeTabUnderline.shown
 	and button.theme[2] == Theme.NO_BORDER,
 	"selected tab did not attach to its pane with a persistent underline")
+assert(button.hoverTheme[1] == "accentSoft"
+	and Theme.textures[button._themeTabUnderline] == "gold",
+	"selected tab did not have a distinct resting and hover treatment")
+button._themeHovered = true
+button.scripts.OnEnter(button)
+assert(Theme.textures[button._themeTabUnderline] == "goldBright",
+	"hovered selected tab was indistinguishable from its resting state")
+button._themeHovered = false
+button.scripts.OnLeave(button)
+assert(button._themeTabUnderline.shown
+	and Theme.textures[button._themeTabUnderline] == "gold",
+	"selected tab lost its persistent state after pointer exit")
 
 print("Theme control mock tests passed")
