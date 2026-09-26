@@ -117,6 +117,7 @@ local SEARCH_DRAWER_MIN_HEIGHT = 70
 local SEARCH_DRAWER_GUTTER = 4
 local SEARCH_TRIGGER_RESERVED_HEIGHT = 22
 local SEARCH_RESULT_BATCH = 20
+local SEARCH_EXPORT_MAX_BYTES = 8192
 -- Full-width row shading may paint through the otherwise transparent scrollbar
 -- lane, but stops at the backdrop's one-pixel inner inset so the panel border
 -- remains crisp. The message viewport and scrollbar hit geometry never move.
@@ -1509,6 +1510,46 @@ local function frameIsShown(frame)
 	return frame and frame.IsShown and frame:IsShown()
 end
 
+-- Palette and Blizzard chat-color notifications can arrive in bursts during a
+-- single UI update. One next-frame repaint sees their final values, while
+-- message delivery, tab changes, paging, and committed resizes keep their
+-- synchronous rebuild paths. A synchronous rebuild cancels this stale request.
+function Dock:CancelQueuedPresentationRebuild()
+	self.presentationRebuildQueued = nil
+	if self.presentationRebuildDriver then
+		self.presentationRebuildDriver:Hide()
+	end
+end
+
+function Dock:QueuePresentationRebuild()
+	if not self.active or not self.activeView or not self.display or not addon.MessageEngine then
+		return false
+	end
+	if not self.presentationRebuildDriver then
+		-- No new frame creation in combat. The existing synchronous path is safe
+		-- for Chatty's insecure ScrollingMessageFrame even on older clients.
+		if type(CreateFrame) ~= "function"
+			or (type(InCombatLockdown) == "function" and InCombatLockdown()) then
+			self:RebuildActiveViewPreservingScroll()
+			return false
+		end
+		local driver = CreateFrame("Frame")
+		driver:Hide()
+		driver:SetScript("OnUpdate", function()
+			driver:Hide()
+			if not Dock.presentationRebuildQueued then return end
+			Dock.presentationRebuildQueued = nil
+			if Dock.active and Dock.activeView and Dock.display and addon.MessageEngine then
+				Dock:RebuildActiveViewPreservingScroll()
+			end
+		end)
+		self.presentationRebuildDriver = driver
+	end
+	self.presentationRebuildQueued = true
+	self.presentationRebuildDriver:Show()
+	return true
+end
+
 function Dock:GetSearchDrawerHeight(contentHeight, topInset, bottomInset)
 	if not self.searchOpen then return 0 end
 	local available = math.max(0, (tonumber(contentHeight) or 0)
@@ -1536,11 +1577,12 @@ function Dock:RefreshSearchDrawerLayout(topInset, height)
 			and tonumber(self.searchQueryLabel:GetStringWidth()) or 0
 		local width = drawer.GetWidth and tonumber(drawer:GetWidth()) or 0
 		local left = math.max(37, math.ceil(measured) + 7)
-		if width > 0 then left = math.min(left, math.max(37, width - 100)) end
+		if width > 0 then left = math.min(left, math.max(37, width - 170)) end
 		self.searchTextEdit:ClearAllPoints()
 		self.searchTextEdit:SetPoint("LEFT", self.searchQueryRow, "LEFT", left, 0)
-		self.searchTextEdit:SetPoint("RIGHT", self.searchGoButton, "LEFT", -4, 0)
+		self.searchTextEdit:SetPoint("RIGHT", self.searchExportButton or self.searchGoButton, "LEFT", -4, 0)
 	end
+	if self.searchCopyMode then self:RefreshSearchCopyHeight() end
 end
 
 -- Keep every message-surface child inside the same transient viewport. Alerts
@@ -1788,6 +1830,7 @@ function Dock:IsRecordAllowedInView(viewId, record, settings)
 end
 
 function Dock:RecordBelongsToView(viewId, record, settings)
+	if type(record) ~= "table" or record.blockedByBlockControl then return false end
 	local engine = addon.MessageEngine
 	if engine and type(engine.RecordBelongsToView) == "function" then
 		return engine:RecordBelongsToView(record, viewId, settings) == true
@@ -1802,6 +1845,19 @@ function Dock:RecordBelongsToView(viewId, record, settings)
 		return addon:IsRecordIncludedBySource(viewId, record, settings) == true
 	end
 	return false
+end
+
+-- One visible-record answer for the transcript and unread badges. Engine owns
+-- route/Contents membership; the dock adds its local-ignore presentation rule.
+-- Held whispers never reach this point: WhisperGuard intercepts them before
+-- MessageEngine normalizes or stores a record.
+function Dock:IsRecordVisibleInView(viewId, record, settings)
+	if type(record) ~= "table" or record.blockedByBlockControl
+		or self:IsLocallyIgnored(record, settings) then
+		return false
+	end
+	if not viewId then return true end
+	return self:RecordBelongsToView(viewId, record, settings)
 end
 
 function Dock:GetActiveDefinition()
@@ -3414,7 +3470,7 @@ function Dock:FormatDisplayRecord(record)
 		local totalColumns = self:GetDisplayColumnCapacity()
 		if totalColumns then
 			local rendered, leaderColumns = Presentation:FormatWrapped(
-				record, sourceWidth, senderWidth, senderSpacing, totalColumns, metadata)
+				record, sourceWidth, senderWidth, senderSpacing, totalColumns, metadata, self.activeView)
 			for _ = 1, MANUAL_WRAP_VALIDATION_PASSES do
 				local fits, overflow = self:DoesWrappedTextFitDisplay(rendered)
 				if fits == nil or fits then break end
@@ -3425,12 +3481,12 @@ function Dock:FormatDisplayRecord(record)
 				if narrower >= totalColumns then break end
 				totalColumns = narrower
 				rendered, leaderColumns = Presentation:FormatWrapped(
-					record, sourceWidth, senderWidth, senderSpacing, totalColumns, metadata)
+					record, sourceWidth, senderWidth, senderSpacing, totalColumns, metadata, self.activeView)
 			end
 			return rendered
 		end
 	end
-	return Presentation:Format(record, sourceWidth, senderWidth, senderSpacing, metadata)
+	return Presentation:Format(record, sourceWidth, senderWidth, senderSpacing, metadata, self.activeView)
 end
 
 function Dock:GetDisplayLineHeight()
@@ -4870,6 +4926,7 @@ function Dock:StepHistoryPage(direction)
 end
 
 function Dock:RebuildActiveView(alignmentRecords, skipVisibleAlignmentRefresh)
+	self:CancelQueuedPresentationRebuild()
 	if not self.display or not addon.MessageEngine then
 		return
 	end
@@ -4891,7 +4948,7 @@ function Dock:RebuildActiveView(alignmentRecords, skipVisibleAlignmentRefresh)
 	local eligibleRecords = {}
 	for index = 1, #messages do
 		local record = messages[index]
-		if not self:IsLocallyIgnored(record, settings) and self:IsRecordAllowedInView(self.activeView, record, settings) then
+		if self:IsRecordVisibleInView(self.activeView, record, settings) then
 			table.insert(eligibleRecords, record)
 		end
 	end
@@ -4976,7 +5033,7 @@ function Dock:OnMessage(record)
 		return
 	end
 	local settings = addon:GetSmartSettings()
-	if self:IsLocallyIgnored(record, settings) then
+	if not self:IsRecordVisibleInView(nil, record, settings) then
 		return
 	end
 	if record.view == "conversations" and record.sender and record.direction == "incoming" then
@@ -4986,7 +5043,7 @@ function Dock:OnMessage(record)
 		end
 	end
 
-	if self:RecordBelongsToView(self.activeView, record, settings) then
+	if self:IsRecordVisibleInView(self.activeView, record, settings) then
 		self.historyEligibleCount = math.max(0,
 			math.floor(tonumber(self.historyEligibleCount) or 0)) + 1
 		if (self.historyPageOffset or 0) > 0 then
@@ -5053,7 +5110,7 @@ function Dock:OnMessage(record)
 
 	for viewId in pairs(self.railButtons or {}) do
 		if viewId ~= self.activeView and settings.views[viewId] and self.railButtons[viewId]
-			and self:RecordBelongsToView(viewId, record, settings) then
+			and self:IsRecordVisibleInView(viewId, record, settings) then
 			self.unread[viewId] = (self.unread[viewId] or 0) + 1
 		end
 	end
@@ -7322,6 +7379,13 @@ function Dock:DiscardPartialBuild()
 	self.searchOlderButton = nil
 	self.searchNewerButton = nil
 	self.searchFilterButton = nil
+	self.searchBookmarkButton = nil
+	self.searchExportButton = nil
+	self.searchCopyButton = nil
+	self.searchCopyHint = nil
+	self.searchCopyScroll = nil
+	self.searchCopyEdit = nil
+	self.searchCopyMeasure = nil
 	self.searchBackButton = nil
 	self.searchQueryRow = nil
 	self.searchQueryLabel = nil
@@ -7343,6 +7407,10 @@ function Dock:DiscardPartialBuild()
 	self.searchPageStack = nil
 	self.searchSelectedRecord = nil
 	self.searchFilterMode = nil
+	self.searchBookmarksOnly = nil
+	self.searchCopyMode = nil
+	self.searchCopyText = nil
+	self.searchCopyKind = nil
 	self.searchOpen = nil
 	self.searchSenderHistory = nil
 	self.historyPager = nil
@@ -8645,6 +8713,7 @@ function Dock:GetSearchQuery(cursor)
 		text = self.searchTextEdit and self.searchTextEdit:GetText() or "",
 		sender = self.searchSenderEdit and self.searchSenderEdit:GetText() or "",
 		exactSender = self.searchSenderHistory ~= nil,
+		bookmarked = self.searchBookmarksOnly == true,
 		source = self.searchSourceEdit and self.searchSourceEdit:GetText() or "",
 		date = self.searchDateEdit and self.searchDateEdit:GetText() or "",
 		viewId = self.searchCurrentTabOnly and self.activeView or nil,
@@ -8661,6 +8730,80 @@ function Dock:ClearSearchFocus()
 	clear(self.searchSenderEdit)
 	clear(self.searchSourceEdit)
 	clear(self.searchDateEdit)
+	clear(self.searchCopyEdit)
+end
+
+function Dock:ClearSearchCopy()
+	self.searchCopyMode = false
+	self.searchCopyText = nil
+	self.searchCopyKind = nil
+	if self.searchCopyEdit then
+		if self.searchCopyEdit.ClearFocus then self.searchCopyEdit:ClearFocus() end
+		self.searchCopyEdit:SetText("")
+	end
+end
+
+function Dock:RefreshSearchCopyHeight()
+	local scroll, edit = self.searchCopyScroll, self.searchCopyEdit
+	if not scroll or not edit then return end
+	local width = scroll.GetWidth and tonumber(scroll:GetWidth()) or 0
+	if width <= 0 then
+		width = self.searchDrawer and self.searchDrawer.GetWidth
+			and (tonumber(self.searchDrawer:GetWidth()) or 0) - 10 or 282
+	end
+	width = math.max(60, width - 4)
+	edit:SetWidth(width)
+	local text = self.searchCopyText or ""
+	local measure = self.searchCopyMeasure
+	local height
+	if measure then
+		measure:SetWidth(width - 4)
+		measure:SetText(text)
+		height = measure.GetStringHeight and tonumber(measure:GetStringHeight()) or nil
+	end
+	if not height or height <= 0 then
+		local columns = math.max(12, math.floor(width / 6))
+		local rows = 0
+		for line in string.gmatch(text .. "\n", "(.-)\n") do
+			rows = rows + math.max(1, math.ceil(#line / columns))
+		end
+		height = rows * 14
+	end
+	local viewport = scroll.GetHeight and tonumber(scroll:GetHeight()) or 20
+	edit:SetHeight(math.max(viewport, math.ceil(height) + 10))
+end
+
+function Dock:OpenSearchCopy(records, includePrivate, kind)
+	local engine = addon.MessageEngine
+	if not engine or type(engine.ExportRetainedText) ~= "function" or not self.searchCopyEdit then
+		return false, "unavailable"
+	end
+	local value, count, skipped, truncated = engine:ExportRetainedText(records, {
+		maxLines = kind == "message" and 1 or SEARCH_RESULT_BATCH,
+		maxBytes = SEARCH_EXPORT_MAX_BYTES,
+		includePrivate = includePrivate == true,
+	})
+	self.searchCopyKind = kind == "message" and "message" or "page"
+	self.searchCopyText = count > 0 and value or "No eligible retained messages on this page."
+	self.searchCopyMode = true
+	self.searchCopyEdit:SetText(self.searchCopyText)
+	self:RefreshSearchCopyHeight()
+	self:RefreshSearchDrawer()
+	self.searchCopyEdit:SetFocus()
+	self.searchCopyEdit:HighlightText()
+	return true, count, skipped, truncated
+end
+
+function Dock:CopySelectedSearchMessage()
+	if not self.searchSelectedRecord then return false, "no-selection" end
+	-- Clicking the exact preview is an explicit private-message scope. The
+	-- normal multi-line page export below never opts into private transcript.
+	return self:OpenSearchCopy({ self.searchSelectedRecord }, true, "message")
+end
+
+function Dock:ExportSearchResultPage()
+	local result = self.searchResult
+	return self:OpenSearchCopy(result and result.records or {}, false, "page")
 end
 
 function Dock:RefreshSearchAfterHistoryMutation()
@@ -8689,6 +8832,34 @@ end
 
 function Dock:RefreshSearchDrawer()
 	if not self.searchDrawer then return end
+	if self.searchCopyMode then
+		if self.searchQueryRow then self.searchQueryRow:Hide() end
+		if self.searchFilterRows then self.searchFilterRows:Hide() end
+		for _, button in ipairs(self.searchResultButtons or {}) do button:Hide() end
+		if self.searchPreview then self.searchPreview:Hide() end
+		if self.searchPreviewMeta then self.searchPreviewMeta:Hide() end
+		if self.searchCopyButton then self.searchCopyButton:Hide() end
+		if self.searchFilterButton then self.searchFilterButton:Hide() end
+		if self.searchBookmarkButton then self.searchBookmarkButton:Hide() end
+		if self.searchOlderButton then self.searchOlderButton:Hide() end
+		if self.searchNewerButton then self.searchNewerButton:Hide() end
+		if self.searchBackButton then self.searchBackButton:Show() end
+		if self.searchTitle then
+			self.searchTitle:ClearAllPoints()
+			self.searchTitle:SetPoint("TOPLEFT", self.searchBackButton, "TOPRIGHT", 6, -2)
+			self.searchTitle:SetPoint("RIGHT", self.searchCloseButton, "LEFT", -4, 0)
+			self.searchTitle:SetText(self.searchCopyKind == "message" and "COPY MESSAGE" or "EXPORT PAGE")
+		end
+		if self.searchCopyHint then
+			self.searchCopyHint:SetText("Selected text · press Ctrl+C")
+			self.searchCopyHint:Show()
+		end
+		if self.searchCopyScroll then self.searchCopyScroll:Show() end
+		self:RefreshSearchCopyHeight()
+		return
+	end
+	if self.searchCopyHint then self.searchCopyHint:Hide() end
+	if self.searchCopyScroll then self.searchCopyScroll:Hide() end
 	local filtering = self.searchFilterMode == true
 	local selected = self.searchSelectedRecord
 	local result = self.searchResult or { records = {} }
@@ -8722,7 +8893,7 @@ function Dock:RefreshSearchDrawer()
 					elseif result.error == "invalid-date" then summary = "Use YYYY-MM-DD for the date filter."
 					elseif result.error == "stale-cursor" then summary = "History changed. Search again."
 					elseif result.hasMore then summary = "No match in this slice. Try older history."
-					else summary = "No matching retained messages." end
+					else summary = self.searchBookmarksOnly and "No saved messages match." or "No matching retained messages." end
 					setSearchButtonLabel(button, summary)
 					button:Show()
 				else button:Hide() end
@@ -8743,18 +8914,46 @@ function Dock:RefreshSearchDrawer()
 			self.searchPreview:AddMessage(metadata .. "\n" .. tostring(selected.text or ""), 1, 1, 1)
 			self.searchPreview:ScrollToTop()
 			self.searchPreview:Show()
-			self.searchPreviewMeta:SetText("Preview only · chat tab unchanged")
+			local saved = addon.MessageEngine and addon.MessageEngine.IsBookmarked
+				and addon.MessageEngine:IsBookmarked(selected)
+			self.searchPreviewMeta:SetText(saved and "Saved · preview only"
+				or "Preview only · chat tab unchanged")
+			if self.searchCopyButton then
+				self.searchPreviewMeta:ClearAllPoints()
+				self.searchPreviewMeta:SetPoint("TOPLEFT", self.searchDrawer, "TOPLEFT", 5, -26)
+				self.searchPreviewMeta:SetPoint("RIGHT", self.searchCopyButton, "LEFT", -4, 0)
+			end
 			self.searchPreviewMeta:Show()
 		else
 			self.searchPreview:Hide()
 			self.searchPreviewMeta:Hide()
 		end
 	end
+	if self.searchCopyButton then
+		if selected and not filtering then self.searchCopyButton:Show()
+		else self.searchCopyButton:Hide() end
+	end
 	if self.searchBackButton then
 		if filtering or selected then self.searchBackButton:Show() else self.searchBackButton:Hide() end
 	end
 	if self.searchFilterButton then
 		if filtering or selected then self.searchFilterButton:Hide() else self.searchFilterButton:Show() end
+	end
+	if self.searchBookmarkButton then
+		self.searchBookmarkButton:ClearAllPoints()
+		if filtering then
+			self.searchBookmarkButton:Hide()
+		elseif selected then
+			self.searchBookmarkButton:SetPoint("RIGHT", self.searchCloseButton, "LEFT", -4, 0)
+			local saved = addon.MessageEngine and addon.MessageEngine.IsBookmarked
+				and addon.MessageEngine:IsBookmarked(selected)
+			setSearchButtonLabel(self.searchBookmarkButton, saved and "UNSAVE" or "SAVE")
+			self.searchBookmarkButton:Show()
+		else
+			self.searchBookmarkButton:SetPoint("RIGHT", self.searchFilterButton, "LEFT", -4, 0)
+			setSearchButtonLabel(self.searchBookmarkButton, self.searchBookmarksOnly and "ALL" or "SAVED")
+			self.searchBookmarkButton:Show()
+		end
 	end
 	if self.searchOlderButton then
 		if not filtering and not selected and hasOlder then self.searchOlderButton:Show()
@@ -8768,11 +8967,16 @@ function Dock:RefreshSearchDrawer()
 		self.searchTitle:ClearAllPoints()
 		if filtering or selected then
 			self.searchTitle:SetPoint("TOPLEFT", self.searchBackButton, "TOPRIGHT", 6, -2)
-			self.searchTitle:SetPoint("RIGHT", self.searchCloseButton, "LEFT", -4, 0)
+			self.searchTitle:SetPoint("RIGHT", selected and self.searchBookmarkButton
+				or self.searchCloseButton, "LEFT", -4, 0)
 			self.searchTitle:SetText(filtering and "FILTERS" or "MESSAGE")
 		else
 			self.searchTitle:SetPoint("TOPLEFT", self.searchDrawer, "TOPLEFT", 5, -5)
-			self.searchTitle:SetPoint("RIGHT", self.searchDrawer, "RIGHT", -144, 0)
+			if self.searchBookmarkButton then
+				self.searchTitle:SetPoint("RIGHT", self.searchBookmarkButton, "LEFT", -4, 0)
+			else
+				self.searchTitle:SetPoint("RIGHT", self.searchDrawer, "RIGHT", -144, 0)
+			end
 			self.searchTitle:SetText(self.searchSenderHistory
 				and ("HISTORY: " .. searchSingleLine(self.searchSenderEdit
 					and self.searchSenderEdit:GetText() or self.searchSenderHistory))
@@ -8789,6 +8993,7 @@ function Dock:RunSearch(cursor, preservePages)
 	self.searchSelectedRecord = nil
 	self.searchFilterMode = false
 	self.searchResult = addon.MessageEngine:SearchHistory(self:GetSearchQuery(cursor))
+	self:ClearSearchCopy()
 	self.searchGeneration = addon.MessageEngine.historyGeneration
 	self.searchResultIndex = 1
 	self:RefreshSearchDrawer()
@@ -8815,6 +9020,29 @@ function Dock:StepSearchResult(direction)
 	return true
 end
 
+function Dock:ToggleSearchBookmark()
+	local engine = addon.MessageEngine
+	if self.searchSelectedRecord then
+		if not engine or type(engine.ToggleBookmark) ~= "function" then return nil, "unavailable" end
+		local saved, reason = engine:ToggleBookmark(self.searchSelectedRecord)
+		if saved == nil then
+			self:RunSearch(nil, false)
+			return nil, reason
+		end
+		-- Removing a saved-only result must immediately remove it from that list;
+		-- the ordinary search preview may stay open without moving the chat tab.
+		if self.searchBookmarksOnly and not saved then
+			self:RunSearch(nil, false)
+		else
+			self:RefreshSearchDrawer()
+		end
+		return saved, reason
+	end
+	self.searchBookmarksOnly = not self.searchBookmarksOnly
+	self:RunSearch(nil, false)
+	return self.searchBookmarksOnly
+end
+
 function Dock:ToggleSearchDrawer(forceClosed)
 	local open = not forceClosed and not self.searchOpen
 	self.searchOpen = open
@@ -8822,6 +9050,7 @@ function Dock:ToggleSearchDrawer(forceClosed)
 	self.searchFilterMode = false
 	if not open then
 		self:ClearSearchFocus()
+		self:ClearSearchCopy()
 		if self.searchSenderHistory and self.searchSenderEdit then
 			self.searchSenderEdit:SetText("")
 		end
@@ -8850,6 +9079,8 @@ function Dock:OpenSenderHistory(record)
 	if self.searchSourceEdit then self.searchSourceEdit:SetText("") end
 	if self.searchDateEdit then self.searchDateEdit:SetText("") end
 	self.searchCurrentTabOnly = false
+	self.searchBookmarksOnly = false
+	self:ClearSearchCopy()
 	self.searchOpen = true
 	self.searchSelectedRecord = nil
 	self.searchFilterMode = false
@@ -8900,9 +9131,20 @@ function Dock:BuildSearchDrawer()
 	end)
 	self.searchFilterButton = filters
 	self:BindDockControlTooltip(filters, "Search filters", "Filter by sender, source, date, or current tab.")
+	local bookmark = Theme:CreateButton(drawer, "SAVED", 58, 18, false)
+	bookmark:SetPoint("RIGHT", filters, "LEFT", -4, 0)
+	bookmark:SetScript("OnClick", function() Dock:ToggleSearchBookmark() end)
+	self.searchBookmarkButton = bookmark
+	self:BindDockControlTooltip(bookmark, "Saved messages",
+		"From results, show only saved messages. In a preview, save or remove that line. Saving beyond 100 replaces the oldest bookmark.")
 	local back = Theme:CreateButton(drawer, "BACK", 52, 18, false)
 	back:SetPoint("TOPLEFT", drawer, "TOPLEFT", 4, -3)
 	back:SetScript("OnClick", function()
+		if Dock.searchCopyMode then
+			Dock:ClearSearchCopy()
+			Dock:RefreshSearchDrawer()
+			return
+		end
 		Dock.searchFilterMode = false
 		Dock.searchSelectedRecord = nil
 		Dock:RefreshSearchDrawer()
@@ -8923,9 +9165,15 @@ function Dock:BuildSearchDrawer()
 	go:SetPoint("RIGHT", queryRow, "RIGHT", 0, 0)
 	go:SetScript("OnClick", function() Dock:RunSearch(nil, false) end)
 	self.searchGoButton = go
+	local export = Theme:CreateButton(queryRow, "EXPORT", 60, 20, false)
+	export:SetPoint("RIGHT", go, "LEFT", -4, 0)
+	export:SetScript("OnClick", function() Dock:ExportSearchResultPage() end)
+	self.searchExportButton = export
+	self:BindDockControlTooltip(export, "Export current results",
+		"Select and copy up to 20 current search results. Private conversations and blocked messages are excluded.")
 	local query = Theme:CreateEditBox(queryRow, 100, 20, false)
 	query:SetPoint("LEFT", queryRow, "LEFT", 37, 0)
-	query:SetPoint("RIGHT", go, "LEFT", -4, 0)
+	query:SetPoint("RIGHT", export, "LEFT", -4, 0)
 	query:SetScript("OnEnterPressed", function(self)
 		self:ClearFocus()
 		Dock:RunSearch(nil, false)
@@ -9013,7 +9261,7 @@ function Dock:BuildSearchDrawer()
 	previewMeta:Hide()
 	self.searchPreviewMeta = previewMeta
 	local preview = CreateFrame("ScrollingMessageFrame", nil, drawer)
-	preview:SetPoint("TOPLEFT", drawer, "TOPLEFT", 5, -43)
+	preview:SetPoint("TOPLEFT", drawer, "TOPLEFT", 5, -46)
 	preview:SetPoint("BOTTOMRIGHT", drawer, "BOTTOMRIGHT", -5, 4)
 	preview:SetFontObject(ChatFontNormal)
 	preview:SetFading(false)
@@ -9025,6 +9273,52 @@ function Dock:BuildSearchDrawer()
 	end)
 	preview:Hide()
 	self.searchPreview = preview
+	local copy = Theme:CreateButton(drawer, "COPY", 52, 18, false)
+	copy:SetPoint("TOPRIGHT", drawer, "TOPRIGHT", -4, -24)
+	copy:SetScript("OnClick", function() Dock:CopySelectedSearchMessage() end)
+	copy:Hide()
+	self.searchCopyButton = copy
+	self:BindDockControlTooltip(copy, "Copy this message",
+		"Opens selectable text for the message you chose. Press Ctrl+C; Chatty does not access the system clipboard.")
+
+	local copyHint = Theme:CreateText(drawer, "GameFontHighlightSmall", "textMuted")
+	copyHint:SetPoint("TOPLEFT", drawer, "TOPLEFT", 5, -25)
+	copyHint:SetPoint("RIGHT", drawer, "RIGHT", -5, 0)
+	copyHint:SetJustifyH("LEFT")
+	copyHint:Hide()
+	self.searchCopyHint = copyHint
+	local copyScroll = CreateFrame("ScrollFrame", nil, drawer)
+	copyScroll:SetPoint("TOPLEFT", drawer, "TOPLEFT", 5, -43)
+	copyScroll:SetPoint("BOTTOMRIGHT", drawer, "BOTTOMRIGHT", -5, 4)
+	copyScroll:EnableMouseWheel(true)
+	copyScroll:SetScript("OnMouseWheel", function(self, delta)
+		local current = self:GetVerticalScroll()
+		local maximum = self:GetVerticalScrollRange()
+		self:SetVerticalScroll(math.max(0, math.min(maximum, current - delta * 20)))
+	end)
+	copyScroll:Hide()
+	self.searchCopyScroll = copyScroll
+	local copyEdit = Theme:CreateEditBox(copyScroll, 280, 24, true)
+	copyEdit:SetPoint("TOPLEFT", copyScroll, "TOPLEFT", 2, 0)
+	if copyEdit.SetMaxBytes then copyEdit:SetMaxBytes(SEARCH_EXPORT_MAX_BYTES) end
+	copyEdit:SetScript("OnEscapePressed", function(self)
+		self:ClearFocus()
+		Dock:ClearSearchCopy()
+		Dock:RefreshSearchDrawer()
+	end)
+	copyEdit:SetScript("OnTextChanged", function(self)
+		if Dock.searchCopyMode then
+			Dock.searchCopyText = self:GetText()
+			Dock:RefreshSearchCopyHeight()
+		end
+	end)
+	copyScroll:SetScrollChild(copyEdit)
+	copyScroll:SetScript("OnSizeChanged", function() Dock:RefreshSearchCopyHeight() end)
+	self.searchCopyEdit = copyEdit
+	local copyMeasure = Theme:CreateText(drawer, "GameFontHighlightSmall", "text")
+	copyMeasure:SetPoint("TOPLEFT", drawer, "TOPLEFT", 0, 0)
+	copyMeasure:SetAlpha(0)
+	self.searchCopyMeasure = copyMeasure
 	self:RefreshSearchDrawer()
 end
 
@@ -9076,6 +9370,7 @@ function Dock:Build()
 		Dock.searchOpen = false
 		Dock.searchSelectedRecord = nil
 		Dock:ClearSearchFocus()
+		Dock:ClearSearchCopy()
 		if Dock.searchSenderHistory and Dock.searchSenderEdit then
 			Dock.searchSenderEdit:SetText("")
 		end
@@ -9820,7 +10115,7 @@ function Dock:Initialize()
 			-- Repaint the visible history immediately when the player changes one
 			-- in the default chat settings instead of waiting for a rail switch.
 			if Dock.active and Dock.frame then
-				Dock:RebuildActiveView()
+				Dock:QueuePresentationRebuild()
 			end
 			return
 		end
@@ -9862,7 +10157,7 @@ function Dock:Initialize()
 				Dock:ApplyNewMessageIndicatorAppearance()
 			end
 			Dock:RefreshRailState()
-			Dock:RebuildActiveView()
+			Dock:QueuePresentationRebuild()
 		end
 	end)
 end

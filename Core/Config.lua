@@ -339,15 +339,169 @@ end
 -- Pane navigation should read as navigation at a glance. Theme builds that
 -- know about attached tabs draw a continuous baseline and selected underline;
 -- older/test themes retain a quiet selected choice without losing behavior.
-local function setTabStyle(button, selected)
+local function setTabStyle(button, selected, group, order)
 	if not button then return end
 	button._configTab = true
 	button._configTabSelected = selected and true or false
+	if group then
+		Config:RegisterKeyboardTab(button, group, order)
+	end
 	if type(Theme.SetTabState) == "function" then
 		Theme:SetTabState(button, selected)
 	else
 		setChoiceStyle(button, selected)
 	end
+	if Config.keyboardTabFocus == button and button.IsVisible and not button:IsVisible() then
+		Config:ReleaseKeyboardTab()
+	end
+end
+
+function Config:RegisterKeyboardTab(button, group, order)
+	if not button or not group then return end
+	button._configTabGroup = group
+	button._configTabOrder = order or button._themeButtonOrder or button._configTabOrder
+	self.keyboardTabs = self.keyboardTabs or setmetatable({}, { __mode = "k" })
+	self.keyboardTabs[button] = true
+	if not button._configTabKeyboardHelp and button.SetTooltip
+		and (button._themeTooltipTitle or button._themeFullLabel) then
+		local body = button._themeTooltipBody or ""
+		button:SetTooltip(button._themeTooltipTitle or button._themeFullLabel,
+			body .. (body ~= "" and "\n" or "") .. "Click, then use Left/Right to switch tabs, Tab to move focus, Enter to select, or Esc to leave keyboard navigation.")
+		button._configTabKeyboardHelp = true
+	end
+	if self.frame and self.frame.SetPropagateKeyboardInput
+		and self.frame.EnableKeyboard and button.HookScript
+		and not button._configTabKeyboardHooked then
+		button:HookScript("OnClick", function(self)
+			Config:FocusKeyboardTab(self)
+		end)
+		button._configTabKeyboardHooked = true
+	end
+end
+
+-- A mouse click on a tab explicitly opts into keyboard navigation. The root
+-- settings frame captures keys only while that tab has focus; unhandled keys
+-- are propagated and immediately release navigation, so gameplay and typing
+-- do not remain trapped behind an open configuration window.
+function Config:ReleaseKeyboardTab()
+	if self.keyboardTabFocus and type(Theme.SetTabFocus) == "function" then
+		Theme:SetTabFocus(self.keyboardTabFocus, false)
+	end
+	self.keyboardTabFocus = nil
+	if self.frame then
+		if self.frame.SetPropagateKeyboardInput then
+			pcall(self.frame.SetPropagateKeyboardInput, self.frame, true)
+		end
+		if self.frame.EnableKeyboard then
+			pcall(self.frame.EnableKeyboard, self.frame, false)
+		end
+	end
+end
+
+function Config:FocusKeyboardTab(button)
+	local frame = self.frame
+	if not button or not button._configTabGroup or not frame
+		or (frame.IsShown and not frame:IsShown())
+		or (button.IsVisible and not button:IsVisible())
+		or not frame.SetPropagateKeyboardInput or not frame.EnableKeyboard then
+		return false
+	end
+	if not pcall(frame.SetPropagateKeyboardInput, frame, true)
+		or not pcall(frame.EnableKeyboard, frame, true) then
+		self:ReleaseKeyboardTab()
+		return false
+	end
+	if self.keyboardTabFocus ~= button and type(Theme.SetTabFocus) == "function" then
+		Theme:SetTabFocus(self.keyboardTabFocus, false)
+	end
+	self.keyboardTabFocus = button
+	if type(Theme.SetTabFocus) == "function" then
+		Theme:SetTabFocus(button, true)
+	end
+	return true
+end
+
+function Config:GetKeyboardTabs(group)
+	local candidates = {}
+	for button in pairs(self.keyboardTabs or {}) do
+		local buttonGroup = button._configTabGroup
+		if buttonGroup and buttonGroup:match("^[^/]+") == self.activePage
+			and (not group or group == buttonGroup)
+			and ((button.IsVisible and button:IsVisible())
+				or (not button.IsVisible and (not button.IsShown or button:IsShown())))
+			and (not button.IsEnabled or button:IsEnabled()) then
+			candidates[#candidates + 1] = button
+		end
+	end
+	table.sort(candidates, function(a, b)
+		if a._configTabGroup ~= b._configTabGroup then
+			return a._configTabGroup < b._configTabGroup
+		end
+		return (a._configTabOrder or 0) < (b._configTabOrder or 0)
+	end)
+	return candidates
+end
+
+function Config:MoveKeyboardTab(step, sameGroup, activate)
+	local current = self.keyboardTabFocus
+	if not current then return false end
+	local candidates = self:GetKeyboardTabs(sameGroup and current._configTabGroup or nil)
+	if #candidates == 0 then self:ReleaseKeyboardTab(); return false end
+	local currentIndex = 0
+	for index, button in ipairs(candidates) do
+		if button == current then currentIndex = index; break end
+	end
+	local nextIndex = ((currentIndex - 1 + step) % #candidates) + 1
+	local nextButton = candidates[nextIndex]
+	if not self:FocusKeyboardTab(nextButton) then return false end
+	if activate and nextButton ~= current then
+		if nextButton.Click then
+			nextButton:Click("LeftButton")
+		elseif nextButton.GetScript then
+			local onClick = nextButton:GetScript("OnClick")
+			if onClick then onClick(nextButton, "LeftButton") end
+		end
+	end
+	return true
+end
+
+function Config:HandleKeyboardTabKey(key)
+	local button = self.keyboardTabFocus
+	if not button or not self.frame then return false end
+	if type(GetCurrentKeyBoardFocus) == "function" then
+		local ok, editFocus = pcall(GetCurrentKeyBoardFocus)
+		if ok and editFocus then self:ReleaseKeyboardTab(); return false end
+	end
+	if (IsControlKeyDown and IsControlKeyDown()) or (IsAltKeyDown and IsAltKeyDown()) then
+		self:ReleaseKeyboardTab()
+		return false
+	end
+	if key == "TAB" or key == "LEFT" or key == "RIGHT"
+		or key == "ENTER" or key == "NUMPADENTER" or key == "SPACE" then
+		-- Never activate a tab unless the client first confirms this key will
+		-- not also fire a gameplay binding such as target-next or movement.
+		if not pcall(self.frame.SetPropagateKeyboardInput, self.frame, false) then
+			self:ReleaseKeyboardTab()
+			return false
+		end
+	end
+	local handled = false
+	if key == "TAB" then
+		handled = self:MoveKeyboardTab(IsShiftKeyDown and IsShiftKeyDown() and -1 or 1, false, false)
+	elseif key == "LEFT" or key == "RIGHT" then
+		handled = self:MoveKeyboardTab(key == "RIGHT" and 1 or -1, true, true)
+	elseif key == "ENTER" or key == "NUMPADENTER" or key == "SPACE" then
+		if button.Click then button:Click("LeftButton"); handled = true end
+	elseif key == "ESCAPE" then
+		self:ReleaseKeyboardTab()
+		return false
+	else
+		self:ReleaseKeyboardTab()
+	end
+	if self.frame and self.frame.SetPropagateKeyboardInput then
+		pcall(self.frame.SetPropagateKeyboardInput, self.frame, not handled)
+	end
+	return handled
 end
 
 local function setActionStyle(button, role, title, body)
@@ -520,6 +674,14 @@ function Config:RefreshNavigation()
 	end
 	self:LayoutNavigation()
 	if self.frame then self:FitFrameToViewport() end
+end
+
+-- Only rows with measured spare room opt into width growth. The shared Theme
+-- helper keeps the label inside that explicit cap and retains its full tooltip.
+function Config:FitFixedButtonLabel(button, maxWidth)
+	if button and button.SetBoundedLabelFit then
+		button:SetBoundedLabelFit(maxWidth)
+	end
 end
 
 function Config:BuildHomePage()
@@ -778,8 +940,9 @@ function Config:RefreshDockLayoutCategory()
 			if visible then control:Show() else control:Hide() end
 		end
 	end
-	for id, button in pairs(self.dockLayoutCategoryButtons or {}) do
-		setTabStyle(button, layoutVisible and id == category)
+	for index, id in ipairs(dockLayoutCategoryOrder) do
+		local button = self.dockLayoutCategoryButtons and self.dockLayoutCategoryButtons[id]
+		setTabStyle(button, layoutVisible and id == category, "dock/2-layout", index)
 	end
 
 	local definition = dockLayoutCategoryDefinitions[category]
@@ -928,10 +1091,10 @@ end
 function Config:RefreshDockSections()
 	local colors = self.dockSection == "colors"
 	if self.dockLayoutTabButton then
-		setTabStyle(self.dockLayoutTabButton, not colors)
+		setTabStyle(self.dockLayoutTabButton, not colors, "dock/1-main", 1)
 	end
 	if self.dockColorsTabButton then
-		setTabStyle(self.dockColorsTabButton, colors)
+		setTabStyle(self.dockColorsTabButton, colors, "dock/1-main", 2)
 	end
 	if self.dockHeadingSubtitle then
 		self.dockHeadingSubtitle:SetText(colors
@@ -1361,6 +1524,26 @@ function Config:RefreshDockPage()
 	if self.dockHistoryToggle then self.dockHistoryToggle:SetValue(history.enabled ~= false, true) end
 	if self.dockHistoryLinesEdit then
 		self.dockHistoryLinesEdit:SetText(tostring(math.floor(tonumber(history.linesPerSource) or 1000)))
+	end
+	if self.dockHistoryFootprint then
+		local capacity = math.floor(tonumber(history.linesPerSource) or 1000)
+		local engine = addon.MessageEngine
+		local stats
+		if engine and type(engine.GetHistoryStats) == "function" then
+			local ok, value = pcall(engine.GetHistoryStats, engine)
+			if ok and type(value) == "table" then stats = value end
+		end
+		local lines = math.max(0, math.floor(tonumber(stats and stats.lines) or 0))
+		local sources = math.max(0, math.floor(tonumber(stats and stats.sources) or 0))
+		local prefix = history.enabled == false and "This session: " or "Retained now: "
+		if sources > 0 then
+			self.dockHistoryFootprint:SetText(prefix .. tostring(lines) .. " lines across "
+				.. tostring(sources) .. " sources. These sources can hold up to "
+				.. tostring(sources * capacity) .. " lines total; new sources add more. Disk size varies.")
+		else
+			self.dockHistoryFootprint:SetText(prefix .. "no lines yet. Each new source can add up to "
+				.. tostring(capacity) .. " lines; there is no fixed total cap. Disk size varies.")
+		end
 	end
 	local responsive = type(addon.GetResponsiveMetadata) == "function" and addon:GetResponsiveMetadata()
 	if responsive == nil then responsive = dock.responsiveMetadata ~= false end
@@ -1793,6 +1976,12 @@ function Config:BuildDockPage()
 	historyHint:SetWidth(PAGE_WIDTH)
 	historyHint:SetJustifyH("LEFT")
 	historyHint:SetText("One shared copy of each message is stored, then restored into every matching tab without duplicating it.")
+	self.dockHistoryFootprint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	self.dockHistoryFootprint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -303)
+	self.dockHistoryFootprint:SetSize(PAGE_WIDTH, 48)
+	self.dockHistoryFootprint:SetJustifyH("LEFT")
+	if self.dockHistoryFootprint.SetJustifyV then self.dockHistoryFootprint:SetJustifyV("TOP") end
+	self.dockHistoryFootprint:SetText("History grows independently for each chat source; there is no fixed total cap.")
 
 	local responsiveTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
 	responsiveTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
@@ -2464,6 +2653,7 @@ function Config:BuildDockPage()
 			chromeTitle, self.dockComposerAutoHideToggle, self.dockEditBoxBorderToggle,
 			historyTitle, self.dockHistoryToggle, historyLinesLabel,
 			self.dockHistoryLinesEdit, self.dockClearHistoryButton, historyHint,
+			self.dockHistoryFootprint,
 		},
 		readability = {
 			responsiveTitle, self.dockResponsiveMetadataToggle,
@@ -4944,10 +5134,10 @@ function Config:SetMessageViewsSection(section, quiet)
 	if self.messageViewsChannelsPane then
 		if section == "channels" then self.messageViewsChannelsPane:Show() else self.messageViewsChannelsPane:Hide() end
 	end
-	setTabStyle(self.messageViewsDetailsButton, section == "details")
-	setTabStyle(self.messageViewsSourcesButton, section == "sources")
-	setTabStyle(self.messageViewsTextButton, section == "text")
-	setTabStyle(self.messageViewsChannelsButton, section == "channels")
+	setTabStyle(self.messageViewsDetailsButton, section == "details", "views/1-inspector", 2)
+	setTabStyle(self.messageViewsSourcesButton, section == "sources", "views/1-inspector", 1)
+	setTabStyle(self.messageViewsTextButton, section == "text", "views/1-inspector", 3)
+	setTabStyle(self.messageViewsChannelsButton, section == "channels", "views/1-inspector", 4)
 	if section == "sources" then self:RefreshRailSources() end
 	if section == "text" then self:RefreshSmartChatTextAppearanceControls() end
 	if section == "channels" then self:RefreshChannelTabSuggestions() end
@@ -5098,6 +5288,7 @@ function Config:BuildViewsPage()
 	local newButton = Theme:CreateButton(work, "NEW CUSTOM", 76, 20, true)
 	setActionStyle(newButton, "primary", "Create a custom view", "Start a new chat view, then choose its sources and tab label.")
 	newButton:SetPoint("TOPRIGHT", work, "TOPLEFT", 180, -6)
+	self:FitFixedButtonLabel(newButton, 76)
 	newButton:SetScript("OnClick", function()
 		Config:ClearCustomViewEditor()
 	end)
@@ -5404,6 +5595,7 @@ function Config:BuildViewsPage()
 	self.viewDeleteButton:SetScript("OnClick", function() Config:DeleteCustomView() end)
 	self.viewResetButton = Theme:CreateButton(details, "RESET NAME/KEY", 96, 24, false)
 	self.viewResetButton:SetPoint("RIGHT", self.viewDeleteButton, "LEFT", -4, 0)
+	self:FitFixedButtonLabel(self.viewResetButton, 220)
 	self.viewResetButton:SetScript("OnClick", function() Config:ResetRailPresentation() end)
 	self.viewSaveButton = Theme:CreateButton(details, "SAVE", 66, 24, true)
 	self.viewSaveButton:SetPoint("RIGHT", self.viewResetButton, "LEFT", -4, 0)
@@ -5894,6 +6086,7 @@ function Config:BuildViewsPage()
 	end)
 	self.messageViewsResetSourcesButton = Theme:CreateButton(sources, "RESET EXPECTED", 108, 24, false)
 	self.messageViewsResetSourcesButton:SetPoint("BOTTOMRIGHT", sources, "BOTTOMRIGHT", 0, 0)
+	self:FitFixedButtonLabel(self.messageViewsResetSourcesButton, 200)
 	setControlTooltip(self.messageViewsResetSourcesButton, "Restore expected feeds", "Returns this tab to its clean factual sources. Routing and custom match rules remain unchanged.")
 	self.messageViewsResetSourcesButton:SetScript("OnClick", function() Config:ResetRailSources() end)
 
@@ -6310,10 +6503,10 @@ function Config:SetSpamSection(section)
 		if section == "bans" then self.spamBansPane:Show() else self.spamBansPane:Hide() end
 	end
 	if self.spamFiltersButton then
-		setTabStyle(self.spamFiltersButton, section == "filters")
+		setTabStyle(self.spamFiltersButton, section == "filters", "spam/1-main", 1)
 	end
 	if self.spamBansButton then
-		setTabStyle(self.spamBansButton, section == "bans")
+		setTabStyle(self.spamBansButton, section == "bans", "spam/1-main", 2)
 	end
 	if section == "filters" then
 		self:SetSpamFilterPane(self.spamFilterMode or "protections")
@@ -6332,7 +6525,7 @@ function Config:SetSpamFilterPane(mode)
 		if paneId == mode then pane:Show() else pane:Hide() end
 	end
 	for paneId, button in pairs(self.spamFilterSubButtons or {}) do
-		setTabStyle(button, paneId == mode)
+		setTabStyle(button, paneId == mode, "spam/2-filters")
 	end
 end
 
@@ -6344,7 +6537,7 @@ function Config:SetSpamBanPane(mode)
 		if paneId == mode then pane:Show() else pane:Hide() end
 	end
 	for paneId, button in pairs(self.spamBanSubButtons or {}) do
-		setTabStyle(button, paneId == mode)
+		setTabStyle(button, paneId == mode, "spam/3-bans")
 	end
 end
 
@@ -7316,7 +7509,7 @@ function Config:RefreshAlertInspectorPane()
 		if paneId == mode then pane:Show() else pane:Hide() end
 	end
 	for paneId, button in pairs(self.alertInspectorButtons or {}) do
-		setTabStyle(button, paneId == mode)
+		setTabStyle(button, paneId == mode, "alerts/1-inspector")
 	end
 	if self.alertEditorTitle then
 		local rule = findAlertRule(self.selectedAlertRuleId)
@@ -8717,8 +8910,8 @@ end
 function Config:RefreshBlocksSection()
 	local section = self.blocksSection == "archive" and "archive" or "rules"
 	self.blocksSection = section
-	setTabStyle(self.blockRulesSectionButton, section == "rules")
-	setTabStyle(self.blockArchiveSectionButton, section == "archive")
+	setTabStyle(self.blockRulesSectionButton, section == "rules", "blocks/1-main", 1)
+	setTabStyle(self.blockArchiveSectionButton, section == "archive", "blocks/1-main", 2)
 	for _, frame in ipairs(self.blockRulesFrames or {}) do
 		if section == "rules" then frame:Show() else frame:Hide() end
 	end
@@ -8863,7 +9056,7 @@ function Config:RefreshBlockInspectorPane()
 		if paneId == mode then pane:Show() else pane:Hide() end
 	end
 	for paneId, button in pairs(buttons) do
-		setTabStyle(button, paneId == mode)
+		setTabStyle(button, paneId == mode, "blocks/2-inspector")
 	end
 end
 
@@ -8877,12 +9070,12 @@ end
 
 function Config:RefreshBlockScopeButtons()
 	local sources = self.blockScopeMode ~= "events"
-	local function apply(button, active)
+	local function apply(button, active, order)
 		if not button then return end
-		setTabStyle(button, active)
+		setTabStyle(button, active, "blocks/3-scope", order)
 	end
-	apply(self.blockScopeSourcesButton, sources)
-	apply(self.blockScopeEventsButton, not sources)
+	apply(self.blockScopeSourcesButton, sources, 1)
+	apply(self.blockScopeEventsButton, not sources, 2)
 	if self.blockAllSourcesToggle then
 		if sources then self.blockAllSourcesToggle:Show() else self.blockAllSourcesToggle:Hide() end
 	end
@@ -10096,7 +10289,7 @@ function Config:RefreshMessengerSections()
 		end
 	end
 	for id, button in pairs(self.messengerSectionButtons or {}) do
-		setTabStyle(button, id == section)
+		setTabStyle(button, id == section, "messenger/1-sections")
 	end
 	local definition = messengerSectionDefinitions[section]
 	if self.messengerSectionTitle then
@@ -11411,7 +11604,7 @@ end
 function Config:SetKeywordColorInspectorSection(section)
 	if self.keywordColorGroupDraft then
 		section = "color"
-	elseif section ~= "color" then
+	elseif section ~= "color" and section ~= "scope" then
 		section = "words"
 	end
 	self.keywordColorInspectorSection = section
@@ -11421,15 +11614,70 @@ function Config:SetKeywordColorInspectorSection(section)
 	if self.keywordColorInspectorColorPane then
 		if section == "color" then self.keywordColorInspectorColorPane:Show() else self.keywordColorInspectorColorPane:Hide() end
 	end
+	if self.keywordColorInspectorScopePane then
+		if section == "scope" then self.keywordColorInspectorScopePane:Show() else self.keywordColorInspectorScopePane:Hide() end
+	end
 	local drafting = self.keywordColorGroupDraft ~= nil
 	if self.keywordColorInspectorWordsButton then
 		if drafting then self.keywordColorInspectorWordsButton:Hide() else self.keywordColorInspectorWordsButton:Show() end
-		setTabStyle(self.keywordColorInspectorWordsButton, section == "words")
+		setTabStyle(self.keywordColorInspectorWordsButton, section == "words", "keywords/2-colors", 1)
 	end
 	if self.keywordColorInspectorColorButton then
 		if drafting then self.keywordColorInspectorColorButton:Hide() else self.keywordColorInspectorColorButton:Show() end
-		setTabStyle(self.keywordColorInspectorColorButton, section == "color")
+		setTabStyle(self.keywordColorInspectorColorButton, section == "color", "keywords/2-colors", 2)
 	end
+	if self.keywordColorInspectorScopeButton then
+		if drafting then self.keywordColorInspectorScopeButton:Hide() else self.keywordColorInspectorScopeButton:Show() end
+		setTabStyle(self.keywordColorInspectorScopeButton, section == "scope", "keywords/2-colors", 3)
+	end
+end
+
+function Config:GetKeywordColorScopeTargets(scopeType)
+	local targets = {}
+	local definitions
+	if scopeType == "source" and addon.MessageEngine and addon.MessageEngine.GetSourceDefinitions then
+		local ok, result = pcall(addon.MessageEngine.GetSourceDefinitions, addon.MessageEngine)
+		if ok then definitions = result end
+	elseif scopeType == "view" and addon.GetSmartViews then
+		local ok, result = pcall(addon.GetSmartViews, addon)
+		if ok then definitions = result end
+	end
+	for _, definition in ipairs(type(definitions) == "table" and definitions or {}) do
+		if #targets >= 128 then break end
+		local id = scopeType == "source" and (definition.sourceId or definition.id) or definition.id
+		if type(id) == "string" and id ~= "" then
+			table.insert(targets, { id = id, label = definition.sourceLabel or definition.label or id })
+		end
+	end
+	return targets
+end
+
+function Config:ApplySelectedKeywordColorScope(scopeType, step)
+	local group = addon.GetKeywordColorGroup and addon:GetKeywordColorGroup(self.selectedKeywordColorGroupId)
+	if not group or not addon.SetKeywordColorGroupScope then return end
+	local targetId
+	if scopeType ~= "all" then
+		local targets = self:GetKeywordColorScopeTargets(scopeType)
+		if #targets == 0 then
+			self:SetKeywordColorsStatus("No " .. (scopeType == "view" and "tabs" or "sources") .. " are available yet.", "warning")
+			return
+		end
+		local index = 1
+		if group.scopeType == scopeType then
+			for targetIndex, target in ipairs(targets) do
+				if target.id == group.scopeId then index = targetIndex break end
+			end
+		end
+		if step then index = ((index - 1 + step) % #targets) + 1 end
+		targetId = targets[index].id
+	end
+	local ok, applied = pcall(addon.SetKeywordColorGroupScope, addon, group.id, scopeType, targetId)
+	if not ok or not applied then
+		self:SetKeywordColorsStatus("Could not update this group's highlight scope.", "warning")
+		return
+	end
+	self:RefreshKeywordColorsPage(true)
+	self:SetKeywordColorsStatus("Highlight scope updated for " .. (group.label or group.id) .. ".", "success")
 end
 
 function Config:BeginKeywordColorGroupCreation()
@@ -11607,6 +11855,10 @@ local function getKeywordSuggestionSettings()
 	return {
 		enabled = settings.enabled == true,
 		threshold = threshold and math.max(1, math.floor(threshold + 0.5)) or nil,
+		retainQueue = settings.retainQueue ~= false,
+		queueCount = math.max(0, math.floor(tonumber(settings.queueCount) or 0)),
+		dismissedCount = math.max(0, math.floor(tonumber(settings.dismissedCount) or 0)),
+		observedTermCount = math.max(0, math.floor(tonumber(settings.observedTermCount) or 0)),
 	}
 end
 
@@ -11747,6 +11999,20 @@ function Config:CommitKeywordSuggestionThreshold()
 	self:RefreshKeywordSuggestionsPanel(true)
 end
 
+function Config:SetKeywordSuggestionQueueRetention(retain)
+	local called, changed, actual = callKeywordSuggestionAPI("SetKeywordSuggestionQueueRetention", retain and true or false)
+	if not called or changed == false then
+		self:SetKeywordSuggestionStatus("Could not change queue retention: " .. tostring(actual or "unavailable"), "danger")
+		self:RefreshKeywordSuggestionsPanel(true)
+		return false
+	end
+	self:SetKeywordSuggestionStatus(retain
+		and "Review items will stay saved after reload until you clear them."
+		or "Review items are now session-only; stored queue copies were removed.", "success")
+	self:RefreshKeywordSuggestionsPanel(true)
+	return true
+end
+
 function Config:AddSelectedKeywordSuggestion()
 	local candidates = getKeywordSuggestions()
 	local candidate = findKeywordSuggestion(candidates, self.selectedKeywordSuggestionId)
@@ -11794,6 +12060,30 @@ function Config:ClearKeywordSuggestions()
 	self.selectedKeywordSuggestionId = nil
 	self:SetKeywordSuggestionStatus("Reported candidates cleared. No message colors were changed.", "success")
 	self:RefreshKeywordSuggestionsPanel(true)
+end
+
+function Config:EraseKeywordSuggestionData()
+	if not self.pendingEraseKeywordSuggestionData then
+		self.pendingEraseKeywordSuggestionData = true
+		if self.keywordSuggestionEraseButton then
+			setTightButtonLabel(self.keywordSuggestionEraseButton, "CONFIRM ERASE")
+		end
+		self:SetKeywordSuggestionStatus("Click CONFIRM ERASE to remove queued samples and dismissed words. Color groups stay.", "warning")
+		return false
+	end
+	local called, cleared, reason = callKeywordSuggestionAPI("ClearKeywordSuggestionData")
+	if not called or cleared == false then
+		self:SetKeywordSuggestionStatus("Could not erase report data: " .. tostring(reason or "unavailable"), "danger")
+		return false
+	end
+	self.pendingEraseKeywordSuggestionData = false
+	if self.keywordSuggestionEraseButton then
+		setTightButtonLabel(self.keywordSuggestionEraseButton, "ERASE REPORT DATA")
+	end
+	self.selectedKeywordSuggestionId = nil
+	self:SetKeywordSuggestionStatus("Report queue, samples, and dismissed words erased. Color groups were kept.", "success")
+	self:RefreshKeywordSuggestionsPanel(true)
+	return true
 end
 
 function Config:SelectKeywordColorGroup(groupId)
@@ -12060,6 +12350,39 @@ function Config:RefreshKeywordColorsPage(keepStatus)
 	setShown(self.keywordColorDefaultButton, not drafting)
 	setShown(self.keywordColorResetBuiltInsButton, not drafting)
 	setShown(self.keywordColorDeleteGroupButton, not drafting and selectedGroup.custom == true)
+	local scopeType = selectedGroup.scopeType == "source" and "source"
+		or (selectedGroup.scopeType == "view" and "view" or "all")
+	self.keywordColorScopeType = scopeType
+	if self.keywordColorScopeModeButtons then
+		for _, button in ipairs(self.keywordColorScopeModeButtons) do
+			local active = button.scopeType == scopeType
+			button:SetTheme(active and "accentSoft" or "surface",
+				active and "gold" or "borderMuted", active and "goldBright" or "text")
+		end
+	end
+	local targetLabel = "Highlights in every chat source and tab."
+	local targetPosition = ""
+	if scopeType ~= "all" then
+		local targets = self:GetKeywordColorScopeTargets(scopeType)
+		targetLabel = "Previously selected " .. scopeType
+		for index, target in ipairs(targets) do
+			if target.id == selectedGroup.scopeId then
+				targetPosition = index .. " / " .. #targets .. "   "
+				targetLabel = target.label
+				break
+			end
+		end
+	end
+	setShown(self.keywordColorScopeTargetTitle, not drafting and scopeType ~= "all")
+	setShown(self.keywordColorScopePrevious, not drafting and scopeType ~= "all")
+	setShown(self.keywordColorScopeNext, not drafting and scopeType ~= "all")
+	if self.keywordColorScopeTargetLabel then self.keywordColorScopeTargetLabel:SetText(targetLabel) end
+	if self.keywordColorScopeTargetId then
+		local id = tostring(selectedGroup.scopeId or "not selected")
+		if #id > 44 then id = string.sub(id, 1, 41) .. "..." end
+		self.keywordColorScopeTargetId:SetText(scopeType == "all" and ""
+			or (targetPosition .. "ID: " .. id))
+	end
 	self:SetKeywordColorInspectorSection(self.keywordColorInspectorSection)
 	if not keepStatus then
 		if drafting then
@@ -12083,6 +12406,12 @@ function Config:SetKeywordSuggestionsSection(section)
 	if section ~= "settings" and section ~= "more" then
 		section = "review"
 	end
+	if section ~= "more" and self.pendingEraseKeywordSuggestionData then
+		self.pendingEraseKeywordSuggestionData = false
+		if self.keywordSuggestionEraseButton then
+			setTightButtonLabel(self.keywordSuggestionEraseButton, "ERASE REPORT DATA")
+		end
+	end
 	self.keywordSuggestionSection = section
 	local panes = {
 		review = self.keywordSuggestionReviewPane,
@@ -12094,9 +12423,9 @@ function Config:SetKeywordSuggestionsSection(section)
 			if id == section then pane:Show() else pane:Hide() end
 		end
 	end
-	setTabStyle(self.keywordSuggestionReviewButton, section == "review")
-	setTabStyle(self.keywordSuggestionSettingsButton, section == "settings")
-	setTabStyle(self.keywordSuggestionMoreButton, section == "more")
+	setTabStyle(self.keywordSuggestionReviewButton, section == "review", "keywords/3-suggestions", 1)
+	setTabStyle(self.keywordSuggestionSettingsButton, section == "settings", "keywords/3-suggestions", 2)
+	setTabStyle(self.keywordSuggestionMoreButton, section == "more", "keywords/3-suggestions", 3)
 end
 
 function Config:RefreshKeywordSuggestionsPanel(keepStatus)
@@ -12122,6 +12451,7 @@ function Config:RefreshKeywordSuggestionsPanel(keepStatus)
 	local settings = getKeywordSuggestionSettings()
 	local canSetEnabled = type(addon.SetKeywordSuggestionsEnabled) == "function"
 	local canSetThreshold = type(addon.SetKeywordSuggestionThreshold) == "function"
+	local canSetRetention = type(addon.SetKeywordSuggestionQueueRetention) == "function"
 	if self.keywordSuggestionTrackingToggle then
 		if settings then
 			self.keywordSuggestionTrackingToggle:SetValue(settings.enabled, true)
@@ -12147,6 +12477,30 @@ function Config:RefreshKeywordSuggestionsPanel(keepStatus)
 		self.keywordSuggestionSettingsNote:SetText(settings
 			and "REPORT ONLY - candidates never recolor chat until you add them."
 			or "REPORT ONLY - reporting settings are unavailable in this build.")
+	end
+	if self.keywordSuggestionRetainButton and self.keywordSuggestionSessionButton then
+		setChoiceStyle(self.keywordSuggestionRetainButton, settings and settings.retainQueue)
+		setChoiceStyle(self.keywordSuggestionSessionButton, settings and not settings.retainQueue)
+		self:SetKeywordSuggestionControlEnabled(self.keywordSuggestionRetainButton, settings and canSetRetention)
+		self:SetKeywordSuggestionControlEnabled(self.keywordSuggestionSessionButton, settings and canSetRetention)
+	end
+	if self.keywordSuggestionRetentionNote then
+		self.keywordSuggestionRetentionNote:SetText(settings and (settings.retainQueue
+			and "Review words, counts, source, and a short chat sample stay saved until cleared."
+			or "Review items and samples last only this session; dismissed words stay remembered.")
+			or "Queue retention controls are unavailable in this build.")
+	end
+	if self.keywordSuggestionDismissalNote then
+		self.keywordSuggestionDismissalNote:SetText(settings
+			and ("DISMISSED WORDS  " .. settings.dismissedCount .. " saved (up to 96). Unreviewed sightings stay in memory only.")
+			or "Unreviewed sightings stay in memory only.")
+	end
+	if self.keywordSuggestionStorageSummary then
+		self.keywordSuggestionStorageSummary:SetText(settings and (settings.retainQueue
+			and ("SAVED  " .. settings.queueCount .. " queued with samples  |  " .. settings.dismissedCount .. " dismissed")
+			or ("SAVED  " .. settings.dismissedCount .. " dismissed  |  THIS SESSION  " .. settings.queueCount .. " queued with samples"))
+			.. "  |  MEMORY  " .. settings.observedTermCount .. " learning terms"
+			or "Stored report counts are unavailable in this build.")
 	end
 
 	local candidates = getKeywordSuggestions()
@@ -12246,7 +12600,12 @@ function Config:RefreshKeywordSuggestionsPanel(keepStatus)
 	local canAdd = selected ~= nil and selectedTarget ~= nil and type(addon.AddKeywordSuggestionToGroup) == "function"
 	self:SetKeywordSuggestionControlEnabled(self.keywordSuggestionAddButton, canAdd)
 	self:SetKeywordSuggestionControlEnabled(self.keywordSuggestionDismissButton, selected ~= nil and type(addon.DismissKeywordSuggestion) == "function")
-	self:SetKeywordSuggestionControlEnabled(self.keywordSuggestionClearButton, #candidates > 0 and type(addon.ClearKeywordSuggestions) == "function")
+	self:SetKeywordSuggestionControlEnabled(self.keywordSuggestionClearButton,
+		(#candidates > 0 or (settings and settings.observedTermCount > 0))
+		and type(addon.ClearKeywordSuggestions) == "function")
+	self:SetKeywordSuggestionControlEnabled(self.keywordSuggestionEraseButton,
+		(#candidates > 0 or (settings and (settings.dismissedCount > 0 or settings.observedTermCount > 0)))
+		and type(addon.ClearKeywordSuggestionData) == "function")
 	if not keepStatus then
 		self:SetKeywordSuggestionStatus(#candidates == 0
 			and "No candidates are waiting for review."
@@ -12268,10 +12627,10 @@ function Config:SetKeywordColorsSection(section)
 		if section == "suggestions" then self.keywordSuggestionsPanel:Show() else self.keywordSuggestionsPanel:Hide() end
 	end
 	if self.keywordColorGroupsSectionButton then
-		setTabStyle(self.keywordColorGroupsSectionButton, section == "colors")
+		setTabStyle(self.keywordColorGroupsSectionButton, section == "colors", "keywords/1-main", 1)
 	end
 	if self.keywordSuggestionsSectionButton then
-		setTabStyle(self.keywordSuggestionsSectionButton, section == "suggestions")
+		setTabStyle(self.keywordSuggestionsSectionButton, section == "suggestions", "keywords/1-main", 2)
 	end
 	if section == "suggestions" then
 		self:RefreshKeywordSuggestionsPanel(true)
@@ -12401,6 +12760,12 @@ function Config:BuildKeywordColorsPage()
 		Config:SetKeywordColorInspectorSection("color")
 	end)
 	setActionStyle(self.keywordColorInspectorColorButton, "quiet", "Color", "Choose the shared color or restore this group.")
+	self.keywordColorInspectorScopeButton = Theme:CreateTightButton(colorsPanel, "SCOPE", 20, false)
+	self.keywordColorInspectorScopeButton:SetPoint("LEFT", self.keywordColorInspectorColorButton, "RIGHT", CONTROL_GAP, 0)
+	self.keywordColorInspectorScopeButton:SetScript("OnClick", function()
+		Config:SetKeywordColorInspectorSection("scope")
+	end)
+	setActionStyle(self.keywordColorInspectorScopeButton, "quiet", "Scope", "Advanced: limit these highlights to one source or one displayed tab.")
 
 	local wordsPane = CreateFrame("Frame", nil, colorsPanel)
 	setFixedBounds(wordsPane, colorsPanel, inspectorLeft, 94, inspectorWidth, 330)
@@ -12409,6 +12774,59 @@ function Config:BuildKeywordColorsPage()
 	setFixedBounds(colorPane, colorsPanel, inspectorLeft, 94, inspectorWidth, 330)
 	colorPane:Hide()
 	self.keywordColorInspectorColorPane = colorPane
+	local scopePane = CreateFrame("Frame", nil, colorsPanel)
+	setFixedBounds(scopePane, colorsPanel, inspectorLeft, 94, inspectorWidth, 330)
+	scopePane:Hide()
+	self.keywordColorInspectorScopePane = scopePane
+	local scopeTitle = Theme:CreateText(scopePane, "GameFontNormalSmall", "gold")
+	scopeTitle:SetPoint("TOPLEFT", scopePane, "TOPLEFT", 0, -4)
+	scopeTitle:SetText("WHERE THESE WORDS LIGHT UP")
+	local scopeIntro = Theme:CreateText(scopePane, "GameFontHighlightSmall", "textMuted")
+	scopeIntro:SetPoint("TOPLEFT", scopePane, "TOPLEFT", 0, -28)
+	scopeIntro:SetSize(inspectorWidth - 8, 34)
+	scopeIntro:SetJustifyH("LEFT")
+	scopeIntro:SetText("Normally these words highlight everywhere. Limit them only if the same word means different things in different chats.")
+	self.keywordColorScopeModeButtons = {}
+	for index, option in ipairs({
+		{ id = "all", label = "EVERYWHERE" },
+		{ id = "source", label = "ONE SOURCE" },
+		{ id = "view", label = "ONE TAB" },
+	}) do
+		local button = Theme:CreateTightButton(scopePane, option.label, 20, false)
+		button:SetPoint("TOPLEFT", scopePane, "TOPLEFT", (index - 1) * 112, -78)
+		button:SetWidth(106)
+		button.scopeType = option.id
+		button:SetScript("OnClick", function(self)
+			Config:ApplySelectedKeywordColorScope(self.scopeType)
+		end)
+		self.keywordColorScopeModeButtons[index] = button
+	end
+	self.keywordColorScopeTargetTitle = Theme:CreateText(scopePane, "GameFontNormalSmall", "gold")
+	self.keywordColorScopeTargetTitle:SetPoint("TOPLEFT", scopePane, "TOPLEFT", 0, -124)
+	self.keywordColorScopeTargetTitle:SetText("CHOOSE ONE SOURCE OR TAB")
+	self.keywordColorScopePrevious = Theme:CreateTightButton(scopePane, "<", 20, false)
+	self.keywordColorScopePrevious:SetPoint("TOPLEFT", scopePane, "TOPLEFT", 0, -148)
+	self.keywordColorScopePrevious:SetScript("OnClick", function()
+		Config:ApplySelectedKeywordColorScope(Config.keywordColorScopeType, -1)
+	end)
+	self.keywordColorScopeTargetLabel = Theme:CreateText(scopePane, "GameFontHighlightSmall", "text")
+	self.keywordColorScopeTargetLabel:SetPoint("LEFT", self.keywordColorScopePrevious, "RIGHT", 10, 0)
+	self.keywordColorScopeTargetLabel:SetWidth(inspectorWidth - 76)
+	self.keywordColorScopeTargetLabel:SetJustifyH("CENTER")
+	self.keywordColorScopeNext = Theme:CreateTightButton(scopePane, ">", 20, false)
+	self.keywordColorScopeNext:SetPoint("TOPRIGHT", scopePane, "TOPRIGHT", 0, -148)
+	self.keywordColorScopeNext:SetScript("OnClick", function()
+		Config:ApplySelectedKeywordColorScope(Config.keywordColorScopeType, 1)
+	end)
+	self.keywordColorScopeTargetId = Theme:CreateText(scopePane, "GameFontHighlightSmall", "textMuted")
+	self.keywordColorScopeTargetId:SetPoint("TOPLEFT", scopePane, "TOPLEFT", 0, -181)
+	self.keywordColorScopeTargetId:SetWidth(inspectorWidth - 8)
+	self.keywordColorScopeTargetId:SetJustifyH("LEFT")
+	local scopeDetail = Theme:CreateText(scopePane, "GameFontHighlightSmall", "textMuted")
+	scopeDetail:SetPoint("TOPLEFT", scopePane, "TOPLEFT", 0, -229)
+	scopeDetail:SetSize(inspectorWidth - 8, 44)
+	scopeDetail:SetJustifyH("LEFT")
+	scopeDetail:SetText("A source is where a message came from. A tab is where you read it, even if that message also appears in another tab.")
 
 	local wordsTitle = Theme:CreateText(wordsPane, "GameFontNormalSmall", "gold")
 	wordsTitle:SetPoint("TOPLEFT", wordsPane, "TOPLEFT", 0, -4)
@@ -12748,6 +13166,29 @@ function Config:BuildKeywordColorsPage()
 	self.keywordSuggestionSettingsNote:SetPoint("TOPLEFT", settingsPane, "TOPLEFT", 0, -88)
 	self.keywordSuggestionSettingsNote:SetWidth(PAGE_WIDTH)
 	self.keywordSuggestionSettingsNote:SetJustifyH("LEFT")
+	local retentionTitle = Theme:CreateText(settingsPane, "GameFontNormalSmall", "gold")
+	retentionTitle:SetPoint("TOPLEFT", settingsPane, "TOPLEFT", 0, -126)
+	retentionTitle:SetText("KEEP REVIEW ITEMS AFTER RELOAD?")
+	self.keywordSuggestionRetainButton = Theme:CreateTightButton(settingsPane, "KEEP SAVED", 22, false)
+	self.keywordSuggestionRetainButton:SetPoint("TOPLEFT", settingsPane, "TOPLEFT", 0, -148)
+	self.keywordSuggestionRetainButton:SetScript("OnClick", function()
+		Config:SetKeywordSuggestionQueueRetention(true)
+	end)
+	setActionStyle(self.keywordSuggestionRetainButton, "choice", "Keep review items", "Save queued words and short samples across UI reloads until you clear them.")
+	self.keywordSuggestionSessionButton = Theme:CreateTightButton(settingsPane, "THIS SESSION ONLY", 22, false)
+	self.keywordSuggestionSessionButton:SetPoint("LEFT", self.keywordSuggestionRetainButton, "RIGHT", CONTROL_GAP, 0)
+	self.keywordSuggestionSessionButton:SetScript("OnClick", function()
+		Config:SetKeywordSuggestionQueueRetention(false)
+	end)
+	setActionStyle(self.keywordSuggestionSessionButton, "choice", "Session-only review", "Keep the review queue in memory. Stored queue copies are removed now; items disappear on reload.")
+	self.keywordSuggestionRetentionNote = Theme:CreateText(settingsPane, "GameFontHighlightSmall", "textMuted")
+	self.keywordSuggestionRetentionNote:SetPoint("TOPLEFT", settingsPane, "TOPLEFT", 0, -185)
+	self.keywordSuggestionRetentionNote:SetSize(PAGE_WIDTH, 30)
+	self.keywordSuggestionRetentionNote:SetJustifyH("LEFT")
+	self.keywordSuggestionDismissalNote = Theme:CreateText(settingsPane, "GameFontHighlightSmall", "textMuted")
+	self.keywordSuggestionDismissalNote:SetPoint("TOPLEFT", settingsPane, "TOPLEFT", 0, -227)
+	self.keywordSuggestionDismissalNote:SetSize(PAGE_WIDTH, 30)
+	self.keywordSuggestionDismissalNote:SetJustifyH("LEFT")
 
 	local moreTitle = Theme:CreateText(morePane, "GameFontNormalSmall", "gold")
 	moreTitle:SetPoint("TOPLEFT", morePane, "TOPLEFT", 0, -4)
@@ -12756,13 +13197,32 @@ function Config:BuildKeywordColorsPage()
 	moreDetail:SetPoint("TOPLEFT", morePane, "TOPLEFT", 0, -28)
 	moreDetail:SetWidth(PAGE_WIDTH)
 	moreDetail:SetJustifyH("LEFT")
-	moreDetail:SetText("Clearing the review queue does not remove words from a group or change any message color.")
-	self.keywordSuggestionClearButton = Theme:CreateTightButton(morePane, "CLEAR REVIEW QUEUE", 20, false)
+	moreDetail:SetText("Choose what to remove. Neither action deletes your color groups.")
+	self.keywordSuggestionClearButton = Theme:CreateTightButton(morePane, "CLEAR QUEUE", 20, false)
 	self.keywordSuggestionClearButton:SetPoint("TOPLEFT", morePane, "TOPLEFT", 0, -62)
 	self.keywordSuggestionClearButton:SetScript("OnClick", function()
 		Config:ClearKeywordSuggestions()
 	end)
-	setActionStyle(self.keywordSuggestionClearButton, "danger", "Clear review queue", "Remove every reported candidate. Configured color groups remain unchanged.")
+	setActionStyle(self.keywordSuggestionClearButton, "quiet", "Clear current queue", "Remove queued words, samples, and in-session sightings. Dismissed words stay remembered; color groups stay unchanged.")
+	local clearDetail = Theme:CreateText(morePane, "GameFontHighlightSmall", "textMuted")
+	clearDetail:SetPoint("TOPLEFT", morePane, "TOPLEFT", 0, -88)
+	clearDetail:SetSize(PAGE_WIDTH, 16)
+	clearDetail:SetText("Also restarts in-session counts. Dismissed words stay remembered.")
+	self.keywordSuggestionEraseButton = Theme:CreateTightButton(morePane, "ERASE REPORT DATA", 20, false)
+	self.keywordSuggestionEraseButton:SetPoint("TOPLEFT", morePane, "TOPLEFT", 0, -108)
+	self.keywordSuggestionEraseButton:SetScript("OnClick", function()
+		Config:EraseKeywordSuggestionData()
+	end)
+	setActionStyle(self.keywordSuggestionEraseButton, "danger", "Erase saved report data", "Confirm to remove queued samples, dismissed words, and in-session sightings. Color groups are kept.")
+	local eraseDetail = Theme:CreateText(morePane, "GameFontHighlightSmall", "textMuted")
+	eraseDetail:SetPoint("TOPLEFT", morePane, "TOPLEFT", 0, -142)
+	eraseDetail:SetSize(PAGE_WIDTH, 30)
+	eraseDetail:SetJustifyH("LEFT")
+	eraseDetail:SetText("ERASE REPORT DATA also forgets dismissed words, so they may be suggested again later.")
+	self.keywordSuggestionStorageSummary = Theme:CreateText(morePane, "GameFontHighlightSmall", "gold")
+	self.keywordSuggestionStorageSummary:SetPoint("TOPLEFT", morePane, "TOPLEFT", 0, -194)
+	self.keywordSuggestionStorageSummary:SetSize(PAGE_WIDTH, 22)
+	self.keywordSuggestionStorageSummary:SetJustifyH("LEFT")
 
 	self.keywordSuggestionStatus = Theme:CreateText(suggestionPanel, "GameFontHighlightSmall", "textMuted")
 	self.keywordSuggestionStatus:SetPoint("TOPLEFT", suggestionPanel, "TOPLEFT", PAGE_GUTTER, -450)
@@ -12959,7 +13419,7 @@ function Config:RefreshModulesPage(keepStatus)
 
 	for id, button in pairs(self.moduleFilterButtons or {}) do
 		local active = id == self.moduleFilter
-		setTabStyle(button, active)
+		setTabStyle(button, active, "modules/1-filter")
 	end
 	if self.moduleListTitle then
 		self.moduleListTitle:SetText(self.moduleFilter == "legacy" and "LEGACY COMPATIBILITY" or "CHAT FEATURES")
@@ -13592,7 +14052,7 @@ local deskTasks = {
 		},
 	},
 	deskTabs = {
-		title = "Choose Tabs", hint = "Show the tabs you use. Review new channels before adding their own tab.",
+		title = "Choose Tabs", hint = "Show the tabs you use. Hiding one keeps its messages; new channels need your approval.",
 		advanced = "views",
 	},
 	deskRoutes = {
@@ -13769,8 +14229,6 @@ local function getDeskTabOptions()
 			local key = view.key or label
 			result[#result + 1] = {
 				title = "Show " .. label .. " (" .. key .. ")",
-				does = "Chatty keeps this tab in the channel rail when enabled.",
-				notices = "Turning it off hides the tab, not the messages Chatty already captured.",
 				get = function(s) return s.views[viewId] ~= false end,
 				set = function(value) Config:SetViewVisibility(viewId, value) end,
 			}
@@ -13867,6 +14325,7 @@ end
 function Config:RefreshDeskPage()
 	if not self.deskPage then return end
 	local taskId = self.deskTask or "desk"
+	self.deskRecoveryStatus = nil
 	local task = deskTasks[taskId] or deskTasks.desk
 	local settings = addon:GetSmartSettings()
 	local options = taskId == "deskTabs" and getDeskTabOptions() or task.options
@@ -13893,8 +14352,18 @@ function Config:RefreshDeskPage()
 		if option then
 			row.toggle.label:SetText(option.title)
 			row.toggle:SetValue(option.get(settings), true)
-			row.does:SetText("CHATTY DOES  " .. option.does)
-			row.notices:SetText("YOU'LL NOTICE  " .. option.notices)
+			if row.toggle.SetTooltip then
+				row.toggle:SetTooltip(option.title, taskId == "deskTabs" and task.hint
+					or (option.does .. " " .. option.notices))
+			end
+			if taskId == "deskTabs" then
+				row.does:Hide()
+				row.notices:Hide()
+			else
+				row.does:SetText(option.notices)
+				row.does:Show()
+				row.notices:Hide()
+			end
 			row:Show()
 		else
 			row:Hide()
@@ -13950,17 +14419,27 @@ function Config:RefreshDeskPage()
 	applyDeskPreviewAppearance(self, settings, taskId)
 	local deskNote = "Changes apply immediately. These examples show the effect of your current choices, not actual chat messages."
 	if taskId == "desk" then
-		deskNote = "For restricted lines, Chatty tries to reveal Blizzard chat briefly. Some lines can still be missed; saved history cannot recreate lines never received."
+		deskNote = "For restricted lines, Chatty tries to reveal Blizzard chat. Some lines can still be missed; saved history cannot recreate lines never received."
 		local recovery = addon.ChatRecovery
 		if recovery and type(recovery.GetStatus) == "function" then
 			local ok, status = pcall(recovery.GetStatus, recovery)
 			if ok and type(status) == "table" then
+				self.deskRecoveryStatus = status
 				local failed = tonumber(status.fallbackFailed) or (status.fallbackFailed and 1 or 0)
-				deskNote = string.format("CATCH-UP  %d restored / %d waiting / %d unresolved / %d fallback failures\nBlizzard chat briefly appears for restricted lines; unseen lines cannot be restored.",
+				local guidance = "Chatty tries to show Blizzard chat for restricted lines; unseen lines cannot be restored."
+				if failed > 0 then
+					guidance = guidance .. " It could not be shown now; choose SHOW BLIZZARD CHAT when restrictions lift."
+				elseif (tonumber(status.pending) or 0) > 0 then
+					guidance = guidance .. (status.lockdown and " Wait until chat restrictions lift, then check again."
+						or " Choose TRY CATCH-UP NOW to retry readable lines.")
+				elseif (tonumber(status.unresolved) or 0) > 0 then
+					guidance = guidance .. " Check Blizzard chat for those lines; Chatty cannot recreate missing text."
+				end
+				deskNote = string.format("CATCH-UP  %d restored / %d waiting / %d unresolved / %d fallback failures\n%s",
 					math.max(0, tonumber(status.recovered) or 0),
 					math.max(0, tonumber(status.pending) or 0),
 					math.max(0, tonumber(status.unresolved) or 0),
-					math.max(0, failed))
+					math.max(0, failed), guidance)
 			end
 		end
 	end
@@ -13988,24 +14467,39 @@ function Config:RefreshDeskPage()
 			placeDeskTopLeft(row, self.deskPage, PAGE_GUTTER, rowTop)
 			local toggleHeight = math.max(20, measureDeskText(row.toggle.label, 18) + 2)
 			row.toggle:SetHeight(toggleHeight)
-			local doesTop = 8 + toggleHeight + 7
-			placeDeskTopLeft(row.does, row, 26, doesTop)
-			local doesHeight = measureDeskText(row.does, 16)
-			local noticesTop = doesTop + doesHeight + 3
-			placeDeskTopLeft(row.notices, row, 26, noticesTop)
-			local noticesHeight = measureDeskText(row.notices, 16)
-			local rowHeight = math.max(70, noticesTop + noticesHeight + 9)
+			local rowHeight
+			if taskId == "deskTabs" then
+				rowHeight = math.max(38, 8 + toggleHeight + 10)
+			else
+				local doesTop = 8 + toggleHeight + 7
+				placeDeskTopLeft(row.does, row, 26, doesTop)
+				local doesHeight = measureDeskText(row.does, 16)
+				rowHeight = math.max(54, doesTop + doesHeight + 9)
+			end
 			row:SetHeight(rowHeight)
 			rowTop = rowTop + rowHeight + 4
 		end
 	end
 	self.deskAdvancedButton:SetLabel("MORE " .. (task.advanced == "colorways" and "THEMES" or "OPTIONS"))
 	if self.deskReviewButton then
-		if taskId == "deskPrivate" then
+		if taskId == "desk" and self.deskRecoveryStatus
+			and (self.deskRecoveryStatus.fallbackFailed == true
+				or (tonumber(self.deskRecoveryStatus.pending) or 0) > 0) then
+			local failed = self.deskRecoveryStatus.fallbackFailed == true
+			self.deskReviewButton:SetLabel(failed and "SHOW BLIZZARD CHAT" or "TRY CATCH-UP NOW")
+			setControlTooltip(self.deskReviewButton, failed and "Retry Blizzard chat safety view" or "Retry readable chat lines",
+				failed and "Try showing Blizzard chat again after restrictions lift. It may still be unavailable during lockdown; this never changes saved history."
+					or "Check waiting line IDs now. Chatty never reads secret text during lockdown, and lines the client no longer exposes cannot be recovered.")
+			self.deskReviewButton:Show()
+		elseif taskId == "deskPrivate" then
 			self.deskReviewButton:SetLabel("REVIEW HELD WHISPERS")
+			setControlTooltip(self.deskReviewButton, "Review held whispers",
+				"Open the private review list. Held stranger messages are not printed into regular chat.")
 			self.deskReviewButton:Show()
 		elseif taskId == "deskSpam" then
 			self.deskReviewButton:SetLabel("REVIEW BLOCKED")
+			setControlTooltip(self.deskReviewButton, "Review blocked messages",
+				"Open the separate archive for messages hidden by Block Rules or the Spam Firewall.")
 			self.deskReviewButton:Show()
 		elseif taskId == "deskTabs" then
 			local pending = 0
@@ -14067,6 +14561,7 @@ function Config:BuildDeskPage()
 		local column = (index - 1) % 4
 		local row = math.floor((index - 1) / 4)
 		button:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER + column * 160, -55 - row * 28)
+		self:FitFixedButtonLabel(button, 154)
 		setActionStyle(button, "choice", deskTasks[taskId].title, deskTasks[taskId].hint)
 		button:SetScript("OnClick", function() Config:ShowPage(taskId) end)
 		self.deskSteps[index] = button
@@ -14078,7 +14573,7 @@ function Config:BuildDeskPage()
 	self.deskTranscript = transcript
 	local transcriptLabel = Theme:CreateText(transcript, "GameFontNormalSmall", "gold")
 	transcriptLabel:SetPoint("TOPLEFT", transcript, "TOPLEFT", 10, -8)
-	transcriptLabel:SetText("SETTING PREVIEW  /  EXAMPLE CHAT")
+	transcriptLabel:SetText("EXAMPLE CHAT")
 	self.deskPreviewFirst = Theme:CreateText(transcript, "GameFontHighlightSmall", "text")
 	self.deskPreviewFirst:SetPoint("TOPLEFT", transcript, "TOPLEFT", 10, -29)
 	self.deskPreviewFirst:SetWidth(PAGE_WIDTH - 20)
@@ -14181,6 +14676,18 @@ function Config:BuildDeskPage()
 	self.deskReviewButton:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -438)
 	self.deskReviewButton:SetScript("OnClick", function()
 		local taskId = Config.deskTask
+		if taskId == "desk" then
+			local recovery, status = addon.ChatRecovery, Config.deskRecoveryStatus
+			if recovery and status then
+				if status.fallbackFailed == true and type(recovery.TryShowNativeChat) == "function" then
+					recovery:TryShowNativeChat()
+				elseif (tonumber(status.pending) or 0) > 0 and type(recovery.RetryNow) == "function" then
+					recovery:RetryNow()
+				end
+			end
+			Config:RefreshDeskPage()
+			return
+		end
 		Config:SetMode("advanced")
 		if taskId == "deskPrivate" then
 			Config:ShowPage("messenger")
@@ -14223,6 +14730,7 @@ local builders = {
 }
 
 function Config:ShowPage(id)
+	self:ReleaseKeyboardTab()
 	if deskTaskIds[id] then
 		self.deskTask = id
 		if self:GetMode() ~= "simple" then
@@ -14399,6 +14907,8 @@ function Config:ReloadProfile()
 	if not self.frame then
 		return
 	end
+	self:ReleaseKeyboardTab()
+	self.keyboardTabs = setmetatable({}, { __mode = "k" })
 	if self.dockMarkerPreviewActive then
 		if type(addon.SetNewMessageIndicatorPreviewActive) == "function" then
 			callMarkerAppearanceAPI("SetNewMessageIndicatorPreviewActive", false)
@@ -14669,6 +15179,10 @@ function Config:ReloadProfile()
 	self.keywordSuggestionThresholdLabel = nil
 	self.keywordSuggestionThresholdEdit = nil
 	self.keywordSuggestionSettingsNote = nil
+	self.keywordSuggestionRetainButton = nil
+	self.keywordSuggestionSessionButton = nil
+	self.keywordSuggestionRetentionNote = nil
+	self.keywordSuggestionDismissalNote = nil
 	self.keywordSuggestionRows = nil
 	self.keywordSuggestionCount = nil
 	self.keywordSuggestionPrevious = nil
@@ -14684,7 +15198,10 @@ function Config:ReloadProfile()
 	self.keywordSuggestionAddButton = nil
 	self.keywordSuggestionDismissButton = nil
 	self.keywordSuggestionClearButton = nil
+	self.keywordSuggestionEraseButton = nil
+	self.keywordSuggestionStorageSummary = nil
 	self.keywordSuggestionStatus = nil
+	self.pendingEraseKeywordSuggestionData = nil
 	self.selectedKeywordColorGroupId = nil
 	self.keywordColorGroupDraft = nil
 	self.keywordColorGroupPage = nil
@@ -15154,6 +15671,29 @@ function Config:BuildFrame()
 	frame:SetMovable(true)
 	if frame.SetClampedToScreen then frame:SetClampedToScreen(true) end
 	frame:EnableMouse(true)
+	-- A tab click opts into keyboard navigation; no root keyboard listener runs
+	-- while the settings window is merely open. Propagation is armed before
+	-- keyboard capture and restored after each key to fail open for game binds.
+	if frame.SetPropagateKeyboardInput and frame.EnableKeyboard then
+		frame:SetScript("OnKeyDown", function(self, key)
+			if not pcall(self.SetPropagateKeyboardInput, self, true) then
+				Config:ReleaseKeyboardTab()
+				return
+			end
+			local ok, err = pcall(Config.HandleKeyboardTabKey, Config, key)
+			if not ok then
+				-- A page's OnClick can fail; never leave keyboard propagation off.
+				Config:ReleaseKeyboardTab()
+				if type(geterrorhandler) == "function" then
+					local handlerOk, handler = pcall(geterrorhandler)
+					if handlerOk and type(handler) == "function" then pcall(handler, err) end
+				end
+			end
+		end)
+		frame:SetScript("OnKeyUp", function(self)
+			pcall(self.SetPropagateKeyboardInput, self, true)
+		end)
+	end
 	frame:RegisterForDrag("LeftButton")
 	frame:SetScript("OnDragStart", function(self)
 		self:StartMoving()
@@ -15180,6 +15720,7 @@ function Config:BuildFrame()
 	-- Placement preview is intentionally temporary. Closing the settings window
 	-- must never leave a synthetic NEW marker behind in normal play.
 	frame:HookScript("OnHide", function()
+		Config:ReleaseKeyboardTab()
 		Config.navigationDrawerOpen = false
 		if Config.dockMarkerPreviewActive then
 			Config:SetNewMessageIndicatorPreview(false)

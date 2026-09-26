@@ -37,6 +37,9 @@ recovery:Queue("CHAT_MSG_CHANNEL", secret, secret, nil, "General", nil,
 	nil, nil, 1, "General", nil, 42, secret)
 assert(nativeShown and recovery:GetStatus().pending == 1,
 	"restricted chat did not open the native safety fallback")
+local retryOK, retryReason = recovery:RetryNow()
+assert(not retryOK and retryReason == "chat-restricted" and recovery:GetStatus().lockdown,
+	"manual recovery must refuse secret chat text during lockdown")
 assert(recovery.pending[1].arguments[1] == nil
 	and recovery.pending[1].arguments[2] == nil
 	and recovery.pending[1].arguments[12] == nil,
@@ -59,6 +62,16 @@ assert(ChattyChattyBangBang.Diagnostics.db.chatRecovery.session == 7
 	and ChattyChattyBangBang.Diagnostics.db.chatRecovery.recovered == 1,
 	"reload diagnostics lost the catch-up outcome")
 
+fallbackFails = true
+recovery:Queue("CHAT_MSG_CHANNEL", secret, secret, nil, "General", nil,
+	nil, nil, 1, "General", nil, 42, secret)
+assert(recovery:GetStatus().fallbackFailed, "failed safety reveal was not visible")
+recovery:Flush()
+assert(recovery:GetStatus().pending == 0 and recovery:GetStatus().unresolved == 0
+	and not recovery:GetStatus().fallbackFailed,
+	"finished catch-up retained a stale fallback failure with no recovery need")
+fallbackFails = false
+
 recovery:Queue("CHAT_MSG_WHISPER", secret, secret, nil, nil, nil,
 	nil, nil, nil, nil, nil, nil)
 assert(recovery:GetStatus().unresolved == 1 and nativeShown,
@@ -67,6 +80,25 @@ fallbackFails = true
 recovery:Queue("CHAT_MSG_WHISPER", secret, secret)
 assert(recovery:GetStatus().unresolved == 2 and recovery:GetStatus().fallbackFailed,
 	"failed native fallback was not recorded before shutdown")
+local showOK, showReason = recovery:TryShowNativeChat()
+assert(not showOK and showReason == "native-unavailable"
+	and recovery:GetStatus().fallbackFailed,
+	"manual safety-view action falsely claimed Blizzard chat was shown")
+fallbackFails = false
+showOK, showReason = recovery:TryShowNativeChat()
+assert(showOK and showReason == "native-shown" and nativeShown
+	and not recovery:GetStatus().fallbackFailed,
+	"manual safety-view retry did not reveal Blizzard chat and clear the failure")
+recovery:Queue("CHAT_MSG_CHANNEL", secret, secret, nil, "General", nil,
+	nil, nil, 1, "General", nil, 99, secret)
+retryOK = recovery:RetryNow()
+assert(retryOK and recovery:GetStatus().pending == 1 and nativeShown,
+	"manual catch-up should safely retry a still-unavailable line without hiding Blizzard chat")
+local stored = ChattyChattyBangBang.Diagnostics.db.chatRecovery
+for key, value in pairs(stored) do
+	assert(key ~= "text" and key ~= "sender" and key ~= "arguments"
+		and type(value) ~= "table", "recovery diagnostics stored message bodies or raw payloads")
+end
 recovery:Stop()
 assert(not nativeShown, "stopping capture did not release native fallback")
 assert(recovery:GetStatus().pending == 0 and recovery:GetStatus().unresolved == 0
@@ -74,4 +106,9 @@ assert(recovery:GetStatus().pending == 0 and recovery:GetStatus().unresolved == 
 	"stopping capture left a stale unresolved or fallback-failure state")
 assert(ChattyChattyBangBang.Diagnostics.db.chatRecovery.unresolved == 0,
 	"shutdown diagnostics retained an unresolved line after capture stopped")
+retryOK, retryReason = recovery:RetryNow()
+showOK, showReason = recovery:TryShowNativeChat()
+assert(not retryOK and retryReason == "nothing-waiting"
+	and not showOK and showReason == "no-recovery-need" and not nativeShown,
+	"manual actions must not turn native chat on without an active recovery need")
 print("ChatRecovery mock tests passed")

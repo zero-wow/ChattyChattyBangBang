@@ -4,6 +4,14 @@ dofile("Tests/MessageViewsConfig.mock.lua")
 
 local addon = ChattyChattyBangBang
 local config = addon.CustomConfig
+local createCompactToggle = addon.Theme.CreateCompactToggle
+function addon.Theme:CreateCompactToggle(...)
+	local toggle = createCompactToggle(self, ...)
+	function toggle:SetTooltip(title, body)
+		self.tooltipTitle, self.tooltipBody = title, body
+	end
+	return toggle
+end
 local settings = addon:GetSmartSettings()
 settings.enabled = true
 settings.dock.hideNativeChat = true
@@ -37,8 +45,16 @@ end
 function addon:SetResponsiveMetadata(value) settings.dock.responsiveMetadata = value return true end
 function addon:SetNewMessageIndicatorEnabled(value) settings.dock.newMessages.enabled = value return true end
 function addon:SetSmartChatMessageBandsEnabled(value) settings.dock.messageBands.enabled = value return true end
+local recoveryStatus = { recovered = 2, pending = 1, unresolved = 3, fallbackFailed = false }
+local manualRetries, nativeRetries = 0, 0
 addon.ChatRecovery = {
-	GetStatus = function() return { recovered = 2, pending = 1, unresolved = 3, fallbackFailed = 0 } end,
+	GetStatus = function() return recoveryStatus end,
+	RetryNow = function() manualRetries = manualRetries + 1 return true, recoveryStatus end,
+	TryShowNativeChat = function()
+		nativeRetries = nativeRetries + 1
+		recoveryStatus.fallbackFailed = false
+		return true, "native-shown"
+	end,
 }
 local setupCompleted = false
 function addon:IsConfigSetupCompleted() return setupCompleted end
@@ -53,9 +69,33 @@ assert(config.modeButton.text:GetText() == "ADVANCED SETTINGS",
 assert(config.deskPreviewFirst:GetText():find("%[G%]", 1),
 	"the desk lost its transcript-style preview")
 assert(config.deskNote:GetText():find("2 restored / 1 waiting / 3 unresolved", 1, true)
-	and config.deskNote:GetText():find("Blizzard chat briefly appears", 1, true)
+	and config.deskNote:GetText():find("tries to show Blizzard chat", 1, true)
 	and config.deskNote:GetText():find("cannot be restored", 1, true),
 	"native catch-up status or no-guarantee caveat was not visible on Start Here")
+assert(config.deskReviewButton:IsShown()
+	and config.deskReviewButton.text:GetText() == "TRY CATCH-UP NOW",
+	"waiting recoverable lines did not offer a clear manual check")
+config.deskReviewButton.scripts.OnClick(config.deskReviewButton)
+assert(manualRetries == 1 and config.deskTask == "desk",
+	"manual check did not retry recovery in place")
+recoveryStatus.fallbackFailed = true
+config:RefreshDeskPage()
+assert(config.deskReviewButton.text:GetText() == "SHOW BLIZZARD CHAT"
+	and config.deskNote:GetText():find("could not be shown", 1, true),
+	"failed native fallback did not give a truthful safety action")
+assert(config.deskReviewButton.point[4] + config.deskReviewButton.width + 8
+	<= 652 - 8 - config.deskAdvancedButton.width,
+	"recovery action overlapped advanced navigation at the minimum page width")
+config.deskReviewButton.scripts.OnClick(config.deskReviewButton)
+assert(nativeRetries == 1 and recoveryStatus.fallbackFailed == false,
+	"Blizzard-chat action did not retry the native safety view")
+recoveryStatus.pending = 0
+config:RefreshDeskPage()
+assert(not config.deskReviewButton:IsShown()
+	and config.deskNote:GetText():find("Check Blizzard chat", 1, true),
+	"irretrievable lines offered a misleading retry action instead of guidance")
+recoveryStatus.pending = 1
+config:RefreshDeskPage()
 assert(#config.deskSteps == 7 and config.deskSteps[1].point[4] == 8
 	and -config.deskSteps[7].point[5] == -config.deskSteps[1].point[5] + 28,
 	"the seven setup steps were not visible as a compact progress map")
@@ -71,13 +111,21 @@ assert(-config.deskSteps[1].point[5] >= 29 + config.deskHint.height + 8
 assert(config.deskReviewButton.point[4] + config.deskReviewButton.width + 8
 	<= 652 - 8 - config.deskAdvancedButton.width,
 	"review and advanced actions overlap with the wide-font mock")
+for _, row in ipairs(config.deskRows) do
+	if row.option then
+		assert(row.does:IsShown() and not row.notices:IsShown()
+			and row.does:GetText() == row.option.notices
+			and row.toggle.tooltipBody:find(row.option.does, 1, true)
+			and row.toggle.tooltipBody:find(row.option.notices, 1, true),
+			"Simple settings lost a one-line outcome or hid its fuller explanation")
+	end
+end
 local previousBottom = -config.deskNote.point[5] + config.deskNote.height
 for index, row in ipairs(config.deskRows) do
 	if row.option then
 		local top = -row.point[5]
 		assert(top >= previousBottom + (index == 1 and 8 or 4) and row.width == 636
-			and row.toggle.point[4] == 6 and row.does.point[4] == 26
-			and row.notices.point[4] == 26,
+			and row.toggle.point[4] == 6 and row.does.point[4] == 26,
 			"setup option " .. index .. " lost its text or divider gutters")
 		previousBottom = top + row.height
 	end
@@ -127,7 +175,6 @@ config.deskPreviewFirst.GetStringHeight = function() return 50 end
 config.deskNote.GetStringHeight = function() return 58 end
 config.deskRows[1].toggle.label.GetStringHeight = function() return 54 end
 config.deskRows[1].does.GetStringHeight = function() return 44 end
-config.deskRows[1].notices.GetStringHeight = function() return 48 end
 config:RefreshDeskPage()
 assert(-config.deskSteps[1].point[5] > baselineStepsTop
 	and -config.deskTranscript.point[5] >= -config.deskSteps[7].point[5] + 22 + 8
@@ -135,7 +182,7 @@ assert(-config.deskSteps[1].point[5] > baselineStepsTop
 	and -config.deskNote.point[5] > baselineNoteTop
 	and config.deskRows[1].toggle.height >= 56
 	and -config.deskRows[1].does.point[5] >= 8 + config.deskRows[1].toggle.height + 7
-	and config.deskRows[1].height >= 160
+	and config.deskRows[1].height >= 8 + config.deskRows[1].toggle.height + 7 + 44 + 9
 	and -config.deskRows[2].point[5] >= -config.deskRows[1].point[5] + config.deskRows[1].height + 4
 	and config.content.height >= -config.deskNext.point[5] + config.deskNext.height + 14,
 	"wide-font preview, warning, and option text overlapped instead of growing the scrollable page")
@@ -144,7 +191,6 @@ config.deskPreviewFirst.GetStringHeight = nil
 config.deskNote.GetStringHeight = nil
 config.deskRows[1].toggle.label.GetStringHeight = nil
 config.deskRows[1].does.GetStringHeight = nil
-config.deskRows[1].notices.GetStringHeight = nil
 config:RefreshDeskPage()
 config.deskSteps[2].scripts.OnClick(config.deskSteps[2])
 assert(config.deskTask == "deskTabs", "setup progress map did not open its selected step")
@@ -155,6 +201,24 @@ addon.SmartDock = originalSmartDock
 config:ShowPage("deskTabs")
 assert(config.deskTask == "deskTabs" and config.deskRows[1].option,
 	"the Choose Tabs task did not load built-in tabs")
+assert(config.deskHint:GetText():find("Hiding one keeps its messages", 1, true),
+	"compact tab rows lost their shared history-safety explanation")
+for index, row in ipairs(config.deskRows) do
+	if row.option then
+		assert(not row.does:IsShown() and not row.notices:IsShown()
+			and row.height >= 8 + row.toggle.height + 10
+			and row.toggle.point[4] == 6 and row.toggle.width <= row.width - 12
+			and row.toggle.tooltipBody:find("Hiding one keeps its messages", 1, true),
+			"compact tab row " .. index .. " kept duplicate copy or lost its visible gutters")
+	end
+end
+config.deskRows[1].toggle.label.GetStringHeight = function() return 54 end
+config:RefreshDeskPage()
+assert(config.deskRows[1].height >= 8 + config.deskRows[1].toggle.height + 10
+	and -config.deskRows[2].point[5] >= -config.deskRows[1].point[5] + config.deskRows[1].height + 4,
+	"wide-font compact tab text overlapped the next row")
+config.deskRows[1].toggle.label.GetStringHeight = nil
+config:RefreshDeskPage()
 local firstTab = config.deskRows[1]
 local firstId = addon:GetSmartViews()[1].id
 firstTab.toggle:SetValue(false)
@@ -164,6 +228,9 @@ assert(settings.views[firstId] == false,
 config:ShowPage("deskSpam")
 assert(config.deskRows[2].toggle.checked == true,
 	"the repeat-sale-ad protection was not presented as enabled")
+assert(config.deskRows[1].does:IsShown() and not config.deskRows[1].notices:IsShown()
+	and config.deskRows[1].toggle.tooltipBody:find(config.deskRows[1].option.does, 1, true),
+	"switching away from compact tabs failed to restore the concise outcome and full tooltip")
 config.deskRows[2].toggle:SetValue(false)
 assert(settings.spam.repeatAds.enabled == false,
 	"the Simple repeat-sale-ad switch did not update its existing setting")

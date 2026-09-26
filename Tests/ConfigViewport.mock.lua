@@ -50,6 +50,13 @@ function Frame:SetTextInsets() end
 function Frame:SetMaxLetters() end
 function Frame:ClearFocus() end
 function Frame:SetFocus() end
+function Frame:EnableKeyboard(enabled) self.keyboardEnabled = enabled and true or false end
+function Frame:SetPropagateKeyboardInput(enabled) self.propagateKeyboardInput = enabled and true or false end
+function Frame:IsVisible()
+	if not self:IsShown() then return false end
+	return not self.parent or not self.parent.IsVisible or self.parent:IsVisible()
+end
+function Frame:IsEnabled() return self.enabled ~= false end
 function Frame:Raise() self.raised = true end
 function Frame:StartMoving() self.moving = true end
 function Frame:StopMovingOrSizing() self.moving = false end
@@ -63,6 +70,10 @@ function Frame:Disable() self.enabled = false end
 
 function Frame:SetScript(name, callback)
 	self.scripts[name] = callback
+end
+function Frame:GetScript(name) return self.scripts[name] end
+function Frame:Click(button)
+	if self.scripts.OnClick then self.scripts.OnClick(self, button or "LeftButton") end
 end
 function Frame:HookScript(name, callback)
 	local previous = self.scripts[name]
@@ -170,6 +181,7 @@ function Theme:RegisterTexture() end
 function Theme:RegisterFrame() end
 function Theme:ApplyFrame() end
 function Theme:RegisterRefreshCallback(callback) self.refreshCallback = callback end
+function Theme:SetTabFocus(button, focused) if button then button.keyboardFocusVisible = focused and true or false end end
 
 ChattyChattyBangBang = { Theme = Theme }
 local addon = ChattyChattyBangBang
@@ -351,5 +363,101 @@ UIParent:SetSize(600, 400)
 config:FitFrameToViewport()
 assert(config.frame:GetScale() < 1, "sub-minimum viewport did not use its emergency fit")
 assertViewportGutters(config.frame, 600, 400, "sub-minimum viewport")
+
+-- Tab-key navigation is opt-in after a tab click. It must not listen while the
+-- compact settings frame merely sits open, and only its handled keys may be
+-- consumed; ordinary game keys and edit-box typing release focus.
+UIParent:SetSize(700, 500)
+config:FitFrameToViewport()
+config.activePage = "dock"
+local first = Theme:CreateButton(config.content, "LAYOUT", 70, 20)
+first:SetPoint("TOPLEFT", config.content, "TOPLEFT", 8, -8)
+local second = Theme:CreateButton(config.content, "COLORS", 70, 20)
+second:SetPoint("LEFT", first, "RIGHT", 6, 0)
+local detail = Theme:CreateButton(config.content, "WINDOW", 70, 20)
+detail:SetPoint("TOPLEFT", config.content, "TOPLEFT", 8, -48)
+local activated = 0
+second:SetScript("OnClick", function() activated = activated + 1 end)
+detail:SetScript("OnClick", function() activated = activated + 10 end)
+config:RegisterKeyboardTab(first, "dock/1-main", 1)
+config:RegisterKeyboardTab(second, "dock/1-main", 2)
+config:RegisterKeyboardTab(detail, "dock/2-layout", 1)
+assert(config.frame.keyboardEnabled ~= true and config.keyboardTabFocus == nil,
+	"settings captured keyboard input before a tab was focused")
+first:Click()
+assert(config.keyboardTabFocus == first and first.keyboardFocusVisible
+	and config.frame.keyboardEnabled and config.frame.propagateKeyboardInput,
+	"click hook did not enable opt-in focus with fail-open propagation")
+config.frame.scripts.OnKeyDown(config.frame, "RIGHT")
+assert(config.keyboardTabFocus == second and second.keyboardFocusVisible
+	and not first.keyboardFocusVisible and activated == 1
+	and config.frame.propagateKeyboardInput == false,
+	"right arrow did not focus and activate the next tab in its own group")
+config.frame.scripts.OnKeyUp(config.frame, "RIGHT")
+assert(config.frame.propagateKeyboardInput,
+	"handled arrow left keyboard propagation disabled after key release")
+config.frame.scripts.OnKeyDown(config.frame, "TAB")
+assert(config.keyboardTabFocus == detail and activated == 1,
+	"Tab did not focus the next visible subpage group without activating it")
+IsShiftKeyDown = function() return true end
+config.frame.scripts.OnKeyDown(config.frame, "TAB")
+assert(config.keyboardTabFocus == second, "Shift-Tab did not reverse keyboard focus")
+IsShiftKeyDown = nil
+config.frame.scripts.OnKeyDown(config.frame, "ENTER")
+assert(activated == 2, "Enter did not activate the keyboard-focused tab")
+second:Hide()
+config.frame.scripts.OnKeyDown(config.frame, "RIGHT")
+assert(config.keyboardTabFocus == first and activated == 2,
+	"arrow navigation did not skip a hidden tab")
+assert(not config:FocusKeyboardTab(second), "a hidden tab accepted keyboard focus")
+config.frame.scripts.OnKeyDown(config.frame, "W")
+assert(config.keyboardTabFocus == nil and not config.frame.keyboardEnabled
+	and config.frame.propagateKeyboardInput,
+	"ordinary gameplay keys remained captured or were not propagated")
+assert(config:FocusKeyboardTab(first), "tab focus could not be re-entered for propagation failure")
+local normalPropagation = config.frame.SetPropagateKeyboardInput
+config.frame.SetPropagateKeyboardInput = function(self, enabled)
+	if not enabled then error("suppression unavailable") end
+	return normalPropagation(self, enabled)
+end
+config.frame.scripts.OnKeyDown(config.frame, "RIGHT")
+assert(activated == 2 and config.keyboardTabFocus == nil
+	and not config.frame.keyboardEnabled and config.frame.propagateKeyboardInput,
+	"failed key suppression still activated a tab or trapped game input")
+config.frame.SetPropagateKeyboardInput = normalPropagation
+assert(config:FocusKeyboardTab(first), "tab focus could not be re-entered")
+GetCurrentKeyBoardFocus = function() return {} end
+config.frame.scripts.OnKeyDown(config.frame, "TAB")
+assert(config.keyboardTabFocus == nil and not config.frame.keyboardEnabled
+	and config.frame.propagateKeyboardInput,
+	"focused edit field did not release tab navigation before typing")
+GetCurrentKeyBoardFocus = nil
+assert(config:FocusKeyboardTab(detail), "detail tab focus could not be entered")
+config.frame.scripts.OnKeyDown(config.frame, "ESCAPE")
+assert(config.keyboardTabFocus == nil and not config.frame.keyboardEnabled
+	and config.frame.propagateKeyboardInput,
+	"Escape did not release tab focus cleanly")
+detail:SetScript("OnClick", function() error("tab action failed") end)
+assert(config:FocusKeyboardTab(detail), "detail tab could not receive focus for error test")
+config.frame.scripts.OnKeyDown(config.frame, "ENTER")
+assert(config.keyboardTabFocus == nil and not config.frame.keyboardEnabled
+	and config.frame.propagateKeyboardInput,
+	"a failing tab action left keyboard input trapped")
+assert(config:FocusKeyboardTab(first), "tab focus could not be entered before hide")
+config.frame:Hide()
+assert(config.keyboardTabFocus == nil and not config.frame.keyboardEnabled
+	and not first.keyboardFocusVisible,
+	"hiding settings left a keyboard trap or stale focus cue")
+assert(not config:FocusKeyboardTab(first) and not config.frame.keyboardEnabled,
+	"a hidden settings frame accepted keyboard focus")
+config.frame:Show()
+local propagate = config.frame.SetPropagateKeyboardInput
+config.frame.SetPropagateKeyboardInput = false
+assert(not config:FocusKeyboardTab(first) and not config.frame.keyboardEnabled,
+	"missing Retail propagation API did not fail closed")
+config.frame.SetPropagateKeyboardInput = propagate
+assert(first.point[4] == 8 and second.point[4] == 6 and detail.point[4] == 8
+	and first:GetHeight() == 20 and detail:GetHeight() == 20,
+	"compact tab controls lost their edge and between-control gutters")
 
 print("Config viewport mock tests passed")

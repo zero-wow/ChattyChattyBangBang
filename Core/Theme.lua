@@ -1073,6 +1073,8 @@ end
 
 function Theme:CreateButton(parent, text, width, height, emphasis)
 	local button = CreateFrame("Button", nil, parent)
+	self.buttonSequence = (self.buttonSequence or 0) + 1
+	button._themeButtonOrder = self.buttonSequence
 	button:SetWidth(width or 120)
 	button:SetHeight(height or self.Metrics.buttonHeight)
 	button.text = self:CreateText(button, "GameFontNormalSmall", emphasis and "goldBright" or "text")
@@ -1139,14 +1141,51 @@ function Theme:CreateButton(parent, text, width, height, emphasis)
 		-- Fixed-width controls must reserve breathing room for their label.  A
 		-- constrained FontString also prevents one long localized label from
 		-- painting into its neighbour when a config page is dense.
+		if self._themeBoundedLabelMaxWidth then
+			self.text:SetText(self._themeFullLabel)
+		end
 		local available = math.max(1, self:GetWidth() - (Theme.BUTTON_TEXT_INSET * 2))
 		self.text:SetWidth(available)
 		if self.text.SetHeight and self.GetHeight then
 			self.text:SetHeight(math.max(1, self:GetHeight() - 2))
 		end
 		self._themeTextAvailableWidth = available
-		self._themeIntrinsicTextWidth = measureIntrinsicText(self)
-		self._themeLabelClipped = self._themeIntrinsicTextWidth > (available + 0.25)
+		local fullWidth = measureIntrinsicText(self)
+		if self._themeBoundedLabelMaxWidth and not self._themeApplyingBoundedFit then
+			local desired = math.ceil(fullWidth) + Theme.TIGHT_BUTTON_PADDING
+			local bounded = math.min(self._themeBoundedLabelMaxWidth, desired)
+			if bounded > self:GetWidth() then
+				self._themeApplyingBoundedFit = true
+				self:SetWidth(bounded)
+				self._themeApplyingBoundedFit = false
+				available = math.max(1, self:GetWidth() - (Theme.BUTTON_TEXT_INSET * 2))
+				self.text:SetWidth(available)
+			end
+		end
+		self._themeIntrinsicTextWidth = fullWidth
+		self._themeLabelClipped = fullWidth > (available + 0.25)
+		if self._themeBoundedLabelMaxWidth and self._themeLabelClipped then
+			-- A deliberate ellipsis is clearer than silently clipping a word. Keep
+			-- the full label for the existing tooltip and walk UTF-8 boundaries so
+			-- localized labels never end on half of a multi-byte character.
+			local label = self._themeFullLabel
+			local marker = "…"
+			self.text:SetText(marker)
+			local fitted = measureIntrinsicText(self) <= available and marker or ""
+			local index = 1
+			while index <= #label do
+				local first = string.byte(label, index)
+				local length = first >= 240 and 4 or (first >= 224 and 3 or (first >= 192 and 2 or 1))
+				local last = index + length - 1
+				if last > #label then break end
+				local candidate = label:sub(1, last) .. marker
+				self.text:SetText(candidate)
+				if measureIntrinsicText(self) > available then break end
+				fitted = candidate
+				index = last + 1
+			end
+			self.text:SetText(fitted)
+		end
 	end
 	fitText(button)
 	button:SetScript("OnSizeChanged", function(self)
@@ -1164,8 +1203,12 @@ function Theme:CreateButton(parent, text, width, height, emphasis)
 	end)
 
 	function button:SetTextAutoFit(enabled)
+		if enabled and self._themeBoundedLabelMaxWidth then
+			self.text:SetText(self._themeFullLabel)
+		end
 		self._themeTightAutoFit = enabled and true or false
 		self._themeExplicitWidth = not self._themeTightAutoFit
+		if enabled then self._themeBoundedLabelMaxWidth = nil end
 		if self._themeTightAutoFit and self.RefreshTextFit then
 			self:RefreshTextFit()
 		else
@@ -1276,6 +1319,17 @@ function Theme:CreateButton(parent, text, width, height, emphasis)
 		else
 			fitText(self)
 		end
+	end
+
+	-- Callers may grant a fixed-row button explicit spare horizontal space.
+	-- It grows only to that cap; if the localized label still does not fit, an
+	-- ellipsis and the normal full-label tooltip keep the row readable.
+	function button:SetBoundedLabelFit(maxWidth)
+		local cap = tonumber(maxWidth) or 0
+		self._themeBoundedLabelMaxWidth = math.max(self:GetWidth(), cap)
+		self._themeTightAutoFit = false
+		self._themeExplicitWidth = true
+		fitText(self)
 	end
 	self.buttons[button] = true
 	if button.HookScript then
@@ -1398,6 +1452,25 @@ function Theme:SetTabState(button, selected)
 	button:SetHoverTheme(selected and "accentSoft" or "surfaceRaised", self.NO_BORDER,
 		selected and "goldBright" or "text")
 	paintTabUnderline(button)
+end
+
+-- Keyboard focus is deliberately separate from selection and hover. The cue
+-- sits three pixels inside the button, clear of its attached-tab baseline and
+-- the neighbouring control's hit area even in the compact settings viewport.
+function Theme:SetTabFocus(button, focused)
+	if not button or not button.CreateTexture then return end
+	if focused and not button._themeTabFocus then
+		local cue = button:CreateTexture(nil, "OVERLAY")
+		cue:SetTexture("Interface\\Buttons\\WHITE8x8")
+		cue:SetPoint("TOPLEFT", button, "TOPLEFT", 3, -3)
+		cue:SetPoint("TOPRIGHT", button, "TOPRIGHT", -3, -3)
+		cue:SetHeight(1)
+		self:RegisterTexture(cue, "goldBright")
+		button._themeTabFocus = cue
+	end
+	if button._themeTabFocus then
+		if focused then button._themeTabFocus:Show() else button._themeTabFocus:Hide() end
+	end
 end
 
 -- Text-sized control for toolbars and dense inspectors. Live font metrics set

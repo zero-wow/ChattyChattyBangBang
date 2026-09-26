@@ -145,6 +145,9 @@ function Theme:CreateButton(parent, text, width, height)
 		self.tooltipTitle = title
 		self.tooltipBody = body
 	end
+	function button:SetBoundedLabelFit(maxWidth)
+		self.boundedLabelMaxWidth = maxWidth
+	end
 	return button
 end
 
@@ -1007,6 +1010,11 @@ assert(config.messageViewsSourcesButton._configTab and config.messageViewsDetail
 assert(config.messageViewsSourcesButton.width + config.messageViewsDetailsButton.width
 	+ config.messageViewsTextButton.width + config.messageViewsChannelsButton.width + (3 * 6) <= 416,
 	"four tab labels overran the compact inspector under the partner's wide-font metrics")
+assert(config.viewResetButton.boundedLabelMaxWidth == 220
+	and config.messageViewsResetSourcesButton.boundedLabelMaxWidth == 200
+	and (66 + 220 + 72 + 8 + 8) <= 408
+	and (116 + 4 + 24 + 6 + 24 + 200 + 8) <= 424,
+	"bounded action labels were granted more width than their fixed inspector rows reserve")
 local originalChannelTabSuggestions = addon.GetChannelTabSuggestions
 addon.GetChannelTabSuggestions = function()
 	return {

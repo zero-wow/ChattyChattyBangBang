@@ -899,6 +899,9 @@ local HISTORY_SCHEMA = 2
 local HISTORY_DEFAULT_LINES_PER_SOURCE = 1000
 local HISTORY_MIN_LINES_PER_SOURCE = 100
 local HISTORY_MAX_LINES_PER_SOURCE = 10000
+local HISTORY_BOOKMARK_LIMIT = 100
+local HISTORY_EXPORT_MAX_LINES = 20
+local HISTORY_EXPORT_MAX_BYTES = 8192
 
 local persistedFields = {
 	-- Classification, tags, and view memberships are deliberately absent: they
@@ -994,6 +997,7 @@ local function createPersistentHistory(linesPerSource)
 		schema = HISTORY_SCHEMA,
 		linesPerSource = normalizeHistoryLinesPerSource(linesPerSource),
 		nextSequence = 1,
+		bookmarks = {},
 		sources = {},
 	}
 end
@@ -2636,6 +2640,7 @@ function Engine:Persist(record)
 		return
 	end
 	local history = ensurePersistentHistory(settings, self.capacity)
+	history.bookmarks = self.bookmarks or {}
 	appendPersistentRecord(history, record)
 end
 
@@ -2650,6 +2655,8 @@ local function clearRuntimeHistory(engine)
 	engine.historyHead = nil
 	engine.historyTail = nil
 	engine.count = 0
+	engine.bookmarks = {}
+	engine.bookmarkCount = 0
 	-- Retained as a harmless compatibility field for integrations that used to
 	-- inspect the global ring. Storage itself is now source-owned.
 	engine.writeIndex = 1
@@ -2795,6 +2802,11 @@ end
 
 local function unlinkRuntimeRecord(engine, record)
 	if type(record) ~= "table" then return end
+	local sequence = tonumber(record.historySequence)
+	if sequence and engine.bookmarks and engine.bookmarks[sequence] then
+		engine.bookmarks[sequence] = nil
+		engine.bookmarkCount = math.max(0, (tonumber(engine.bookmarkCount) or 1) - 1)
+	end
 	conversationRemove(engine, record)
 	local previous = record._historyPrevious
 	local nextRecord = record._historyNext
@@ -2890,6 +2902,7 @@ function Engine:RebuildPersistence()
 		record = record._historyNext
 	end
 	history.nextSequence = math.max(tonumber(history.nextSequence) or 1, tonumber(self.nextHistorySequence) or 1)
+	history.bookmarks = self.bookmarks or {}
 	settings.history = history
 	return true
 end
@@ -2951,6 +2964,52 @@ function Engine:GetHistoryStats()
 	}
 end
 
+function Engine:GetBookmarkCount()
+	return math.max(0, tonumber(self.bookmarkCount) or 0), HISTORY_BOOKMARK_LIMIT
+end
+
+function Engine:IsBookmarked(record)
+	return type(record) == "table" and record.id ~= nil
+		and self.byId and self.byId[record.id] == record
+		and not record.blockedByBlockControl
+		and self.bookmarks and self.bookmarks[record.historySequence] == true or false
+end
+
+function Engine:ToggleBookmark(record)
+	if type(record) ~= "table" or record.id == nil or not self.byId
+		or self.byId[record.id] ~= record or record.blockedByBlockControl
+		or type(record.historySequence) ~= "number" then
+		return nil, "not-retained"
+	end
+	self.bookmarks = self.bookmarks or {}
+	local sequence = record.historySequence
+	local evictedSequence
+	if self.bookmarks[sequence] then
+		self.bookmarks[sequence] = nil
+		self.bookmarkCount = math.max(0, (tonumber(self.bookmarkCount) or 1) - 1)
+	else
+		if (tonumber(self.bookmarkCount) or 0) >= HISTORY_BOOKMARK_LIMIT then
+			for candidate in pairs(self.bookmarks) do
+				if not evictedSequence or candidate < evictedSequence then
+					evictedSequence = candidate
+				end
+			end
+			if evictedSequence then
+				self.bookmarks[evictedSequence] = nil
+				self.bookmarkCount = self.bookmarkCount - 1
+			end
+		end
+		self.bookmarks[sequence] = true
+		self.bookmarkCount = (tonumber(self.bookmarkCount) or 0) + 1
+	end
+	local settings = addon:GetSmartSettings()
+	if settings.persistHistory then
+		local history = ensurePersistentHistory(settings, self.capacity)
+		history.bookmarks = self.bookmarks
+	end
+	return self.bookmarks[sequence] == true, evictedSequence
+end
+
 function Engine:Store(record)
 	local settings = addon:GetSmartSettings()
 	local capacity = normalizeHistoryLinesPerSource(settings.historyCapacity)
@@ -2983,6 +3042,8 @@ function Engine:ResetForProfile()
 
 	local settings = addon:GetSmartSettings()
 	if settings.persistHistory then
+		local savedBookmarks = type(settings.history) == "table"
+			and type(settings.history.bookmarks) == "table" and settings.history.bookmarks or nil
 		local savedRecords = getPersistentHistoryRecords(settings.history, self.capacity)
 		self.loadingPersistence = true
 		for index = 1, #savedRecords do
@@ -2999,6 +3060,15 @@ function Engine:ResetForProfile()
 			end
 		end
 		self.loadingPersistence = false
+		local record = self.historyTail
+		while savedBookmarks and record and self.bookmarkCount < HISTORY_BOOKMARK_LIMIT do
+			local sequence = record.historySequence
+			if savedBookmarks[sequence] == true or savedBookmarks[tostring(sequence)] == true then
+				self.bookmarks[sequence] = true
+				self.bookmarkCount = self.bookmarkCount + 1
+			end
+			record = record._historyPrevious
+		end
 		-- Also converts schema 1 and resized schema-2 rings in one bounded pass.
 		self:RebuildPersistence()
 	end
@@ -3118,7 +3188,9 @@ end
 -- under a tab's CONTENTS page. The union is evaluated at read time so changing
 -- a checkbox updates history immediately without duplicating or rewriting it.
 function Engine:RecordBelongsToView(record, viewId, settings)
-	if type(record) ~= "table" then return false end
+	-- This is the single membership answer used by both history reads and live
+	-- dock/unread delivery. Blocked records belong only in their separate archive.
+	if type(record) ~= "table" or record.blockedByBlockControl then return false end
 	if type(viewId) ~= "string" or viewId == "" then return true end
 	if addon.IsRecordAllowedInView
 		and addon:IsRecordAllowedInView(viewId, record, settings) == false then
@@ -3152,8 +3224,7 @@ function Engine:GetMessages(viewId)
 
 	local record = self.historyHead
 	while record do
-		local belongsToView = not viewId or self:RecordBelongsToView(record, viewId, viewSettings)
-		if record and not record.blockedByBlockControl and belongsToView then
+		if self:RecordBelongsToView(record, viewId, viewSettings) then
 			table.insert(messages, record)
 		end
 		record = record._historyNext
@@ -3204,6 +3275,7 @@ function Engine:SearchHistory(query)
 	end
 	local limit = boundedSearchNumber(query.limit, 50, 200)
 	local scanLimit = boundedSearchNumber(query.scanLimit, 2000, 5000)
+	local bookmarksOnly = query.bookmarked == true
 	local viewId = type(query.viewId) == "string" and query.viewId ~= "" and query.viewId or nil
 	local settings = viewId and addon.GetSmartSettings and addon:GetSmartSettings() or nil
 	local record = self.historyTail
@@ -3238,6 +3310,7 @@ function Engine:SearchHistory(query)
 			senderMatches = containsSearchNeedle(record.sender, senderNeedle)
 		end
 		if not record.blockedByBlockControl
+			and (not bookmarksOnly or self.bookmarks and self.bookmarks[record.historySequence] == true)
 			and containsSearchNeedle(record.text, textNeedle)
 			and senderMatches
 			and sourceMatches and dateMatches
@@ -3257,6 +3330,62 @@ function Engine:SearchHistory(query)
 		}
 	end
 	return result
+end
+
+local function readableExportText(value)
+	value = type(value) == "string" and value or ""
+	-- Chat hyperlinks are useful as visible labels, not as raw clickable control
+	-- codes in a selectable export. Flatten every message to one physical line.
+	value = string.gsub(value, "|H.-|h(.-)|h", "%1")
+	value = string.gsub(value, "|c%x%x%x%x%x%x%x%x", "")
+	value = string.gsub(value, "|r", "")
+	value = string.gsub(value, "|T.-|t", "[icon]")
+	value = string.gsub(value, "|A.-|a", "[icon]")
+	value = string.gsub(value, "|n", " ")
+	value = string.gsub(value, "||", "|")
+	return string.gsub(value, "%c", " ")
+end
+
+local function isPrivateTranscriptRecord(record)
+	if record.sourceGroup == "conversations" then return true end
+	local event = record.event
+	return event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_WHISPER_INFORM"
+		or event == "CHAT_MSG_BN_WHISPER" or event == "CHAT_MSG_BN_WHISPER_INFORM"
+		or event == "CHAT_MSG_BN_CONVERSATION"
+end
+
+-- This is a one-page, ephemeral copy surface, not a file or OS clipboard API.
+-- Caller-provided records must still be current normal-history objects; held,
+-- blocked, and evicted records can never be exported through a stale search hit.
+function Engine:ExportRetainedText(records, options)
+	options = type(options) == "table" and options or {}
+	local limit = boundedSearchNumber(options.maxLines, HISTORY_EXPORT_MAX_LINES, HISTORY_EXPORT_MAX_LINES)
+	local maxBytes = boundedSearchNumber(options.maxBytes, HISTORY_EXPORT_MAX_BYTES, HISTORY_EXPORT_MAX_BYTES)
+	local includePrivate = options.includePrivate == true
+	local lines, count, skipped, truncated = {}, 0, 0, false
+	if type(records) ~= "table" then return "", 0, 0, false end
+	local bytes = 0
+	for index = 1, #records do
+		local record = records[index]
+		if type(record) ~= "table" or record.id == nil or not self.byId
+			or self.byId[record.id] ~= record or record.blockedByBlockControl
+			or not includePrivate and isPrivateTranscriptRecord(record) then
+			skipped = skipped + 1
+		else
+			if count >= limit then truncated = true; break end
+			local source = readableExportText(record.sourceLabel or record.channelName or record.view or "Chat")
+			local sender = readableExportText(record.sender)
+			local prefix = readableExportText(record.timestamp) .. "  " .. source
+			if sender ~= "" then prefix = prefix .. " · " .. sender end
+			local line = prefix .. "  " .. readableExportText(record.text)
+			local extraBytes = #line + (count > 0 and 1 or 0)
+			if bytes + extraBytes > maxBytes then truncated = true; break end
+			lines[#lines + 1] = line
+			bytes = bytes + extraBytes
+			count = count + 1
+		end
+	end
+	return table.concat(lines, "\n"), count, skipped, truncated
 end
 
 -- The rolling-day advert ceiling is a threshold, not just a prospective

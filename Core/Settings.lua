@@ -554,6 +554,7 @@ local defaults = {
 	-- the detailed counting ledger exists only for the current play session.
 	keywordSuggestions = {
 		enabled = true,
+		retainQueue = true,
 		threshold = 5,
 		window = 900,
 		maxSuggestions = 24,
@@ -5554,6 +5555,20 @@ local function isKeywordColorSpec(colorSpec)
 	return type(colorSpec) == "string" and string.match(colorSpec, "^class:[A-Z]+$") ~= nil
 end
 
+function addon:NormalizeKeywordColorTerm(term)
+	if self.KeywordSuggestions and self.KeywordSuggestions.NormalizeTerm then
+		return self.KeywordSuggestions:NormalizeTerm(term)
+	end
+	return string.lower(type(term) == "string" and term or "")
+end
+
+function addon:IsSafeKeywordColorTerm(term)
+	if type(term) ~= "string" or term == "" or #term > 40 then return false end
+	if string.match(term, "^[%a%d][%a%d%'%+%- ]*$") then return true end
+	return self.KeywordSuggestions and self.KeywordSuggestions.IsSafeGroupTerm
+		and self.KeywordSuggestions:IsSafeGroupTerm(term) or false
+end
+
 local function applyKeywordGroupColor(settings, group, colorSpec)
 	group.color = colorSpec
 	if type(settings.keywordColors) ~= "table" then
@@ -5562,7 +5577,7 @@ local function applyKeywordGroupColor(settings, group, colorSpec)
 	for _, termSpec in ipairs(group.terms or {}) do
 		local term = type(termSpec) == "table" and termSpec.term or termSpec
 		if type(term) == "string" then
-			settings.keywordColors[string.lower(term)] = colorSpec
+			settings.keywordColors[addon:NormalizeKeywordColorTerm(term)] = colorSpec
 		end
 	end
 end
@@ -5624,7 +5639,7 @@ local function findKeywordColorTermOwner(groups, normalizedTerm)
 	for _, group in ipairs(groups or {}) do
 		for _, termSpec in ipairs((type(group) == "table" and group.terms) or {}) do
 			local existing = type(termSpec) == "table" and termSpec.term or termSpec
-			if type(existing) == "string" and string.lower(existing) == normalizedTerm then
+			if type(existing) == "string" and addon:NormalizeKeywordColorTerm(existing) == normalizedTerm then
 				return group
 			end
 		end
@@ -5657,18 +5672,54 @@ function addon:SetKeywordColorGroup(groupId, colorSpec)
 	return false, "unknown-group"
 end
 
+-- Optional, bounded presentation scope. An absent scope remains global for all
+-- existing profiles; these IDs are never used as patterns or chat commands.
+function addon:SetKeywordColorGroupScope(groupId, scopeType, scopeId)
+	groupId = trim(groupId, 40)
+	if scopeType ~= "all" and scopeType ~= "source" and scopeType ~= "view" then
+		return false, "invalid-scope"
+	end
+	if scopeType ~= "all" then
+		if type(scopeId) ~= "string" or scopeId == "" or #scopeId > (scopeType == "source" and 96 or 40)
+			or string.find(scopeId, "[%c|%s]") then
+			return false, "invalid-target"
+		end
+	else
+		scopeId = nil
+	end
+	local settings = self:GetSmartSettings()
+	local group = getKeywordColorGroupById(getMutableKeywordColorGroups(settings), groupId)
+	if not group then return false, "unknown-group" end
+	if scopeType == "all" then
+		group.scopeType, group.scopeId = nil, nil
+	else
+		group.scopeType, group.scopeId = scopeType, scopeId
+	end
+	touchKeywordColorVocabulary(settings)
+	return true
+end
+
 function addon:ResetKeywordColorGroups()
 	local settings = self:GetSmartSettings()
 	-- A reset restores the curated vocabulary and colors, but a player-created
 	-- group is their work and should not disappear behind a deceptively broad
 	-- reset button. Custom groups keep their initial/default color and terms.
 	local customGroups = {}
+	local savedScopes = {}
 	for _, group in ipairs(getMutableKeywordColorGroups(settings)) do
 		if group.custom == true then
 			table.insert(customGroups, copy(group))
+		elseif type(group.id) == "string" and (group.scopeType == "source" or group.scopeType == "view") then
+			savedScopes[group.id] = { scopeType = group.scopeType, scopeId = group.scopeId }
 		end
 	end
 	settings.keywordColorGroups = copy(defaults.keywordColorGroups)
+	for _, group in ipairs(settings.keywordColorGroups) do
+		local scope = savedScopes[group.id]
+		if scope then
+			group.scopeType, group.scopeId = scope.scopeType, scope.scopeId
+		end
+	end
 	settings.keywordColors = copy(defaults.keywordColors)
 	for _, group in ipairs(customGroups) do
 		table.insert(settings.keywordColorGroups, group)
@@ -5732,7 +5783,7 @@ function addon:DeleteKeywordColorGroup(groupId)
 			-- False is a deliberate compatibility sentinel: Presentation's legacy
 			-- flat map will not resurrect a removed custom word after the group is
 			-- gone, while the next explicit add can replace it normally.
-			settings.keywordColors[string.lower(term)] = false
+			settings.keywordColors[self:NormalizeKeywordColorTerm(term)] = false
 		end
 	end
 	table.remove(groups, index)
@@ -5749,14 +5800,14 @@ function addon:AddKeywordColorGroupTerm(groupId, term, caseSensitive)
 	if groupId == "" or term == "" then
 		return false, "invalid-term"
 	end
-	if not string.match(term, "^[%a%d][%a%d%'%+%- ]*$") then
+	if not self:IsSafeKeywordColorTerm(term) then
 		return false, "invalid-term"
 	end
 	local settings = self:GetSmartSettings()
 	local groups = getMutableKeywordColorGroups(settings)
 	for _, group in ipairs(groups) do
 		if group.id == groupId then
-			local normalized = string.lower(term)
+			local normalized = self:NormalizeKeywordColorTerm(term)
 			local owner = findKeywordColorTermOwner(groups, normalized)
 			if owner then
 				if owner.id == group.id then
@@ -5779,7 +5830,7 @@ function addon:AddKeywordColorGroupTerm(groupId, term, caseSensitive)
 end
 
 function addon:SetKeywordColor(keyword, colorName)
-	keyword = string.lower(trim(keyword, 40))
+	keyword = self:NormalizeKeywordColorTerm(trim(keyword, 40))
 	colorName = trim(colorName, 40)
 	if keyword == "" then
 		return false, "invalid-keyword"
@@ -5799,7 +5850,7 @@ function addon:SetKeywordColor(keyword, colorName)
 	for _, group in ipairs(settings.keywordColorGroups) do
 		for _, termSpec in ipairs(group.terms or {}) do
 			local term = type(termSpec) == "table" and termSpec.term or termSpec
-			if type(term) == "string" and string.lower(term) == keyword then
+			if type(term) == "string" and self:NormalizeKeywordColorTerm(term) == keyword then
 				applyKeywordGroupColor(settings, group, colorName)
 				touchKeywordColorVocabulary(settings)
 				return true

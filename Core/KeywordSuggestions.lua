@@ -5,6 +5,8 @@ addon.KeywordSuggestions = Suggestions
 local MAX_TRACKED_TERMS = 120
 local MAX_DISTINCT_MESSAGES = 24
 local MAX_SAMPLE_LENGTH = 120
+local MAX_TERM_BYTES = 40
+local MAX_TERM_CHARACTERS = 24
 local MAX_DISMISSED = 96
 local DEFAULT_THRESHOLD = 5
 local DEFAULT_WINDOW = 900
@@ -49,9 +51,180 @@ local function trim(value, maximumLength)
 	value = string.gsub(value, "^%s+", "")
 	value = string.gsub(value, "%s+$", "")
 	if maximumLength and #value > maximumLength then
-		value = string.sub(value, 1, maximumLength)
+		local last = maximumLength
+		-- Do not leave a partial UTF-8 codepoint in a saved sample or term.
+		while last > 0 do
+			local nextByte = string.byte(value, last + 1)
+			if not nextByte or nextByte < 128 or nextByte > 191 then break end
+			last = last - 1
+		end
+		value = string.sub(value, 1, last)
 	end
 	return value
+end
+
+-- WoW's Lua 5.1 string patterns classify bytes, not Unicode letters. Decode
+-- only enough UTF-8 to keep common player-language scripts together. Invalid
+-- sequences advance one byte and end a token instead of creating mojibake.
+local function codepointAt(text, index)
+	local first = string.byte(text, index)
+	if not first then return nil, 0 end
+	if first < 128 then return first, 1 end
+	local second = string.byte(text, index + 1)
+	if not second or second < 128 or second > 191 then return nil, 1 end
+	if first >= 194 and first <= 223 then
+		return (first - 192) * 64 + (second - 128), 2
+	end
+	local third = string.byte(text, index + 2)
+	if not third or third < 128 or third > 191 then return nil, 1 end
+	if first >= 224 and first <= 239 then
+		if (first == 224 and second < 160) or (first == 237 and second >= 160) then return nil, 1 end
+		return (first - 224) * 4096 + (second - 128) * 64 + (third - 128), 3
+	end
+	local fourth = string.byte(text, index + 3)
+	if not fourth or fourth < 128 or fourth > 191 then return nil, 1 end
+	if first >= 240 and first <= 244 then
+		if (first == 240 and second < 144) or (first == 244 and second > 143) then return nil, 1 end
+		return (first - 240) * 262144 + (second - 128) * 4096 + (third - 128) * 64 + (fourth - 128), 4
+	end
+	return nil, 1
+end
+
+local function isEastAsianLetter(codepoint)
+	return (codepoint >= 0x3040 and codepoint <= 0x30FF)
+		or (codepoint >= 0x3400 and codepoint <= 0x9FFF)
+		or (codepoint >= 0xAC00 and codepoint <= 0xD7AF)
+end
+
+local function isLetter(codepoint)
+	if not codepoint then return false end
+	return (codepoint >= 65 and codepoint <= 90) or (codepoint >= 97 and codepoint <= 122)
+		or (codepoint >= 0x00C0 and codepoint <= 0x00D6)
+		or (codepoint >= 0x00D8 and codepoint <= 0x00F6)
+		or (codepoint >= 0x00F8 and codepoint <= 0x024F)
+		or (codepoint >= 0x0370 and codepoint <= 0x052F)
+		or (codepoint >= 0x0531 and codepoint <= 0x0588)
+		or (codepoint >= 0x05D0 and codepoint <= 0x05EA)
+		or (codepoint >= 0x0620 and codepoint <= 0x06FF)
+		or (codepoint >= 0x0900 and codepoint <= 0x097F)
+		or (codepoint >= 0x0E00 and codepoint <= 0x0E7F)
+		or isEastAsianLetter(codepoint)
+end
+
+local function lowerCodepoint(codepoint)
+	if codepoint >= 65 and codepoint <= 90 then return codepoint + 32 end
+	if (codepoint >= 0x00C0 and codepoint <= 0x00D6)
+		or (codepoint >= 0x00D8 and codepoint <= 0x00DE)
+		or (codepoint >= 0x0391 and codepoint <= 0x03A1)
+		or (codepoint >= 0x03A3 and codepoint <= 0x03AB)
+		or (codepoint >= 0x0410 and codepoint <= 0x042F) then
+		return codepoint + 32
+	end
+	if codepoint >= 0x0400 and codepoint <= 0x040F then return codepoint + 80 end
+	return codepoint
+end
+
+local function appendCodepoint(parts, codepoint)
+	if codepoint < 128 then
+		parts[#parts + 1] = string.char(codepoint)
+	elseif codepoint < 2048 then
+		parts[#parts + 1] = string.char(192 + math.floor(codepoint / 64), 128 + codepoint % 64)
+	elseif codepoint < 65536 then
+		parts[#parts + 1] = string.char(224 + math.floor(codepoint / 4096),
+			128 + math.floor(codepoint / 64) % 64, 128 + codepoint % 64)
+	else
+		parts[#parts + 1] = string.char(240 + math.floor(codepoint / 262144),
+			128 + math.floor(codepoint / 4096) % 64, 128 + math.floor(codepoint / 64) % 64,
+			128 + codepoint % 64)
+	end
+end
+
+local function foldTerm(term)
+	local parts = {}
+	local index = 1
+	while index <= #term do
+		local codepoint, width = codepointAt(term, index)
+		if codepoint then
+			appendCodepoint(parts, lowerCodepoint(codepoint))
+		else
+			parts[#parts + 1] = string.sub(term, index, index)
+		end
+		index = index + width
+	end
+	return table.concat(parts)
+end
+
+local function scanTokens(text, callback)
+	local start, lastLetterEnd, letters, nonAscii, eastAsian, tooLong
+	local function flush()
+		if start and lastLetterEnd and not tooLong then
+			if callback(string.sub(text, start, lastLetterEnd), letters, nonAscii, eastAsian) == false then
+				return false
+			end
+		end
+		start, lastLetterEnd, letters, nonAscii, eastAsian, tooLong = nil, nil, nil, nil, nil, nil
+		return true
+	end
+	local index = 1
+	while index <= #text do
+		local codepoint, width = codepointAt(text, index)
+		if isLetter(codepoint) then
+			if not start then start, letters = index, 0 end
+			letters = letters + 1
+			lastLetterEnd = index + width - 1
+			if codepoint >= 128 then nonAscii = true end
+			if isEastAsianLetter(codepoint) then eastAsian = true end
+			if letters > MAX_TERM_CHARACTERS or lastLetterEnd - start + 1 > MAX_TERM_BYTES then tooLong = true end
+		elseif start and codepoint and codepoint >= 0x0300 and codepoint <= 0x036F then
+			-- A decomposed accent belongs to the preceding letter, including at
+			-- the end of a word. It does not count as a separate letter.
+			lastLetterEnd = index + width - 1
+		elseif start and (codepoint == 39 or codepoint == 45 or codepoint == 0x2019) then
+			-- Keep internal joiners, but not trailing punctuation.
+		else
+			if not flush() then return end
+		end
+		index = index + width
+	end
+	flush()
+end
+
+-- Shared with the existing keyword-color API: accepted suggestions must be
+-- valid group terms, and the renderer needs the same byte-aligned comparison.
+function Suggestions:NormalizeTerm(term)
+	return foldTerm(type(term) == "string" and term or "")
+end
+
+function Suggestions:IsSafeGroupTerm(term)
+	if type(term) ~= "string" or term == "" or #term > MAX_TERM_BYTES then return false end
+	local index = 1
+	while index <= #term do
+		local codepoint, width = codepointAt(term, index)
+		if not codepoint then return false end
+		local first = index == 1
+		local asciiDigit = codepoint >= 48 and codepoint <= 57
+		local accepted = isLetter(codepoint) or asciiDigit
+		if not first then
+			accepted = accepted or codepoint == 39 or codepoint == 43 or codepoint == 45
+				or codepoint == 32 or codepoint == 0x2019
+				or (codepoint >= 0x0300 and codepoint <= 0x036F)
+		end
+		if not accepted then return false end
+		index = index + width
+	end
+	return true
+end
+
+function Suggestions:IsWordAt(text, position)
+	if type(text) ~= "string" or position < 1 or position > #text then return false end
+	while position > 1 do
+		local current = string.byte(text, position)
+		if not current or current < 128 or current > 191 then break end
+		position = position - 1
+	end
+	local codepoint = codepointAt(text, position)
+	return isLetter(codepoint) or (codepoint and codepoint >= 48 and codepoint <= 57)
+		or (codepoint and codepoint >= 0x0300 and codepoint <= 0x036F) or false
 end
 
 local function copy(value)
@@ -86,11 +259,16 @@ local function normalizeSettings(settings)
 	local value = settings.keywordSuggestions
 	if value.enabled == nil then value.enabled = true end
 	value.enabled = value.enabled and true or false
+	if value.retainQueue == nil then value.retainQueue = true end
+	value.retainQueue = value.retainQueue and true or false
 	value.threshold = math.max(2, math.min(10, math.floor(tonumber(value.threshold) or DEFAULT_THRESHOLD)))
 	value.window = math.max(60, math.min(3600, math.floor(tonumber(value.window) or DEFAULT_WINDOW)))
 	value.maxSuggestions = math.max(6, math.min(48, math.floor(tonumber(value.maxSuggestions) or DEFAULT_MAX_SUGGESTIONS)))
 	value.dismissed = type(value.dismissed) == "table" and value.dismissed or {}
 	value.queue = type(value.queue) == "table" and value.queue or {}
+	-- Session-only queues never live in SavedVariables, including after a
+	-- profile import or an older partially migrated profile is loaded.
+	if not value.retainQueue and next(value.queue) ~= nil then value.queue = {} end
 	value.sequence = math.max(0, math.floor(tonumber(value.sequence) or 0))
 	return value
 end
@@ -122,8 +300,25 @@ local function compactDismissals(settings)
 	end
 end
 
+local function activeQueue(settings)
+	if settings.retainQueue == false then
+		Suggestions.sessionQueue = Suggestions.sessionQueue or {}
+		return Suggestions.sessionQueue
+	end
+	return settings.queue
+end
+
+local function setActiveQueue(settings, queue)
+	if settings.retainQueue == false then
+		Suggestions.sessionQueue = queue
+		settings.queue = {}
+	else
+		settings.queue = queue
+	end
+end
+
 local function findQueueEntry(settings, id)
-	for index, entry in ipairs(settings.queue) do
+	for index, entry in ipairs(activeQueue(settings)) do
 		if type(entry) == "table" and entry.id == id then
 			return entry, index
 		end
@@ -134,7 +329,7 @@ end
 local function compactQueue(settings)
 	local valid = {}
 	local seen = {}
-	for _, entry in ipairs(settings.queue) do
+	for _, entry in ipairs(activeQueue(settings)) do
 		if type(entry) == "table" and type(entry.id) == "string" and entry.id ~= "" and not seen[entry.id] then
 			entry.term = trim(entry.term or entry.label or entry.id, 40)
 			entry.label = entry.term
@@ -146,10 +341,11 @@ local function compactQueue(settings)
 		end
 	end
 	table.sort(valid, queueSort)
-	settings.queue = {}
+	local compacted = {}
 	for index = 1, math.min(settings.maxSuggestions, #valid) do
-		table.insert(settings.queue, valid[index])
+		table.insert(compacted, valid[index])
 	end
+	setActiveQueue(settings, compacted)
 end
 
 local function cleanMessage(text)
@@ -173,14 +369,14 @@ function Suggestions:RefreshKnownTerms()
 	local known = {}
 	for term in pairs(settings.keywordColors or {}) do
 		if type(term) == "string" then
-			known[string.lower(term)] = true
+			known[foldTerm(term)] = true
 		end
 	end
 	for _, group in ipairs(settings.keywordColorGroups or {}) do
 		for _, termSpec in ipairs(group.terms or {}) do
 			local term = type(termSpec) == "table" and termSpec.term or termSpec
 			if type(term) == "string" then
-				known[string.lower(term)] = true
+				known[foldTerm(term)] = true
 			end
 		end
 	end
@@ -192,6 +388,7 @@ end
 function Suggestions:ResetForProfile()
 	self.tracked = {}
 	self.trackedCount = 0
+	self.sessionQueue = {}
 	self.lastGlobalPruneAt = nil
 	self.lastGlobalPruneWindow = nil
 	self.lastCapacityPruneAt = nil
@@ -222,11 +419,19 @@ function Suggestions:Initialize()
 	return true
 end
 
-local function isCandidateTerm(term, known)
-	return #term >= 4 and #term <= 24
+local function isCandidateTerm(term, letters, nonAscii, eastAsian, known)
+	local validLength
+	if nonAscii then
+		validLength = letters >= (eastAsian and 2 or 3)
+			and letters <= MAX_TERM_CHARACTERS and #term <= MAX_TERM_BYTES
+	else
+		-- Keep the preexisting ASCII admission range, including hyphenated
+		-- terms whose visible byte length differs from their letter count.
+		validLength = #term >= 4 and #term <= 24
+	end
+	return validLength
 		and not stopWords[term]
 		and not known[term]
-		and not string.find(term, "^%d", 1)
 end
 
 local function pruneTrackedEntry(self, term, entry, now, window)
@@ -316,7 +521,7 @@ function Suggestions:Offer(term, entry, record, settings)
 		return
 	end
 	settings.sequence = settings.sequence + 1
-	table.insert(settings.queue, {
+	table.insert(activeQueue(settings), {
 		id = term,
 		term = term,
 		label = term,
@@ -357,13 +562,14 @@ function Suggestions:Observe(record)
 	local messageFingerprint = senderKey .. "\031" .. string.lower(clean)
 	local seenThisRecord = {}
 	local observed = 0
-	for rawTerm in string.gmatch(clean, "[%a][%a%'%-]*") do
-		local term = string.lower(rawTerm)
-		if not seenThisRecord[term] and not settings.dismissed[term] and isCandidateTerm(term, known) then
+	scanTokens(clean, function(rawTerm, letters, nonAscii, eastAsian)
+		local term = foldTerm(rawTerm)
+		if not seenThisRecord[term] and not settings.dismissed[term]
+			and isCandidateTerm(term, letters, nonAscii, eastAsian, known) then
 			seenThisRecord[term] = true
 			observed = observed + 1
 			if observed > 12 then
-				break
+				return false
 			end
 			local entry = self.tracked[term]
 			if entry and (entry.lastPrunedAt ~= now or entry.lastPrunedWindow ~= settings.window) then
@@ -376,7 +582,7 @@ function Suggestions:Observe(record)
 						or now - self.lastCapacityPruneAt >= CAPACITY_PRUNE_INTERVAL then
 						self:PruneTracked(now, settings.window)
 					end
-					if self.trackedCount >= MAX_TRACKED_TERMS then break end
+					if self.trackedCount >= MAX_TRACKED_TERMS then return false end
 				end
 				entry = { count = 0, firstSeen = now, lastSeen = now,
 					lastPrunedAt = now, lastPrunedWindow = settings.window,
@@ -399,16 +605,22 @@ function Suggestions:Observe(record)
 				end
 			end
 		end
-	end
+	end)
 end
 
 function addon:GetKeywordSuggestionSettings()
 	local settings = getSettings()
+	local dismissedCount = 0
+	for _ in pairs(settings.dismissed) do dismissedCount = dismissedCount + 1 end
 	return {
 		enabled = settings.enabled,
+		retainQueue = settings.retainQueue,
 		threshold = settings.threshold,
 		window = settings.window,
 		maxSuggestions = settings.maxSuggestions,
+		queueCount = #activeQueue(settings),
+		dismissedCount = dismissedCount,
+		observedTermCount = Suggestions.trackedCount or 0,
 	}
 end
 
@@ -432,10 +644,22 @@ function addon:SetKeywordSuggestionThreshold(threshold)
 	return true, settings.threshold
 end
 
+function addon:SetKeywordSuggestionQueueRetention(retain)
+	local settings = getSettings()
+	retain = retain and true or false
+	if settings.retainQueue == retain then return true, retain end
+	local current = copy(activeQueue(settings))
+	settings.retainQueue = retain
+	setActiveQueue(settings, current)
+	if retain then Suggestions.sessionQueue = nil end
+	compactQueue(settings)
+	return true, retain
+end
+
 function addon:GetKeywordSuggestions()
 	local settings = getSettings()
 	compactQueue(settings)
-	return copy(settings.queue)
+	return copy(activeQueue(settings))
 end
 
 function addon:AddKeywordSuggestionToGroup(id, groupId)
@@ -452,7 +676,7 @@ function addon:AddKeywordSuggestionToGroup(id, groupId)
 	if not ok then
 		return false, reason
 	end
-	table.remove(settings.queue, index)
+	table.remove(activeQueue(settings), index)
 	Suggestions:DropTracked(id)
 	return true, reason
 end
@@ -464,7 +688,7 @@ function addon:DismissKeywordSuggestion(id)
 	if not index then
 		return false, "unknown-suggestion"
 	end
-	table.remove(settings.queue, index)
+	table.remove(activeQueue(settings), index)
 	settings.dismissed[id] = time and time() or 0
 	compactDismissals(settings)
 	Suggestions:DropTracked(id)
@@ -473,10 +697,18 @@ end
 
 function addon:ClearKeywordSuggestions()
 	local settings = getSettings()
-	settings.queue = {}
+	setActiveQueue(settings, {})
 	if Suggestions.tracked then Suggestions.tracked = {}; Suggestions.trackedCount = 0 end
 	Suggestions.lastGlobalPruneAt = nil
 	Suggestions.lastGlobalPruneWindow = nil
 	Suggestions.lastCapacityPruneAt = nil
+	return true
+end
+
+function addon:ClearKeywordSuggestionData()
+	local settings = getSettings()
+	self:ClearKeywordSuggestions()
+	settings.dismissed = {}
+	settings.sequence = 0
 	return true
 end

@@ -112,11 +112,14 @@ function Recovery:Queue(event, ...)
 			self.keys[key] = true
 		end
 	end
-	if not revealNative() then self.fallbackFailed = true end
+	local nativeShown = revealNative()
+	self.fallbackFailed = not nativeShown
 	if not self.noticeShown then
 		self.noticeShown = true
 		if addon.Print then
-			addon:Print("Retail is temporarily withholding some chat lines from addons. Blizzard chat is shown while Chatty tries to fill them in.")
+			addon:Print(nativeShown
+				and "Retail is temporarily withholding some chat lines from addons. Blizzard chat is shown while Chatty tries to fill them in."
+				or "Retail is withholding some chat lines, and Blizzard chat could not be shown yet. Open Chatty > Start Here to retry after restrictions lift.")
 		end
 	end
 	if #self.pending > 0 then self:Schedule() end
@@ -132,7 +135,12 @@ function Recovery:Flush()
 		and revealNative() then
 		self.fallbackFailed = false
 	end
-	if #self.pending == 0 then mayReleaseNative(self); self:UpdateDiagnostics(); return end
+	if #self.pending == 0 then
+		if self.unresolved == 0 then self.fallbackFailed = false end
+		mayReleaseNative(self)
+		self:UpdateDiagnostics()
+		return
+	end
 	if inLockdown() then self:Schedule(); self:UpdateDiagnostics(); return end
 	local api = _G.C_ChatInfo
 	local engine = addon.MessageEngine
@@ -168,13 +176,41 @@ function Recovery:Flush()
 			table.remove(self.pending, index)
 		end
 	end
-	if #self.pending > 0 then self:Schedule() else mayReleaseNative(self) end
+	if #self.pending > 0 then
+		self:Schedule()
+	else
+		if self.unresolved == 0 then self.fallbackFailed = false end
+		mayReleaseNative(self)
+	end
 	self:UpdateDiagnostics()
 end
 
 function Recovery:GetStatus()
 	return { pending = #(self.pending or {}), recovered = self.recovered or 0,
-		unresolved = self.unresolved or 0, fallbackFailed = self.fallbackFailed == true }
+		unresolved = self.unresolved or 0, fallbackFailed = self.fallbackFailed == true,
+		lockdown = inLockdown() }
+end
+
+-- Explicit UI actions only retry the safe path. A manual check cannot read a
+-- secret line during lockdown or revive text the client no longer exposes.
+function Recovery:RetryNow()
+	if #(self.pending or {}) == 0 then return false, "nothing-waiting" end
+	if inLockdown() then
+		self:Schedule()
+		return false, "chat-restricted"
+	end
+	self:Flush()
+	return true, self:GetStatus()
+end
+
+function Recovery:TryShowNativeChat()
+	if #(self.pending or {}) == 0 and (self.unresolved or 0) == 0 then
+		return false, "no-recovery-need"
+	end
+	local shown = revealNative()
+	self.fallbackFailed = not shown
+	self:UpdateDiagnostics()
+	return shown, shown and "native-shown" or "native-unavailable"
 end
 
 function Recovery:Stop()

@@ -353,8 +353,28 @@ assert(settings.dock.transparency.backgroundAlpha == 0.55
 
 config.dockLayoutCategoryButtons.input.scripts.OnClick(config.dockLayoutCategoryButtons.input)
 assert(config.dockHistoryToggle:IsShown() and config.dockHistoryLinesEdit:IsShown()
-	and config.dockClearHistoryButton:IsShown(),
+	and config.dockClearHistoryButton:IsShown() and config.dockHistoryFootprint:IsShown(),
 	"Input & Controls did not expose received-chat history as one bounded task")
+local previousHistoryEngine = addon.MessageEngine
+addon.MessageEngine = { GetHistoryStats = function() return { lines = 3250, sources = 5 } end }
+config:RefreshDockPage()
+local footprint = config.dockHistoryFootprint
+assert(footprint:GetText():find("3250 lines across 5 sources", 1, true)
+	and footprint:GetText():find("5000 lines total", 1, true)
+	and footprint:GetText():find("new sources add more", 1, true)
+	and footprint:GetText():find("Disk size varies", 1, true),
+	"history page hid aggregate growth or implied a misleading fixed disk size")
+assert(footprint.point[4] == 8 and footprint.point[5] == -303
+	and footprint.height == 48 and -303 - footprint.height > -474,
+	"history footprint lost its side gutter or overlaps the status row")
+addon.MessageEngine.GetHistoryStats = function() return { lines = 0, sources = 0 } end
+settings.persistHistory = false
+config:RefreshDockPage()
+assert(footprint:GetText():find("This session: no lines yet", 1, true)
+	and footprint:GetText():find("no fixed total cap", 1, true),
+	"empty or session-only history implied that source growth was globally capped")
+settings.persistHistory = true
+addon.MessageEngine = previousHistoryEngine
 assert(config.dockScrollToggle.text:GetText() == "SLIM SCROLLBAR",
 	"Input & Controls still described the removed +/- buttons instead of the thumb-only scrollbar")
 config.dockHistoryLinesEdit:SetText("2500")

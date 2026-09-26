@@ -185,6 +185,30 @@ end
 function addon:GetKeywordColorGroups()
 	return settings.keywordColorGroups
 end
+function addon:GetKeywordColorGroup(groupId)
+	for _, group in ipairs(settings.keywordColorGroups) do
+		if group.id == groupId then return group end
+	end
+end
+function addon:SetKeywordColorGroupScope(groupId, scopeType, scopeId)
+	local group = self:GetKeywordColorGroup(groupId)
+	if not group then return false end
+	if scopeType == "all" then
+		group.scopeType, group.scopeId = nil, nil
+	else
+		group.scopeType, group.scopeId = scopeType, scopeId
+	end
+	return true
+end
+function addon:GetSmartViews()
+	return { { id = "general", label = "GENERAL" }, { id = "trade", label = "TRADE" } }
+end
+addon.MessageEngine = {
+	GetSourceDefinitions = function()
+		return { { sourceId = "local:say", sourceLabel = "Say" },
+			{ sourceId = "channel:trade", sourceLabel = "Trade" } }
+	end,
+}
 function addon:SetKeywordColorGroup(groupId, colorSpec)
 	for _, group in ipairs(settings.keywordColorGroups) do
 		if group.id == groupId then
@@ -260,6 +284,9 @@ end
 local suggestionSettings = {
 	enabled = true,
 	threshold = 5,
+	retainQueue = true,
+	dismissedCount = 0,
+	observedTermCount = 0,
 }
 local suggestions = {}
 for index = 1, 9 do
@@ -273,6 +300,7 @@ for index = 1, 9 do
 	})
 end
 function addon:GetKeywordSuggestionSettings()
+	suggestionSettings.queueCount = #suggestions
 	return suggestionSettings
 end
 function addon:SetKeywordSuggestionsEnabled(value)
@@ -282,6 +310,10 @@ end
 function addon:SetKeywordSuggestionThreshold(value)
 	suggestionSettings.threshold = math.max(1, math.floor(tonumber(value) or 1))
 	return true, suggestionSettings.threshold
+end
+function addon:SetKeywordSuggestionQueueRetention(value)
+	suggestionSettings.retainQueue = value and true or false
+	return true, suggestionSettings.retainQueue
 end
 function addon:GetKeywordSuggestions()
 	return suggestions
@@ -306,12 +338,20 @@ function addon:AddKeywordSuggestionToGroup(id, groupId)
 	return false, "unknown-group"
 end
 function addon:DismissKeywordSuggestion(id)
-	return removeSuggestion(id) and true or false, "unknown-candidate"
+	local removed = removeSuggestion(id)
+	if removed then suggestionSettings.dismissedCount = suggestionSettings.dismissedCount + 1 end
+	return removed and true or false, "unknown-candidate"
 end
 function addon:ClearKeywordSuggestions()
 	for index = #suggestions, 1, -1 do
 		table.remove(suggestions, index)
 	end
+	return true
+end
+function addon:ClearKeywordSuggestionData()
+	self:ClearKeywordSuggestions()
+	suggestionSettings.dismissedCount = 0
+	suggestionSettings.observedTermCount = 0
 	return true
 end
 
@@ -355,12 +395,14 @@ end
 assertPaneInside(config.keywordColorListPane, "color-group list")
 assertPaneInside(config.keywordColorInspectorWordsPane, "words inspector")
 assertPaneInside(config.keywordColorInspectorColorPane, "color inspector")
+assertPaneInside(config.keywordColorInspectorScopePane, "scope inspector")
 assert(paneRight(config.keywordColorListPane) <= config.keywordColorInspectorWordsPane.keywordLayoutBounds.left,
 	"color-group inventory overlaps its inspector")
 assert(config.keywordColorInspectorWordsPane.keywordLayoutBounds.left == config.keywordColorInspectorColorPane.keywordLayoutBounds.left
 	and paneRight(config.keywordColorInspectorWordsPane) == paneRight(config.keywordColorInspectorColorPane),
 	"exclusive group inspectors do not share stable bounds")
-assert(exactlyOneShown(config.keywordColorInspectorWordsPane, config.keywordColorInspectorColorPane),
+assert(exactlyOneShown(config.keywordColorInspectorWordsPane, config.keywordColorInspectorColorPane,
+	config.keywordColorInspectorScopePane),
 	"default group inspector exposed more than one task")
 assert(config.keywordColorInspectorSection == "words" and config.keywordColorInspectorWordsPane:IsShown(),
 	"group inspector did not default to WORDS")
@@ -376,6 +418,26 @@ assert((config.keywordColorOptionButtons[4].point.x + config.keywordColorOptionB
 config:SetKeywordColorInspectorSection("color")
 assert(config.keywordColorInspectorSection == "color" and config.keywordColorInspectorColorPane:IsShown()
 	and not config.keywordColorInspectorWordsPane:IsShown(), "COLOR did not replace WORDS in place")
+config:SetKeywordColorInspectorSection("words")
+config:SetKeywordColorInspectorSection("scope")
+assert(config.keywordColorInspectorScopePane:IsShown() and not config.keywordColorInspectorWordsPane:IsShown(),
+	"SCOPE did not replace WORDS in the same compact inspector")
+config:ApplySelectedKeywordColorScope("source")
+assert(groups[1].scopeType == "source" and groups[1].scopeId == "local:say",
+	"source selector did not choose a known source")
+config.keywordColorScopeNext.scripts.OnClick(config.keywordColorScopeNext)
+assert(groups[1].scopeId == "channel:trade" and config.keywordColorScopeTargetLabel:GetText() == "Trade",
+	"source selector did not advance with a readable label")
+config:ApplySelectedKeywordColorScope("view")
+assert(groups[1].scopeType == "view" and groups[1].scopeId == "general",
+	"tab selector did not choose a displayed tab")
+config:ApplySelectedKeywordColorScope("all")
+assert(groups[1].scopeType == nil and groups[1].scopeId == nil,
+	"everywhere did not clear the optional scope")
+assert(config.keywordColorScopePrevious.point.x == 0
+	and config.keywordColorScopeNext.point.x == 0
+	and config.keywordColorScopeTargetLabel.width <= 426,
+	"scope target selector escaped compact inspector bounds")
 config:SetKeywordColorInspectorSection("words")
 
 assert(#config.keywordColorGroupRows == 12, "group list did not use compact paging")
@@ -456,8 +518,25 @@ assert(config.keywordSuggestionSection == "review"
 	"Suggestions did not open to one focused REVIEW pane")
 assert(config.keywordSuggestionAddButton.parent == config.keywordSuggestionReviewPane
 	and config.keywordSuggestionTrackingToggle.parent == config.keywordSuggestionSettingsPane
-	and config.keywordSuggestionClearButton.parent == config.keywordSuggestionMorePane,
+	and config.keywordSuggestionClearButton.parent == config.keywordSuggestionMorePane
+	and config.keywordSuggestionEraseButton.parent == config.keywordSuggestionMorePane
+	and config.keywordSuggestionStorageSummary.parent == config.keywordSuggestionMorePane,
 	"suggestion actions were not separated by task")
+assert(localTop(config.keywordSuggestionStorageSummary) + config.keywordSuggestionStorageSummary.height
+	<= config.keywordSuggestionMorePane.height,
+	"stored-data summary escaped the MORE pane")
+for _, control in ipairs({ config.keywordSuggestionRetainButton,
+	config.keywordSuggestionRetentionNote, config.keywordSuggestionDismissalNote }) do
+	assert(control.parent == config.keywordSuggestionSettingsPane,
+		"queue retention control escaped REPORT SETTINGS")
+	local y = localTop(control)
+	assert(y + control.height <= config.keywordSuggestionSettingsPane.height,
+		"queue retention control escaped the fixed settings pane")
+end
+assert(config.keywordSuggestionSessionButton.parent == config.keywordSuggestionSettingsPane
+	and config.keywordSuggestionRetainButton.width + config.keywordSuggestionSessionButton.width + 6
+		<= config.keywordSuggestionSettingsPane.width,
+	"session-only button escaped the settings pane")
 assert(localTop(config.keywordSuggestionRows[8]) + config.keywordSuggestionRows[8].height <= localTop(config.keywordSuggestionPrevious),
 	"suggestion queue overlaps its pager")
 assert(localTop(config.keywordSuggestionGroupRows[6]) + config.keywordSuggestionGroupRows[6].height <= localTop(config.keywordSuggestionGroupPrevious),
@@ -496,6 +575,14 @@ assert(suggestionSettings.enabled == false, "candidate reporting toggle did not 
 config.keywordSuggestionThresholdEdit:SetText("7")
 config:CommitKeywordSuggestionThreshold()
 assert(suggestionSettings.threshold == 7, "candidate threshold did not call the exposed setting API")
+config.keywordSuggestionSessionButton.scripts.OnClick()
+assert(suggestionSettings.retainQueue == false
+	and config.keywordSuggestionRetentionNote:GetText():find("only this session", 1, true),
+	"session-only queue choice did not show its retention scope")
+config.keywordSuggestionRetainButton.scripts.OnClick()
+assert(suggestionSettings.retainQueue == true
+	and config.keywordSuggestionRetentionNote:GetText():find("stay saved", 1, true),
+	"retained queue choice did not show its retention scope")
 
 config:SetKeywordSuggestionsSection("review")
 config:DismissSelectedKeywordSuggestion()
@@ -503,6 +590,19 @@ assert(#suggestions == 7, "dismiss did not remove the selected report candidate"
 config:SetKeywordSuggestionsSection("more")
 config:ClearKeywordSuggestions()
 assert(#suggestions == 0, "clear did not empty the report queue")
+assert(suggestionSettings.dismissedCount == 1 and config.keywordSuggestionEraseButton.enabled,
+	"clear queue forgot dismissed words or hid the full erase control")
+assert(config.keywordSuggestionStorageSummary:GetText():find("1 dismissed", 1, true),
+	"MORE pane did not disclose retained dismissal data")
+config.keywordSuggestionEraseButton.scripts.OnClick()
+assert(config.pendingEraseKeywordSuggestionData == true
+	and suggestionSettings.dismissedCount == 1,
+	"ERASE REPORT DATA ran without its second-click confirmation")
+config.keywordSuggestionEraseButton.scripts.OnClick()
+assert(suggestionSettings.dismissedCount == 0 and not config.pendingEraseKeywordSuggestionData,
+	"confirmed ERASE REPORT DATA left dismissal history behind")
+assert(settings.keywordColorGroups[2].terms[#settings.keywordColorGroups[2].terms] == "candidate1",
+	"erasing report data removed an accepted color-group word")
 
 addon.GetKeywordSuggestions = nil
 config:RefreshKeywordSuggestionsPanel()

@@ -8,6 +8,7 @@ ChattyChattyBangBang = {
 			smartChat = {},
 		},
 	},
+	MessageEngine = { RegisterListener = function() end },
 }
 
 dofile("Core/Settings.lua")
@@ -82,6 +83,33 @@ local recoloredInstance = addon.Presentation:ColorizePlainText("M1 m1")
 assert(string.find(recoloredInstance, "|cffe64d47M1|r", 1, true), "keyword-rule cache did not refresh after group color change")
 assert(not string.find(recoloredInstance, "|cffe64d47m1|r", 1, true), "case-sensitive instance rule regressed after cache refresh")
 
+local scopedRecord = { id = 17, event = "CHAT_MSG_SYSTEM", text = "tank",
+	timestamp = "", sourceId = "local:say", view = "general" }
+assert(addon:SetKeywordColorGroupScope("tank", "source", "local:say"), "known source scope was rejected")
+local sourceHit = addon.Presentation:Format(scopedRecord, nil, nil, nil, nil, "general")
+assert(string.find(sourceHit, "|cff387ac7tank|r", 1, true), "matching source did not highlight")
+scopedRecord.sourceId = "channel:trade"
+local sourceMiss = addon.Presentation:Format(scopedRecord, nil, nil, nil, nil, "general")
+assert(not string.find(sourceMiss, "|cff387ac7tank|r", 1, true),
+	"flat legacy keyword map leaked highlight into another source")
+assert(addon:SetKeywordColorGroupScope("tank", "view", "trade"), "known tab scope was rejected")
+local viewHit = addon.Presentation:Format(scopedRecord, nil, nil, nil, nil, "trade")
+local viewMiss = addon.Presentation:Format(scopedRecord, nil, nil, nil, nil, "general")
+assert(string.find(viewHit, "|cff387ac7tank|r", 1, true), "matching displayed tab did not highlight")
+assert(not string.find(viewMiss, "|cff387ac7tank|r", 1, true),
+	"primary record route incorrectly replaced the actual displayed tab")
+local wrappedViewHit = addon.Presentation:FormatWrapped(scopedRecord, nil, nil, nil, 80, nil, "trade")
+assert(string.find(wrappedViewHit, "|cff387ac7tank|r", 1, true),
+	"aligned/wrapped rendering dropped the displayed tab scope")
+assert(not addon:SetKeywordColorGroupScope("tank", "view", string.rep("x", 41))
+	and not addon:SetKeywordColorGroupScope("tank", "source", "bad|id"),
+	"unbounded or markup-bearing scope IDs were accepted")
+assert(addon:ResetKeywordColorGroups() and addon:GetKeywordColorGroup("tank").scopeId == "trade",
+	"resetting built-in colors discarded an advanced highlight scope")
+assert(addon:SetKeywordColorGroupScope("tank", "all"), "everywhere scope was rejected")
+assert(addon:GetKeywordColorGroup("tank").scopeType == nil,
+	"everywhere did not restore global highlight behavior")
+
 local function clone(value)
 	if type(value) ~= "table" then
 		return value
@@ -145,6 +173,8 @@ assert(findGroup(addon:GetSmartSettings().keywordColorGroups, "groupFinder").col
 -- flat map happens to remain in the SavedVariables table.
 local explicitGroups = clone(v24Groups)
 findGroup(explicitGroups, "groupFinder").color = "success"
+findGroup(explicitGroups, "groupFinder").scopeType = "view"
+findGroup(explicitGroups, "groupFinder").scopeId = "trade"
 addon.db.profile.smartChat = {
 	keywordColors = { lf = "danger" },
 	keywordColorGroups = explicitGroups,
@@ -152,6 +182,8 @@ addon.db.profile.smartChat = {
 }
 local explicit = addon:GetSmartSettings()
 assert(findGroup(explicit.keywordColorGroups, "groupFinder").color == "success", "explicit grouped color was overwritten by legacy flat data")
+assert(findGroup(explicit.keywordColorGroups, "groupFinder").scopeId == "trade",
+	"schema migration lost an existing advanced highlight scope")
 assert(explicit.keywordColorGroupSchema == 3, "explicit grouped profile did not persist migration schema")
 
 local created, personal = addon:CreateKeywordColorGroup("Raid Calls", "success")
@@ -160,6 +192,42 @@ assert(addon:AddKeywordColorGroupTerm(personal.id, "world buff"), "personal grou
 assert(not addon:AddKeywordColorGroupTerm("tank", "world buff"), "a phrase was allowed to belong to two groups")
 assert(string.find(addon.Presentation:ColorizePlainText("World Buff"), "|cff4dd191World Buff|r", 1, true),
 	"personal group phrase was not colorized")
+
+-- A reviewed UTF-8 suggestion must be accepted into a color group and then
+-- match whole words (including simple Cyrillic case variants), not substrings
+-- inside a longer Cyrillic word. Emoji and malformed bytes remain invalid.
+dofile("Core/KeywordSuggestions.lua")
+addon.KeywordSuggestions:Initialize()
+for tick = 1, 5 do
+	addon.KeywordSuggestions:Observe({ event = "CHAT_MSG_CHANNEL",
+		text = "Рейдовый M" .. tick, sender = tick % 2 == 0 and "Beta" or "Alpha",
+		time = tick, epoch = 1000 + tick, sourceLabel = "General" })
+end
+local unicodeSuggestions = addon:GetKeywordSuggestions()
+assert(#unicodeSuggestions == 1 and unicodeSuggestions[1].id == "рейдовый",
+	"UTF-8 word did not reach the review queue as one normalized token")
+assert(addon:AddKeywordSuggestionToGroup("рейдовый", personal.id),
+	"reviewed UTF-8 suggestion could not be accepted into a color group")
+for tick = 10, 14 do
+	addon.KeywordSuggestions:Observe({ event = "CHAT_MSG_CHANNEL",
+		text = "Рейдовый M" .. tick, sender = tick % 2 == 0 and "Beta" or "Alpha",
+		time = tick, epoch = 1000 + tick, sourceLabel = "General" })
+end
+assert(#addon:GetKeywordSuggestions() == 0,
+	"already accepted UTF-8 word returned to the suggestion queue")
+assert(not addon:AddKeywordColorGroupTerm("tank", "РЕЙДОВЫЙ"),
+	"case variant of a UTF-8 term was allowed to belong to two groups")
+assert(not addon:AddKeywordColorGroupTerm(personal.id, "😀")
+	and not addon:AddKeywordColorGroupTerm(personal.id, string.char(0xD0)),
+	"emoji or malformed UTF-8 was accepted as a color term")
+local unicodeColored = addon.Presentation:ColorizePlainText("Рейдовый рейдовый суперрейдовый «рейдовый»")
+assert(string.find(unicodeColored, "|cff4dd191Рейдовый|r", 1, true)
+	and string.find(unicodeColored, "|cff4dd191рейдовый|r", 1, true),
+	"accepted UTF-8 term did not color ordinary case variants")
+assert(not string.find(unicodeColored, "супер|cff4dd191рейдовый|r", 1, true),
+	"keyword colorizer matched inside a longer UTF-8 word")
+assert(string.find(unicodeColored, "«|cff4dd191рейдовый|r»", 1, true),
+	"UTF-8 punctuation was treated as part of the adjacent keyword")
 assert(addon:ResetKeywordColorGroups(), "group reset failed after a personal group was added")
 assert(findGroup(addon:GetKeywordColorGroups(), personal.id), "reset unexpectedly deleted a personal color group")
 assert(addon:DeleteKeywordColorGroup(personal.id), "personal color group could not be deleted")

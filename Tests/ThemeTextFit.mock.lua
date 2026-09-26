@@ -24,7 +24,9 @@ function FontString:SetWordWrap(value) self.wordWrap = value end
 function FontString:SetNonSpaceWrap(value) self.nonSpaceWrap = value end
 function FontString:GetFont() return "mock-font", 10, "" end
 function FontString:GetStringWidth()
-	local intrinsic = string.len(self.text or "") * 7 * metricScale
+	local value = self.text or ""
+	local _, continuationBytes = string.gsub(value, "[\128-\191]", "")
+	local intrinsic = (string.len(value) - continuationBytes) * 7 * metricScale
 	-- Model a 3.3.5 client that reports the clipped region when constrained.
 	if self.width then return math.min(intrinsic, self.width) end
 	return intrinsic
@@ -126,6 +128,9 @@ local fixed = Theme:CreateButton(UIParent, "FIXED WIDTH LABEL", 42, 20, false)
 fixed:SetLabel("AN EVEN LONGER FIXED LABEL")
 assert(fixed:GetWidth() == 42 and fixed._themeLabelClipped,
 	"ordinary fixed-width buttons expanded or lost their safe clipping")
+fixed:SetBoundedLabelFit(42)
+assert(fixed:GetWidth() == 42 and fixed.text.text:sub(-3) == "…",
+	"a grid-capped label crossed its sibling cell or remained silently clipped")
 
 local lateFont = Theme:CreateButton(UIParent, "SOURCE", 58, 20, false)
 metricScale = 1
@@ -141,5 +146,33 @@ metricScale = 1
 Theme:Refresh()
 assert(not lateFont._themeLabelClipped,
 	"theme refresh did not remeasure a fixed-width label after font metrics changed")
+
+local bounded = Theme:CreateButton(UIParent, "RESET NAME/KEY", 96, 24, false)
+bounded:SetBoundedLabelFit(220)
+assert(bounded:GetWidth() > 96 and bounded:GetWidth() <= 220
+	and not bounded._themeLabelClipped and bounded.text.text == "RESET NAME/KEY",
+	"bounded label did not use only the reserved width needed for its full text")
+metricScale = 3
+bounded.scripts.OnShow(bounded)
+assert(bounded:GetWidth() == 220 and bounded._themeLabelClipped
+	and bounded.text.text:sub(-3) == "…"
+	and bounded._themeFullLabel == "RESET NAME/KEY",
+	"oversized localized label crossed its cap or lost its full tooltip text")
+local rendered = bounded.text.text
+bounded.text:SetWidth(Theme.TEXT_MEASURE_WIDTH)
+assert(bounded.text:GetStringWidth() <= 220 - (Theme.BUTTON_TEXT_INSET * 2),
+	"bounded ellipsis still painted across its visible edge gutter")
+bounded.text:SetWidth(220 - (Theme.BUTTON_TEXT_INSET * 2))
+bounded:SetTooltip("Restore the tab label", "Keep the existing route.")
+GameTooltip.lines = {}
+bounded.scripts.OnEnter(bounded)
+assert(GameTooltip.title == "Restore the tab label"
+	and GameTooltip.lines[#GameTooltip.lines] == "Label: RESET NAME/KEY",
+	"bounded ellipsis lost the original label or overwrote the existing help tooltip")
+metricScale = 1
+Theme:Refresh()
+assert(not bounded._themeLabelClipped and bounded.text.text == "RESET NAME/KEY"
+	and bounded:GetWidth() <= 220,
+	"theme refresh did not restore the full bounded label after font metrics changed")
 
 print("Theme text-fit mock tests passed")

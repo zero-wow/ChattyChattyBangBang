@@ -134,4 +134,110 @@ for tick = 110, 114 do
 end
 assert(#addon:GetKeywordSuggestions() == 0, "private/guild chat leaked into persisted suggestions")
 
+-- Lua 5.1's %a sees UTF-8 bytes as punctuation. Preserve complete common-
+-- script words, fold simple Cyrillic/Latin-1 capitals, and reject symbols.
+local function expectUnicodeSuggestion(word, expected, firstTick)
+	addon:ClearKeywordSuggestions()
+	for tick = firstTick, firstTick + 4 do
+		engine:Observe(record(word .. " M" .. tick,
+			tick % 2 == 0 and "Beta" or "Alpha", tick))
+	end
+	local found = addon:GetKeywordSuggestions()
+	assert(#found == 1 and found[1].id == expected,
+		"UTF-8 word was dropped, fragmented, or offered under the wrong key: " .. tostring(expected))
+end
+
+expectUnicodeSuggestion("Рейдовый", "рейдовый", 200)
+expectUnicodeSuggestion("рейдовый", "рейдовый", 210)
+expectUnicodeSuggestion("Überraschung", "überraschung", 220)
+expectUnicodeSuggestion("副本", "副本", 230)
+expectUnicodeSuggestion("던전", "던전", 240)
+local decomposedCafe = "Cafe" .. string.char(0xCC, 0x81)
+expectUnicodeSuggestion(decomposedCafe, "cafe" .. string.char(0xCC, 0x81), 235)
+addon:ClearKeywordSuggestions()
+for tick = 245, 249 do
+	local word = tick % 2 == 0 and "Рейдовый" or "рейдовый"
+	engine:Observe(record(word .. " M" .. tick,
+		tick % 2 == 0 and "Beta" or "Alpha", tick))
+end
+local folded = addon:GetKeywordSuggestions()
+assert(#folded == 1 and folded[1].id == "рейдовый" and folded[1].count == 5,
+	"mixed Cyrillic case was split into separate suggestion counters")
+
+addon:ClearKeywordSuggestions()
+for tick = 250, 254 do
+	engine:Observe(record("😀😀😀😀 M" .. tick,
+		tick % 2 == 0 and "Beta" or "Alpha", tick))
+	engine:Observe(record("Ab" .. string.char(0xD0) .. "cd M" .. tick,
+		tick % 2 == 0 and "Beta" or "Alpha", tick + 10))
+end
+assert(#addon:GetKeywordSuggestions() == 0,
+	"emoji or malformed UTF-8 became a candidate keyword")
+
+addon:ClearKeywordSuggestions()
+for tick = 270, 274 do
+	engine:Observe(record(string.rep("副", 14) .. " M" .. tick,
+		tick % 2 == 0 and "Beta" or "Alpha", tick))
+end
+assert(#addon:GetKeywordSuggestions() == 0 and engine.trackedCount == 0,
+	"oversized UTF-8 token bypassed the bounded term limit")
+
+-- Queue entries (including short chat samples) persist by default. In
+-- session-only mode they remain usable now but never enter SavedVariables;
+-- the in-memory counting ledger always disappears on a profile/reload reset.
+addon:ClearKeywordSuggestionData()
+local savedSuggestions = addon:GetSmartSettings().keywordSuggestions
+assert(addon:GetKeywordSuggestionSettings().retainQueue == true,
+	"existing profiles did not keep their original retained-queue behavior")
+for tick = 300, 304 do
+	engine:Observe(record("Keepforge M" .. tick, tick % 2 == 0 and "Beta" or "Alpha", tick))
+end
+assert(#savedSuggestions.queue == 1 and savedSuggestions.queue[1].sample ~= "",
+	"default review queue and its sample were not saved in SavedVariables")
+assert(addon:DismissKeywordSuggestion("keepforge"), "could not dismiss the retained candidate")
+for tick = 310, 314 do
+	engine:Observe(record("Temporaryforge M" .. tick, tick % 2 == 0 and "Beta" or "Alpha", tick))
+end
+assert(addon:SetKeywordSuggestionQueueRetention(false), "session-only queue choice failed")
+assert(#savedSuggestions.queue == 0 and #addon:GetKeywordSuggestions() == 1,
+	"session-only choice did not remove the stored queue while keeping this session's report")
+assert(addon:GetKeywordSuggestionSettings().dismissedCount == 1,
+	"session-only queue choice silently forgot dismissed terms")
+engine:ResetForProfile()
+assert(#addon:GetKeywordSuggestions() == 0 and savedSuggestions.dismissed.keepforge,
+	"session-only queue survived reset or dismissed terms were lost")
+for tick = 320, 324 do
+	engine:Observe(record("Sessionforge M" .. tick, tick % 2 == 0 and "Beta" or "Alpha", tick))
+end
+assert(#savedSuggestions.queue == 0 and addon:GetKeywordSuggestions()[1].id == "sessionforge",
+	"session-only observations leaked back into SavedVariables")
+assert(addon:SetKeywordSuggestionQueueRetention(true), "return to retained queue failed")
+assert(savedSuggestions.queue[1].id == "sessionforge",
+	"return to retained queue did not save the current review item")
+addon:ClearKeywordSuggestions()
+assert(#savedSuggestions.queue == 0 and savedSuggestions.dismissed.keepforge,
+	"CLEAR REVIEW QUEUE erased dismissal history or failed to clear the queue")
+assert(addon:ClearKeywordSuggestionData(), "erase report data failed")
+assert(next(savedSuggestions.dismissed) == nil and #savedSuggestions.queue == 0
+	and engine.trackedCount == 0,
+	"erase report data left queue, dismissals, or in-session observations behind")
+local retainedGroup = addon:GetKeywordColorGroup("dungeons")
+local stillColored = false
+for _, termSpec in ipairs(retainedGroup.terms or {}) do
+	if termSpec == "frostforge" then stillColored = true break end
+end
+assert(stillColored, "erasing suggestion data removed a user-accepted color-group word")
+
+-- Old profiles with no retention field keep their saved queue. A profile that
+-- explicitly chose session-only must not resurrect stale imported queue data.
+savedSuggestions.retainQueue = nil
+savedSuggestions.queue = { { id = "legacyforge", term = "legacyforge", count = 5 } }
+assert(addon:GetKeywordSuggestionSettings().retainQueue == true
+	and addon:GetKeywordSuggestions()[1].id == "legacyforge",
+	"legacy queue was silently discarded during retention migration")
+savedSuggestions.retainQueue = false
+engine:ResetForProfile()
+assert(#savedSuggestions.queue == 0 and #addon:GetKeywordSuggestions() == 0,
+	"session-only profile restored old queued samples from SavedVariables")
+
 print("Keyword suggestion mock tests passed")

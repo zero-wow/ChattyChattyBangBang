@@ -87,6 +87,20 @@ function diagnostics:PrintStatus()
 	local startup = db.startup or {}
 	printStatus("session " .. tostring(db.session) .. ": "
 		.. tostring(startup.stage or "unknown") .. " (" .. tostring(startup.status or "unknown") .. ")")
+	local recovery = db.chatRecovery
+	if type(recovery) == "table" and recovery.session == db.session then
+		local pending = math.max(0, tonumber(recovery.pending) or 0)
+		local unresolved = math.max(0, tonumber(recovery.unresolved) or 0)
+		printStatus("chat catch-up: " .. tostring(math.max(0, tonumber(recovery.recovered) or 0))
+			.. " restored, " .. tostring(pending) .. " waiting, " .. tostring(unresolved) .. " unresolved")
+		if recovery.fallbackFailed then
+			printStatus("Blizzard chat could not be revealed; open Chatty > Start Here and try SHOW BLIZZARD CHAT after chat restrictions lift.")
+		elseif pending > 0 then
+			printStatus("Open Chatty > Start Here to check catch-up. Blizzard chat is the temporary safety view.")
+		elseif unresolved > 0 then
+			printStatus("Check Blizzard chat; text the client never exposed to Chatty cannot be restored.")
+		end
+	end
 	local entry = db.entries[#db.entries]
 	if entry then
 		printStatus("last " .. tostring(entry.kind) .. ": " .. clipped(entry.message, 260))

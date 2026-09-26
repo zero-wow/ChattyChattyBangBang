@@ -285,44 +285,65 @@ function Presentation:GetChannelColor(record)
 end
 
 local function keywordBoundary(text, position)
-	local character = sub(text, position, position)
-	return character == "" or not find(character, "[%a%d]")
+	local character = byte(text, position)
+	if not character then return true end
+	if character < 128 then
+		return not ((character >= 48 and character <= 57)
+			or (character >= 65 and character <= 90) or (character >= 97 and character <= 122))
+	end
+	local scanner = addon.KeywordSuggestions
+	return not (scanner and scanner.IsWordAt and scanner:IsWordAt(text, position))
+end
+
+local function keywordLower(text)
+	if addon.NormalizeKeywordColorTerm then
+		return addon:NormalizeKeywordColorTerm(text)
+	end
+	return lower(text)
 end
 
 function Presentation:GetKeywordColorRules(settings)
 	local revision = tonumber(settings.keywordColorRevision) or 0
 	local cached = self.keywordColorRuleCache
 	if cached and cached.settings == settings and cached.revision == revision then
-		return cached.rules, cached.caseSensitiveTerms
+		return cached.rules, cached.caseSensitiveTerms, cached.hasUnicodeTerms
 	end
 
 	local groups = settings.keywordColorGroups or {}
 	local rules = {}
 	local caseSensitiveTerms = {}
+	local groupedTerms = {}
+	local hasUnicodeTerms = false
+	local hasScopes = false
 
 	-- Gather phrases and ordinary tokens together, then prefer the longest
 	-- matching term. That makes EXP AURA one colored phrase and prevents its
 	-- AURA member from winning prematurely.
 	for _, group in ipairs(groups) do
 		if type(group) == "table" and type(group.color) == "string" then
+			if group.scopeType == "source" or group.scopeType == "view" then hasScopes = true end
 			for _, termSpec in ipairs(group.terms or {}) do
 				local term = type(termSpec) == "table" and termSpec.term or termSpec
 				if type(term) == "string" and term ~= "" then
+					if find(term, "[\128-\255]") then hasUnicodeTerms = true end
+					groupedTerms[keywordLower(term)] = true
 					local caseSensitive = type(termSpec) == "table" and termSpec.caseSensitive == true
 					local numericSuffix = type(termSpec) == "table" and termSpec.numericSuffix == true
 					if caseSensitive then
 						-- Legacy keywordColors materializes every group term in lowercase
 						-- for API compatibility. Do not let that broad fallback undo an
 						-- explicit uppercase-only rule such as RFC or M10+.
-						caseSensitiveTerms[lower(term)] = true
+						caseSensitiveTerms[keywordLower(term)] = true
 					end
 						table.insert(rules, {
 							term = term,
-							comparison = lower(term),
+							comparison = keywordLower(term),
 							color = group.color,
+							scopeType = group.scopeType,
+							scopeId = group.scopeId,
 							caseSensitive = caseSensitive,
 							numericSuffix = numericSuffix,
-							numericPrefix = numericSuffix and lower(string.gsub(term, "#", "")) or nil,
+							numericPrefix = numericSuffix and keywordLower(string.gsub(term, "#", "")) or nil,
 						})
 				end
 			end
@@ -336,16 +357,36 @@ function Presentation:GetKeywordColorRules(settings)
 		revision = revision,
 		rules = rules,
 		caseSensitiveTerms = caseSensitiveTerms,
+		groupedTerms = groupedTerms,
+		hasUnicodeTerms = hasUnicodeTerms,
+		hasScopes = hasScopes,
 	}
-	return rules, caseSensitiveTerms
+	return rules, caseSensitiveTerms, hasUnicodeTerms
 end
 
-function Presentation:ColorizePlainText(text)
+function Presentation:ColorizePlainText(text, context)
 	local settings = addon.GetPreparedSmartSettings and addon:GetPreparedSmartSettings() or addon:GetSmartSettings()
 	local colors = settings.keywordColors or {}
-	local rules, caseSensitiveTerms = self:GetKeywordColorRules(settings)
+	local rules, caseSensitiveTerms, hasUnicodeTerms = self:GetKeywordColorRules(settings)
+	local groupedTerms = self.keywordColorRuleCache.groupedTerms
+	-- Filter once per plain segment, not once per candidate character. The
+	-- compiled vocabulary is cached by revision and old/global groups pay no
+	-- extra allocation at all.
+	if self.keywordColorRuleCache.hasScopes then
+		local activeRules = {}
+		local sourceId = type(context) == "table" and context.sourceId or nil
+		local viewId = type(context) == "table" and context.viewId or nil
+		for _, rule in ipairs(rules) do
+			if not rule.scopeType or rule.scopeType == "all"
+				or (rule.scopeType == "source" and rule.scopeId and sourceId == rule.scopeId)
+				or (rule.scopeType == "view" and rule.scopeId and viewId == rule.scopeId) then
+				activeRules[#activeRules + 1] = rule
+			end
+		end
+		rules = activeRules
+	end
 
-	local loweredText = lower(text)
+	local loweredText = hasUnicodeTerms and keywordLower(text) or lower(text)
 	local position, length = 1, #text
 	local output = {}
 	while position <= length do
@@ -384,7 +425,7 @@ function Presentation:ColorizePlainText(text)
 			if token then
 				local normalizedToken = lower(token)
 				local colorSpec
-				if not caseSensitiveTerms[normalizedToken] then
+				if not caseSensitiveTerms[normalizedToken] and not groupedTerms[normalizedToken] then
 					colorSpec = colors[normalizedToken]
 				end
 				table.insert(output, colorSpec and self:ColorSpec(token, colorSpec) or token)
@@ -575,8 +616,8 @@ local function trimURLCandidate(candidate)
 	return candidate
 end
 
-function Presentation:ColorizePlainTextWithURLs(text)
-	if type(text) ~= "string" or text == "" then return self:ColorizePlainText(text or "") end
+function Presentation:ColorizePlainTextWithURLs(text, context)
+	if type(text) ~= "string" or text == "" then return self:ColorizePlainText(text or "", context) end
 	local lowered = lower(text)
 	local output, cursor = {}, 1
 	while cursor <= #text do
@@ -586,12 +627,12 @@ function Presentation:ColorizePlainTextWithURLs(text)
 		if protocolAt and wwwAt then startAt = min(protocolAt, wwwAt)
 		else startAt = protocolAt or wwwAt end
 		if not startAt then
-			output[#output + 1] = self:ColorizePlainText(sub(text, cursor))
+			output[#output + 1] = self:ColorizePlainText(sub(text, cursor), context)
 			break
 		end
 		local previous = startAt > 1 and sub(text, startAt - 1, startAt - 1) or ""
 		if previous:match("[%w_@]") then
-			output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt))
+			output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt), context)
 			cursor = startAt + 1
 		else
 			local finish = startAt
@@ -604,12 +645,12 @@ function Presentation:ColorizePlainTextWithURLs(text)
 			local candidate = trimURLCandidate(sub(text, startAt, finish - 1))
 			if isSafeCopyURL(candidate) then
 				if startAt > cursor then
-					output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt - 1))
+					output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt - 1), context)
 				end
 				output[#output + 1] = self:Color("|H" .. URL_LINK_PREFIX .. candidate .. "|h" .. candidate .. "|h", "accent")
 				cursor = startAt + #candidate
 			else
-				output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt))
+				output[#output + 1] = self:ColorizePlainText(sub(text, cursor, startAt), context)
 				cursor = startAt + 1
 			end
 		end
@@ -841,17 +882,17 @@ end
 -- into Interface\\TargetingFrame\\... would corrupt the texture escape.  A
 -- second pass through ColorizeMessage handles any generated texture tags as
 -- opaque markup instead of raw words.
-function Presentation:ColorizePlainSegment(text, skipExpressionReplacement)
+function Presentation:ColorizePlainSegment(text, skipExpressionReplacement, context)
 	if text == "" then
 		return ""
 	end
 	if not skipExpressionReplacement then
 		local replaced = self:ReplaceChatExpressions(text)
 		if replaced ~= text then
-			return self:ColorizeMessage(replaced, true)
+			return self:ColorizeMessage(replaced, true, context)
 		end
 	end
-	return self:ColorizePlainTextWithURLs(text)
+	return self:ColorizePlainTextWithURLs(text, context)
 end
 
 local controlSequences = {
@@ -876,7 +917,7 @@ local function findNextControlSequence(text, cursor)
 	return earliest, kind
 end
 
-function Presentation:ColorizeMessage(text, skipExpressionReplacement)
+function Presentation:ColorizeMessage(text, skipExpressionReplacement, context)
 	text = tostring(text or "")
 	local result = {}
 	local cursor = 1
@@ -884,12 +925,12 @@ function Presentation:ColorizeMessage(text, skipExpressionReplacement)
 	while cursor <= textLength do
 		local controlStart, controlKind = findNextControlSequence(text, cursor)
 		if not controlStart then
-			table.insert(result, self:ColorizePlainSegment(sub(text, cursor), skipExpressionReplacement))
+			table.insert(result, self:ColorizePlainSegment(sub(text, cursor), skipExpressionReplacement, context))
 			break
 		end
 
 		if controlStart > cursor then
-			table.insert(result, self:ColorizePlainSegment(sub(text, cursor, controlStart - 1), skipExpressionReplacement))
+			table.insert(result, self:ColorizePlainSegment(sub(text, cursor, controlStart - 1), skipExpressionReplacement, context))
 		end
 
 		if controlKind == "link" then
@@ -1110,7 +1151,7 @@ end
 -- aids supplied by SmartDock. They deliberately pad only rendered text: chat
 -- history, routing, sender links, and saved records remain byte-for-byte
 -- untouched.
-function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, metadata)
+function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, metadata, viewId)
 	metadata = type(metadata) == "table" and metadata or nil
 	local timestamp = self:Color(record.timestamp or "", "textMuted")
 	local sourceText = self:GetSource(record)
@@ -1137,7 +1178,8 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 	if red then
 		source = self:ColorRGB(formattedSourceText, red, green, blue)
 	end
-	local message = self:ColorizeMessage(self:FormatEventText(record))
+	local message = self:ColorizeMessage(self:FormatEventText(record), nil,
+		{ sourceId = record.sourceId, viewId = viewId })
 	local rawSender = record.sender
 	local normalizedSenderSpacing = math.max(-8,
 		math.min(8, math.floor(tonumber(senderColumnSpacing) or 2)))
@@ -1186,8 +1228,8 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 	return leader, message
 end
 
-function Presentation:Format(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, metadata)
-	local leader, message = self:FormatParts(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, metadata)
+function Presentation:Format(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, metadata, viewId)
+	local leader, message = self:FormatParts(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, metadata, viewId)
 	return leader .. message
 end
 
@@ -1469,8 +1511,8 @@ function Presentation:GetAdaptiveHangingWrapBudget(leaderColumns, totalColumns)
 	return min(12, 6 + floor(extraWidth / 8)), continuationContentColumns
 end
 
-function Presentation:FormatWrapped(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, totalColumns, metadata)
-	local leader, message = self:FormatParts(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, metadata)
+function Presentation:FormatWrapped(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, totalColumns, metadata, viewId)
+	local leader, message = self:FormatParts(record, sourceColumnWidth, senderColumnWidth, senderColumnSpacing, metadata, viewId)
 	local leaderColumns = renderedColumnCount(leader)
 	local exactMessage, exactBreaks = self:WrapRenderedMessage(message, leaderColumns, totalColumns, leaderColumns)
 	local adaptiveBreakBudget = self:GetAdaptiveHangingWrapBudget(leaderColumns, totalColumns)

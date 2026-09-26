@@ -17,6 +17,7 @@ local function widget(width, height, shown)
 	function value:SetHeight(nextHeight) self.height = nextHeight end
 	function value:GetHeight() return self.height end
 	function value:GetWidth() return self.width end
+	function value:SetWidth(nextWidth) self.width = nextWidth end
 	function value:IsShown() return self.shown == true end
 	function value:Show() self.shown = true end
 	function value:Hide() self.shown = false end
@@ -238,5 +239,99 @@ assert(dock.searchTitle.text == "HISTORY: Mira"
 assert(not dock:ToggleSearchDrawer(true) and dock.searchSenderHistory == nil
 	and dock.searchSenderEdit.text == "",
 	"closing player HISTORY left a sticky exact-sender filter in ordinary FIND")
+
+-- One compact header control filters saved results or saves a previewed line.
+-- Reanchoring it leaves a visible four-pixel gutter from its neighbor and
+-- keeps the title inside its own lane at the minimum-width drawer.
+dock.searchCloseButton = widget(18, 18)
+dock.searchBookmarkButton = widget(58, 18)
+dock.searchOpen = true
+dock.searchBookmarksOnly = false
+dock.searchSelectedRecord = nil
+dock.searchResult = { records = { records[1] }, hasMore = false }
+dock.searchResultIndex = 1
+local saved = {}
+addon.MessageEngine.IsBookmarked = function(_, record) return saved[record.id] == true end
+addon.MessageEngine.ToggleBookmark = function(_, record)
+	saved[record.id] = not saved[record.id]
+	return saved[record.id]
+end
+addon.MessageEngine.SearchHistory = function(_, query)
+	lastQuery = query
+	local matches = not query.bookmarked or saved[records[1].id]
+	return { records = matches and { records[1] } or {}, hasMore = false }
+end
+dock:RefreshSearchDrawer()
+assert(dock.searchBookmarkButton.text == "SAVED"
+	and point(dock.searchBookmarkButton, "RIGHT")[2] == dock.searchFilterButton
+	and point(dock.searchBookmarkButton, "RIGHT")[4] == -4
+	and point(dock.searchTitle, "RIGHT")[2] == dock.searchBookmarkButton,
+	"minimum-width search header lost the saved-results control or its gutters")
+assert(dock:ToggleSearchBookmark() == true and lastQuery.bookmarked == true
+	and dock.activeView == "general",
+	"saved-results filter did not query retained bookmarks without switching tabs")
+dock.searchSelectedRecord = records[1]
+dock:RefreshSearchDrawer()
+assert(dock.searchBookmarkButton.text == "SAVE"
+	and point(dock.searchBookmarkButton, "RIGHT")[2] == dock.searchCloseButton,
+	"preview save control did not move next to close with a safe gutter")
+assert(dock:ToggleSearchBookmark() == true and dock.searchBookmarkButton.text == "UNSAVE"
+	and dock.searchPreviewMeta.text == "Saved · preview only",
+	"previewed message could not be saved in place")
+assert(dock:ToggleSearchBookmark() == false and dock.searchSelectedRecord == nil
+	and #dock.searchResult.records == 0,
+	"removing a bookmark left the line visible in saved-only results")
+
+-- Copy-one and page export reuse the same 70px search surface. Only the
+-- explicit single-line action opts into private text; both are selectable
+-- EditBox text rather than an unavailable programmatic clipboard API.
+dock.searchCopyScroll = widget(282, 23, false)
+dock.searchCopyHint = widget(282, 18, false)
+dock.searchCopyButton = widget(52, 18, false)
+dock.searchExportButton = widget(60, 20, false)
+dock.searchCopyEdit = widget(280, 24, false)
+dock.searchCopyEdit.SetFocus = function(self) self.focused = true end
+dock.searchCopyEdit.HighlightText = function(self) self.highlighted = true end
+dock.searchCopyEdit.ClearFocus = function(self) self.focused = false end
+dock.searchCopyMeasure = widget(280, 24, false)
+dock.searchCopyMeasure.GetStringHeight = function() return 28 end
+local exportOptions
+addon.MessageEngine.ExportRetainedText = function(_, selected, options)
+	exportOptions = options
+	return "12:34  Trade · Mira  Plain readable line", 1, 0, false
+end
+dock.searchBookmarksOnly = false
+dock.searchResult = { records = { records[1] }, hasMore = false }
+dock.searchSelectedRecord = records[1]
+assert(dock:CopySelectedSearchMessage() and dock.searchCopyMode
+	and exportOptions.maxLines == 1 and exportOptions.maxBytes == 8192
+	and exportOptions.includePrivate == true
+	and dock.searchCopyEdit.highlighted and dock.searchCopyEdit.focused
+	and dock.searchCopyScroll:IsShown() and dock.searchTitle.text == "COPY MESSAGE"
+	and dock.activeView == "general",
+	"copy-one did not open selected WoW edit text without changing the chat tab")
+assert(dock.searchCopyEdit.text:find("Plain readable line", 1, true)
+	and not dock.searchPreview:IsShown() and not dock.searchCopyButton:IsShown(),
+	"copy surface overlapped the preview or lost its selectable text")
+dock:ClearSearchCopy()
+dock:RefreshSearchDrawer()
+assert(dock:ExportSearchResultPage() and exportOptions.maxLines == 20
+	and exportOptions.includePrivate == false
+	and dock.searchTitle.text == "EXPORT PAGE",
+	"page export did not apply the private-safe current-result scope")
+assert(24 + 18 + 4 <= 46 and 46 + 20 <= 70 - 4,
+	"minimum-height COPY button/preview crossed the result lane or bottom border")
+addon.MessageEngine.byId[records[1].id] = nil
+addon.MessageEngine.historyGeneration = 2
+assert(dock:RefreshSearchAfterHistoryMutation()
+	and dock.searchCopyEdit.text == "" and not dock.searchCopyMode,
+	"blocking/removing a copied line left its text in a hidden export field")
+dock.searchQueryLabel.GetStringWidth = function() return 64 end
+dock.searchQueryRow.width = 284
+dock:RefreshSearchDrawerLayout(4, 70)
+assert(point(dock.searchTextEdit, "RIGHT")[2] == dock.searchExportButton
+	and point(dock.searchTextEdit, "RIGHT")[4] == -4
+	and 284 - 32 - 4 - 60 - 4 - point(dock.searchTextEdit, "LEFT")[4] >= 90,
+	"292px search drawer lost a usable query field or gutter beside EXPORT/GO")
 
 print("SmartDock retained-history search drawer mock passed")

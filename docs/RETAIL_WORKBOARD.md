@@ -6,7 +6,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. Purple is for work that cannot be considered locally complete until Zero validates it in-game.
 
-**Progress:** 73/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+**Progress:** 83/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
 ## Add — missing capabilities
 
@@ -22,8 +22,8 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | A08 | 🟢 | New Channels shows passively learned public/Community sources; Add Tab, Ignore, and deletion choices preserve existing views. Focused config/routing mocks pass. |
 | A09 | 🟢 | FIND searches retained normal chat by text, sender, source, date, or current tab with bounded paging and a full-message preview; blocked/held private records stay separate. Search and compact-layout mocks pass. |
 | A10 | 🟢 | Player HISTORY action opens an exact-sender, all-tab preview in the bounded retained-history drawer without changing tabs; blocked records stay excluded. Search/layout mocks pass. |
-| A11 | 🔴 | Bookmarks for retained messages. |
-| A12 | 🔴 | Copy one message and bounded transcript selection/export. |
+| A11 | 🟢 | Up to 100 retained-message bookmarks are saved as sequence references, not text copies; eviction, blocking, and clear remove stale references. Search UI and reload mocks pass. |
+| A12 | 🟢 | COPY exposes one selected message; EXPORT exposes up to 20 lines/8 KiB from the filtered current results page as selectable Ctrl+C text. Blocked/held/stale lines are excluded, and page export excludes private chat. Arbitrary multi-select/full archive export are not included. Mocks pass. |
 | A13 | 🟢 | Safe plain-text web addresses become copy-only links in displayed chat; saved text and WoW hyperlinks remain unchanged. Narrow-popup and link mocks pass. |
 | A14 | 🔴 | Optional hyperlink-hover previews in Smart Chat and Messenger. |
 | A15 | 🔴 | Invite-link actions in message text. |
@@ -36,7 +36,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | A22 | 🔴 | Safe import/export of non-sensitive policies. |
 | A23 | 🔴 | Alert inbox linked to retained messages. |
 | A24 | 🔴 | User-entered alt-name associations. |
-| A25 | 🔴 | Advanced scoped highlight rules. |
+| A25 | 🟢 | Advanced keyword groups can remain global or target one source/displayed tab; mirrored-view rendering uses the actual tab and legacy flat colors cannot leak scoped highlights. Messenger remains global-only. Mocks pass. |
 
 ## Fix — incorrect behavior and safety risks
 
@@ -79,18 +79,18 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | I05 | 🔴 | Add an aggregate history budget across sources. |
 | I06 | 🟢 | Short-lived memory-only social trust cache cuts repeat roster checks, invalidates on roster/profile changes, and fails closed when membership is unverified; whisper mocks pass. |
 | I07 | 🟢 | Messenger's 12-tab limit evicts only disposable inactive tabs; drafts, unread, NEW, and unresolved sends stay protected. If all tabs are protected, a bounded notice explains why a new tab was not opened; focused mocks pass. |
-| I08 | 🔴 | Unify message visibility and unread-count membership logic. |
+| I08 | 🟢 | Engine and SmartDock now share route/Contents membership for displayed lines and unread counts, with blocked/local-ignore/held exclusions. Mirror and exclusion mocks pass. |
 | I09 | 🔴 | Batch route edits before retained-history reclassification. |
-| I10 | 🔴 | Coalesce rapid full-display redraws. |
+| I10 | 🟢 | Theme/chat-color repaint bursts coalesce to one next-frame redraw; new messages, tab changes, paging, and resize remain synchronous, with combat fallback. Redraw mocks pass. |
 | I11 | 🟢 | Periodic global cleanup avoids full sweeps on every line while the observed term keeps exact rolling expiry; focused threshold and sweep-count mocks pass. |
 | I12 | 🟢 | The 64 learned sources favor recent use and protect explicit tab choices; persisted recency is sampled, not rewritten per line. Retention mocks pass. |
 | I13 | 🟢 | Message Analysis shows original THEN and current NOW routes; a compact capture-route snapshot survives reclassification/reload, while old records honestly show Unknown. Mocks pass. |
 | I14 | 🟢 | Optional whole-word/phrase alerts and a draft-aware TRY IT match preview preserve old substring rules and never send/save the sample; alert and layout mocks pass. |
 | I15 | 🟢 | Repeated public listings with an item link and explicit gold price are caught independent of English sale words; unpriced links and unlinked price chat remain outside the rule. Mocks pass. |
-| I16 | 🔴 | Make keyword discovery Unicode/language aware. |
-| I17 | 🔴 | Clarify and control suggestion-data retention scopes. |
-| I18 | 🔴 | Explain total history footprint beside per-source capacity. |
-| I19 | 🔴 | Make recovery status actionable without persisting message bodies. |
+| I16 | 🟢 | Bounded UTF-8 token discovery flows through accepted color terms and whole-word rendering; common Latin, Greek, and Cyrillic case variants work. Full Unicode casefold/NFC are not claimed. Mocks pass. |
+| I17 | 🟢 | Keywords settings explain saved queue/sample versus RAM-only observations, offer saved/session-only queue choice, and separate Clear Queue from confirmed Erase Report Data; accepted color groups are preserved. Mocks pass. |
+| I18 | 🟢 | Chat Window history shows retained line/source counts and the current sources' aggregate capacity while explaining new-source growth and variable disk size. UI mocks pass. |
+| I19 | 🟢 | Start Here offers safe catch-up/native-chat actions and `/ccbbdiag` gives counts and next steps without storing message bodies; unrecoverable client-withheld text is stated plainly. Mocks pass. |
 | I20 | 🟢 | Manual Retail acceptance matrix added; every in-game row remains Not run. |
 | I21 | 🟢 | One documented local test command and coverage inventory; full local runner passes. |
 | I22 | 🟢 | Staged TOC/XML/Lua/media references validated, with negative fixtures. |
@@ -108,14 +108,14 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | P04 | 🟢 | Settings close target is 30×30, with an 8px header inset and a checked minimum physical hit size; layout mocks pass. |
 | P05 | 🟡 | Settings shell now has measured sidebar/divider and symmetric page gutters; every dynamic subpage/disclosure state still needs bounds review. |
 | P06 | 🟢 | Shared settings-control gap increased to 6px; existing right-gutter and viewport bounds mocks pass. |
-| P07 | 🟡 | Fixed-width labels now recheck clipping after font changes and reveal full text in tooltips; safe expansion/wrapping remains. |
-| P08 | 🟡 | Selected tabs now have a distinct hover state; keyboard-focus navigation and visible focus remain. |
+| P07 | 🟡 | Selected labels can expand into proven spare width or show a UTF-8-safe ellipsis/full tooltip with gutters; fixed 20–24px grids still need a broader layout pass. Mocks pass. |
+| P08 | 🟡 | Clicking a settings subtab enables visible keyboard focus and safe Tab/arrow/Enter navigation with release/propagation guards; keyboard-only entry from a freshly opened panel remains unsolved. Mocks pass. |
 | P09 | 🟢 | Start Here has seven clickable numbered steps in a compact two-row map; 700×500 bounds mocks pass. |
 | P10 | 🟢 | Start Here preview uses live chat typography/source colors and the chosen message-band treatment; appearance mocks pass. |
 | P11 | 🟢 | Wrapped preview lines grow their transcript surface and scrollable page; long-copy mocks pass. |
 | P12 | 🟢 | Hints, warnings, and notes grow with their copy instead of clipping; long-copy mocks pass. |
 | P13 | 🟢 | Option rows measure toggle labels and explanations, keeping the footer below them; wide-font layout mocks pass. |
-| P14 | 🔴 | Replace repeated explanatory prefixes with cleaner hierarchy. |
+| P14 | 🟢 | Simple Start Here rows now lead with outcomes, put details in tooltips, and share repeated history-safety context; compact/wide-font layout mocks pass. |
 | P15 | 🟢 | Messenger's Go to Bottom arrow has a 16×18 target in its own 26px right lane; compact-window layout mocks pass. |
 | P16 | 🟢 | Sale-ad limits use two measured columns, explicit hours/ads/characters units, and value-unit gutters; config layout mocks pass. |
 | P17 | 🟢 | Colorway swatches label their BASE/PANEL/ACCENT/GOLD roles, including wide-font fallback; card mocks pass. |

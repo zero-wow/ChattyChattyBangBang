@@ -29,7 +29,7 @@ assert(math.abs(frame.fill[4] - (base.surfaceRaised[4] * 0.5)) < 0.0001
 local function texture()
 	local value = { shown = true }
 	function value:SetTexture(path) self.path = path end
-	function value:SetPoint() end
+	function value:SetPoint(...) self.points = self.points or {}; self.points[#self.points + 1] = { ... } end
 	function value:SetHeight(height) self.height = height end
 	function value:SetVertexColor(r, g, b, a) self.color = { r, g, b, a } end
 	function value:Show() self.shown = true end
@@ -67,5 +67,21 @@ button.scripts.OnLeave(button)
 assert(button._themeTabUnderline.shown
 	and Theme.textures[button._themeTabUnderline] == "gold",
 	"selected tab lost its persistent state after pointer exit")
+
+Theme:SetTabFocus(button, true)
+local focusCue = button._themeTabFocus
+assert(focusCue and focusCue.shown and focusCue.height == 1
+	and Theme.textures[focusCue] == "goldBright"
+	and focusCue.points[1][1] == "TOPLEFT" and focusCue.points[1][4] == 3
+	and focusCue.points[1][5] == -3 and focusCue.points[2][1] == "TOPRIGHT"
+	and focusCue.points[2][4] == -3 and focusCue.points[2][5] == -3,
+	"keyboard focus cue lost its visible three-pixel inset gutter")
+Theme:SetTabState(button, false)
+button.scripts.OnEnter(button)
+assert(focusCue.shown and button._themeTabUnderline.shown,
+	"hover or selection refresh erased the independent keyboard focus cue")
+Theme:SetTabFocus(button, false)
+assert(not focusCue.shown and button._themeTabUnderline.shown,
+	"releasing keyboard focus disturbed the existing hover state")
 
 print("Theme control mock tests passed")
