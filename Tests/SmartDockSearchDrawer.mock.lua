@@ -170,6 +170,18 @@ assert(dock.searchPreview:IsShown() and dock.searchPreviewMeta.text == "Preview 
 	"selected result did not expose full text, source/time, and honest preview behavior")
 assert(dock.activeView == "general", "preview changed the normal chat tab")
 
+addon.MessageEngine.byId = {}
+for _, record in ipairs(records) do addon.MessageEngine.byId[record.id] = record end
+addon.MessageEngine.historyGeneration = 1
+dock.searchGeneration = 1
+addon.MessageEngine.byId[dock.searchSelectedRecord.id] = nil
+addon.MessageEngine.SearchHistory = function()
+	return { records = { records[1] }, hasMore = false }
+end
+assert(dock:RefreshSearchAfterHistoryMutation() and dock.searchSelectedRecord == nil
+	and dock.searchResult.records[1] == records[1],
+	"removed or blocked history remained visible in a retained search preview")
+
 -- Wide-font labels may consume more than their nominal 37px slot. The live
 -- layout measures the actual font and moves the query field while retaining
 -- room for the GO target at the 300px minimum content width.
