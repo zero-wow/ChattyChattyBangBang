@@ -13,6 +13,8 @@ addon.Theme = {
 addon.GetSmartSettings = function()
 	return { keywordColorGroups = {}, keywordColors = {}, dock = {} }
 end
+local hideSenderRealms = false
+addon.GetHideSenderRealms = function() return hideSenderRealms end
 
 dofile("Core/Presentation.lua")
 local presentation = addon.Presentation
@@ -32,6 +34,53 @@ local renderedPlain = rendered:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
 assert(string.find(renderedPlain, "Cindry-Hyjal has earned", 1, true),
 	"historical achievement still showed a raw %s in the visible chat row")
 assert(savedGuildAchievement.text == original, "presentation modified the historical raw record")
+
+local emote = {
+	id = 42, event = "CHAT_MSG_TEXT_EMOTE", sender = "Ohldscol-Farstriders",
+	text = "Ohldscol-Farstriders makes a rude gesture at Keqqor the Fermented.",
+}
+local fullLeader, fullBody = presentation:FormatParts(emote)
+assert(fullLeader:find("Ohldscol-Farstriders", 1, true)
+	and fullBody:find("Ohldscol-Farstriders makes", 1, true),
+	"realm names should remain visible until the player opts in")
+hideSenderRealms = true
+local shortLeader, shortBody = presentation:FormatParts(emote)
+assert(shortLeader:find("|Hccbbplayer:42|h[", 1, true)
+	and shortLeader:find("Ohldscol", 1, true)
+	and not shortLeader:find("Farstriders", 1, true)
+	and shortBody:find("Ohldscol makes", 1, true)
+	and not shortBody:find("Farstriders", 1, true),
+	"opt-in did not shorten the visible sender and text-emote prefix")
+assert(emote.sender == "Ohldscol-Farstriders"
+	and emote.text == "Ohldscol-Farstriders makes a rude gesture at Keqqor the Fermented.",
+	"realm hiding changed canonical sender identity or saved text")
+assert(presentation:GetDisplaySenderName({ sender = "Mira-Hyjal", isBNet = true }) == "Mira-Hyjal"
+	and presentation:GetDisplaySenderName({ sender = "Mira-" }) == "Mira-",
+	"B.Net or malformed names were shortened")
+local _, shortAchievement = presentation:FormatParts(savedGuildAchievement)
+assert(shortAchievement:find("Cindry", 1, true)
+	and not shortAchievement:find("Hyjal", 1, true),
+	"an achievement embedded the unshortened sender despite the display preference")
+local ownAchievement = {
+	id = 43, event = "CHAT_MSG_ACHIEVEMENT", sender = "Mira-Hyjal",
+	text = "%s has earned an achievement!",
+}
+local ownLeader, ownBody = presentation:FormatParts(ownAchievement)
+assert(not ownLeader:find("Mira-Hyjal", 1, true)
+	and ownBody:find("Mira", 1, true)
+	and not ownBody:find("Hyjal", 1, true),
+	"a personal achievement kept the realm in its embedded sender")
+hideSenderRealms = false
+local inaccessibleSender = {}
+canaccessvalue = function(value) return value ~= inaccessibleSender end
+assert(presentation:GetDisplaySenderName({ sender = inaccessibleSender }) == nil,
+	"restricted Retail sender escaped into visible-name measurement")
+local _, restrictedBody = presentation:FormatParts({
+	id = 44, event = "CHAT_MSG_GUILD", sender = inaccessibleSender, text = "Readable body",
+})
+assert(restrictedBody == "Readable body",
+	"restricted sender prevented an otherwise readable chat message")
+canaccessvalue = nil
 
 assert(presentation:FormatEventText({
 	event = "CHAT_MSG_ACHIEVEMENT", sender = "Mira", text = "%1$s earned it (100%% complete)",

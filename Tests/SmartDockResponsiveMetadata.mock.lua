@@ -45,6 +45,14 @@ dofile("Core/Presentation.lua")
 dofile("Core/SmartDock.lua")
 
 local dock = addon.SmartDock
+addon.GetHideSenderRealms = function() return settings.dock.hideSenderRealms == true end
+local realmSender = { sender = "Lollipop-MoonGuard" }
+assert(dock:CalculateSenderColumnLongest({ realmSender }) == 20,
+	"full sender width unexpectedly changed before the realm-name option was enabled")
+settings.dock.hideSenderRealms = true
+assert(dock:CalculateSenderColumnLongest({ realmSender }) == 10,
+	"sender alignment still reserved the hidden realm's full width")
+settings.dock.hideSenderRealms = false
 local alignedSpec = {
 	enabled = true,
 	sourceAlignedWidth = 12,

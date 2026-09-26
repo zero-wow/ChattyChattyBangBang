@@ -74,4 +74,35 @@ dock.activeSenderColumnAlignmentSpacing = 2
 assert(dock:FormatDisplayRecord({ id = 9 }) == "EXACT",
 	"aligned Smart Chat did not select the exact hanging renderer")
 
+-- A later proportional-font choice must not inherit the original mono-only
+-- alignment contract. A wide M otherwise halves the apparent chat capacity,
+-- truncates a speaker at [Lollibo...], and hard-wraps a link into fragments.
+displayWidth = 641
+measure.GetStringWidth = function(self)
+	local text = self.text or ""
+	if text == string.rep("M", 32) then return 32 * 16 end
+	if text == string.rep("i", 32) then return 32 * 4 end
+	return #text * 8
+end
+dock.displayColumnCapacityWidth = nil
+local proportionalCapacity = dock:GetDisplayColumnCapacity()
+assert(proportionalCapacity >= 70 and dock.displayFontFixedWidth == false,
+	"proportional font still used wide-M width as the chat cell budget")
+dock.activeColumnLayoutResolved = true
+dock.activeSourceColumnCandidateWidth = 12
+dock.activeSenderColumnCandidateWidth = 16
+dock.activeSourceColumnLongest = 12
+dock.activeSenderColumnLongest = 16
+dock.activeTimestampColumnWidth = 5
+dock.activeHasTimestamp = true
+dock.activeHasSource = true
+dock.activeHasSender = true
+dock:ResolveActiveResponsiveMetadata()
+assert(dock.activeMetadataMode == "WIDE"
+	and dock.activeSourceColumnWidth == nil and dock.activeSenderColumnWidth == nil,
+	"proportional font kept fixed-width lanes or discarded metadata in a roomy panel")
+assert(not dock:IsExactHangingWrapEnabled("general")
+	and dock:FormatDisplayRecord({ id = 9 }) == "NATIVE",
+	"proportional font still inserted manual hanging breaks instead of native wrapping")
+
 print("SmartDock hanging-wrap mock passed")

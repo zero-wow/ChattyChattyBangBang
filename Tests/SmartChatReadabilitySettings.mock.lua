@@ -8,6 +8,7 @@ ChattyChattyBangBang = {
 				dock = {
 					responsiveMetadata = false,
 					classColorNames = false,
+					hideSenderRealms = "yes",
 					transparency = {
 						backgroundAlpha = -2,
 						borderAlpha = 3,
@@ -35,6 +36,11 @@ assert(addon:GetResponsiveMetadata() == false,
 	"explicit responsive metadata preference was not preserved")
 assert(addon:GetSmartChatClassColorNames() == false,
 	"explicit Smart Chat class-name color preference was not preserved")
+assert(addon:GetHideSenderRealms() == false and dock.hideSenderRealms == false,
+	"unknown realm-hiding preference must safely keep full sender names")
+dock.hideSenderRealms = nil
+assert(addon:GetHideSenderRealms() == false and dock.hideSenderRealms == false,
+	"an older profile without the realm preference did not keep its full-name display")
 assert(dock.transparency.backgroundAlpha == 0 and dock.transparency.borderAlpha == 1
 	and dock.transparency.overallAlpha == 0.4,
 	"independent opacity settings were not normalized to 0..1")
@@ -66,6 +72,12 @@ assert(addon:SetSmartChatClassColorNames(true)
 	and addon:GetSmartChatClassColorNames() == true
 	and nameRefreshes == 1 and messengerRefreshes == 1,
 	"Smart Chat class-name color setter did not refresh both visible chat surfaces")
+assert(addon:SetHideSenderRealms(true)
+	and addon:GetHideSenderRealms() == true and nameRefreshes == 2,
+	"hiding realms did not persist or rebuild the visible chat")
+assert(addon:SetHideSenderRealms(false)
+	and addon:GetHideSenderRealms() == false and nameRefreshes == 3,
+	"restoring realm names did not persist or rebuild the visible chat")
 
 assert(not addon:SetSmartChatWindowBackgroundAlpha("bad"),
 	"invalid background alpha was accepted")

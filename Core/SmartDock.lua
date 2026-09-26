@@ -793,6 +793,7 @@ function Dock:ApplySmartChatTextAppearance(viewId)
 		self.displayColumnCapacityWidth = nil
 		self.displayColumnCapacity = nil
 		self.displayColumnCellWidth = nil
+		self.displayFontFixedWidth = nil
 		-- The visible typing text belongs to the same Smart Chat surface.  The
 		-- shared editor remains Blizzard's input engine, but it must not silently
 		-- keep a different face/size from the messages the player is composing.
@@ -851,6 +852,7 @@ function Dock:IsExactHangingWrapEnabled(viewId)
 	-- Exact wrapping shares the aligned-column contract: those controls select a
 	-- fixed-width SharedMedia face, making one visible leader character exactly
 	-- one continuation-space cell.
+	if self.displayFontFixedWidth == false then return false end
 	if (not viewId or viewId == self.activeView) and self.activeColumnLayoutResolved then
 		-- Responsive EXTREME rows have no metadata leader at all, while natural
 		-- rows need Blizzard's ordinary indent behavior.  Only an effective
@@ -3047,12 +3049,20 @@ function Dock:CalculateSourceColumnLongest(records)
 	return longest, driver
 end
 
+local function displaySenderName(record)
+	if Presentation.GetDisplaySenderName then
+		return Presentation:GetDisplaySenderName(record)
+	end
+	return record and record.sender
+end
+
 function Dock:CalculateSenderColumnLongest(records)
 	local longest = 0
 	for _, record in ipairs(records or {}) do
-		if record.sender and record.sender ~= "" then
+		local visibleName = displaySenderName(record)
+		if type(visibleName) == "string" and visibleName ~= "" then
 			-- Report the visible [NAME] lane, including its square brackets.
-			longest = math.max(longest, presentationColumnCount(record.sender) + 2)
+			longest = math.max(longest, presentationColumnCount(visibleName) + 2)
 		end
 	end
 	return longest
@@ -3321,10 +3331,15 @@ function Dock:ResolveActiveResponsiveMetadata()
 	local previousSenderWidth = self.activeSenderColumnWidth
 	local previousSenderSpacing = self.activeSenderColumnAlignmentSpacing
 	local totalColumns = self:GetDisplayColumnCapacity()
+	-- A player may deliberately replace the one-time aligned font with a
+	-- proportional face. Space-padded lanes and exact character-cell wrapping
+	-- cannot align on that face; keep the saved preference but use natural
+	-- labels and native wrapping until a fixed-width font is active again.
+	local fixedWidth = self.displayFontFixedWidth ~= false
 	local layout = self:ResolveResponsiveMetadataLayout(totalColumns, {
 		enabled = self:IsResponsiveMetadataEnabled(),
-		sourceAlignedWidth = self.activeSourceColumnCandidateWidth,
-		senderAlignedWidth = self.activeSenderColumnCandidateWidth,
+		sourceAlignedWidth = fixedWidth and self.activeSourceColumnCandidateWidth or nil,
+		senderAlignedWidth = fixedWidth and self.activeSenderColumnCandidateWidth or nil,
 		senderSpacing = self.activeSenderColumnConfiguredSpacing,
 		naturalSourceWidth = self.activeSourceColumnLongest,
 		naturalSenderWidth = self.activeSenderColumnLongest,
@@ -3360,7 +3375,8 @@ function Dock:GetResponsiveMetadataForRecord(record)
 		return nil
 	end
 	local mode = self.activeMetadataMode or "WIDE"
-	local hasSender = record and record.sender and record.sender ~= ""
+	local visibleSender = displaySenderName(record)
+	local hasSender = type(visibleSender) == "string" and visibleSender ~= ""
 	local hasSource = record and record.event ~= nil
 	if mode == "MEDIUM" then
 		return { showTimestamp = false, showSource = hasSource, showSender = hasSender }
@@ -3393,27 +3409,42 @@ function Dock:GetDisplayColumnCapacity()
 		return self.displayColumnCapacity
 	end
 
-	-- The aligned-column feature guarantees a fixed-width face. Measure a long
-	-- sample to average away subpixel rounding, then leave one physical pixel at
-	-- the right edge so ScrollingMessageFrame never performs a second wrap. This
-	-- live capacity also drives Presentation's adaptive exact-wrap budget, so a
-	-- resized window or a different SharedMedia face changes the decision without
-	-- guessing from the configured font size.
+	-- Alignment initially chooses a fixed-width face, but the player may later
+	-- select a proportional one. Detect that from live glyph advances. A wide M
+	-- is a safe cell only for monospaced text; on a proportional face it can
+	-- halve the apparent capacity, truncate names, and manually break a message
+	-- in the middle of an otherwise roomy panel. Proportional text uses a
+	-- representative average only for the responsive metadata ladder; native
+	-- WoW wrapping remains responsible for the actual message width.
 	local sample = string.rep("M", 32)
 	if measure.SetWidth then measure:SetWidth(10000) end
 	measure:SetText(sample)
 	local sampleWidth = tonumber(measure:GetStringWidth()) or 0
+	measure:SetText(string.rep("i", 32))
+	local narrowWidth = tonumber(measure:GetStringWidth()) or 0
+	local fixedWidth = narrowWidth <= 0
+		or math.abs(sampleWidth - narrowWidth) <= math.max(sampleWidth, narrowWidth) * 0.04
+	local representative = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	local representativeWidth
+	if not fixedWidth then
+		measure:SetText(representative)
+		representativeWidth = tonumber(measure:GetStringWidth()) or 0
+	end
 	if measure.SetWidth then measure:SetWidth(displayWidth) end
 	measure:SetText("")
 	if sampleWidth <= 0 then
 		return nil
 	end
-	local cellWidth = sampleWidth / 32
+	local cellWidth = fixedWidth and sampleWidth / 32
+		or (representativeWidth and representativeWidth > 0
+			and representativeWidth / #representative
+			or (sampleWidth + narrowWidth) / 64)
 	local rawCapacity = math.max(1, math.floor((displayWidth - MANUAL_WRAP_PIXEL_SAFETY) / cellWidth))
 	local capacity = math.max(1, rawCapacity - MANUAL_WRAP_SAFETY_COLUMNS)
 	self.displayColumnCapacityWidth = roundedWidth
 	self.displayColumnCapacity = capacity
 	self.displayColumnCellWidth = cellWidth
+	self.displayFontFixedWidth = fixedWidth
 	return capacity
 end
 
@@ -3474,6 +3505,7 @@ function Dock:RefreshDisplayWidthPresentation()
 	self.displayColumnCapacityWidth = nil
 	self.displayColumnCapacity = nil
 	self.displayColumnCellWidth = nil
+	self.displayFontFixedWidth = nil
 	if self.active and self.activeView and addon.MessageEngine and not self.resizeDragRegion then
 		self:RebuildActiveViewPreservingScroll()
 	end
@@ -4917,7 +4949,8 @@ function Dock:ResetActiveMetadataMetrics(records)
 		if record.event ~= nil and tostring(Presentation:GetSource(record) or "") ~= "" then
 			hasSource = true
 		end
-		if record.sender and record.sender ~= "" then
+		local visibleName = displaySenderName(record)
+		if type(visibleName) == "string" and visibleName ~= "" then
 			hasSender = true
 		end
 	end
@@ -5139,10 +5172,11 @@ function Dock:OnMessage(record)
 				if record.event ~= nil and tostring(Presentation:GetSource(record) or "") ~= "" then
 					self.activeHasSource = true
 				end
-				if record.sender and record.sender ~= "" then
+				local visibleName = displaySenderName(record)
+				if type(visibleName) == "string" and visibleName ~= "" then
 					self.activeHasSender = true
 					self.activeSenderColumnLongest = math.max(tonumber(self.activeSenderColumnLongest) or 0,
-						presentationColumnCount(record.sender) + 2)
+						presentationColumnCount(visibleName) + 2)
 				end
 				local responsiveLayoutChanged = self:ResolveActiveResponsiveMetadata()
 				requiresColumnRebuild = sourceWidthChanged or responsiveLayoutChanged

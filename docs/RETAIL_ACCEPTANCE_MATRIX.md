@@ -48,6 +48,7 @@ automate `/reload` or scan game logs for it.
 | M29 | No | At narrow and normal chat widths, alternating backgrounds leave visible top and bottom room around single-line and wrapped entries; bands clip cleanly at viewport edges and do not move text into the scrollbar lane. | ⬜ | — |
 | M30 | No | `/ccbb` opens settings without a SetSize Lua error at normal and compact UI sizes; `/ccbb tabs` still enters keyboard navigation. | ⬜ | — |
 | M31 | No | In Guild/Officer chat, known player names use class colors, unknown senders remain visibly distinct, achievement notices color only the player and preserve the achievement link, and a narrow chat keeps a shortened player label until the message-only threshold. | ⬜ | — |
+| M32 | Yes | With a proportional chat font and alignment enabled, a roughly 600px chat keeps full usable message width: no premature hard wraps, broken item-link labels, or accidental sender truncation. Toggle Hide Realm in Names and confirm labels shorten without changing reply/action targets or history. | ⬜ | — |
 
 The [replacement audit](RETAIL_REPLACEMENT_AUDIT.md) explains the product
 invariants behind these checks. The [local test inventory](RETAIL_TESTING.md)

@@ -172,6 +172,9 @@ local defaults = {
 		-- Smart Chat owns its own sender rendering; the legacy Player Class
 		-- Colors module only affects Blizzard's native fallback frames.
 		classColorNames = true,
+		-- Keep full sender identities in records and links. This optional display
+		-- preference removes only the realm suffix from visible character names.
+		hideSenderRealms = false,
 		-- Independent chrome multipliers let a player soften the panel and border
 		-- without fading message text. overallAlpha intentionally affects the whole
 		-- SmartDock tree, including text and controls.
@@ -3753,6 +3756,7 @@ local function migrateSmartSettings(settings)
 	dock.senderColumnAlignment = dock.senderColumnAlignment == true
 	dock.responsiveMetadata = dock.responsiveMetadata ~= false
 	dock.classColorNames = dock.classColorNames ~= false
+	dock.hideSenderRealms = dock.hideSenderRealms == true
 	normalizeDockPlayerActions(dock)
 	normalizeDockTransparency(dock)
 	normalizeDockMessageBands(dock)
@@ -4782,6 +4786,23 @@ end
 function addon:GetSmartChatClassColorNames()
 	local settings = self:GetSmartSettings()
 	return not settings.dock or settings.dock.classColorNames ~= false
+end
+
+function addon:GetHideSenderRealms()
+	local settings = self:GetSmartSettings()
+	return settings.dock and settings.dock.hideSenderRealms == true or false
+end
+
+function addon:SetHideSenderRealms(enabled)
+	local settings = self:GetSmartSettings()
+	settings.dock.hideSenderRealms = enabled and true or false
+	local dock = self.SmartDock
+	if dock and type(dock.RebuildActiveViewPreservingScroll) == "function" then
+		dock:RebuildActiveViewPreservingScroll()
+	elseif dock and type(dock.RebuildActiveView) == "function" then
+		dock:RebuildActiveView()
+	end
+	return true, settings.dock.hideSenderRealms
 end
 
 function addon:SetSmartChatClassColorNames(enabled)

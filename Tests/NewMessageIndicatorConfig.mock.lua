@@ -389,7 +389,8 @@ config.dockLayoutCategoryButtons.readability.scripts.OnClick(config.dockLayoutCa
 assert(config.dockResponsiveMetadataToggle:IsShown() and config.dockMessageBandsToggle:IsShown()
 	and config.dockMessageBandsScrollbarToggle:IsShown()
 	and config.dockMessageBandAlphaEdit:IsShown() and config.dockLineSpacingEdit:IsShown()
-	and config.dockClassColorNamesToggle:IsShown(),
+	and config.dockClassColorNamesToggle:IsShown()
+	and config.dockHideSenderRealmsToggle:IsShown(),
 	"Readability did not isolate responsive metadata and alternating-message controls")
 assert(config.dockClassColorNamesToggle.point[5] == -440
 	and config.dockClassColorNamesToggle.width == 230
@@ -397,6 +398,14 @@ assert(config.dockClassColorNamesToggle.point[5] == -440
 	and config.dockClassColorNamesToggle.text:GetText() == "PLAYER CLASS COLORS"
 	and config.dockStatus.point[5] == -474,
 	"class-name color control clipped the compact Readability page or its status gutter")
+assert(config.dockHideSenderRealmsToggle.point[4] == 300
+	and config.dockHideSenderRealmsToggle.point[5] == -440
+	and config.dockHideSenderRealmsToggle.width == 270
+	and config.dockHideSenderRealmsToggle.height == 20
+	and config.dockHideSenderRealmsToggle.text:GetText() == "HIDE REALM IN NAMES"
+	and 300 - (8 + 230) >= 16 and 636 - (300 + 270) >= 16
+	and (-440 - 20) - (-474) >= 10,
+	"realm-name control overlapped its neighbor, border, or status row")
 assert(config.dockMessageBandsToggle.text:GetText() == "ALTERNATING ROWS"
 	and config.dockMessageBandsScrollbarToggle.text:GetText() == "UNDER SCROLLBAR",
 	"message band toggles lost their compact wide-font-safe labels")
@@ -418,6 +427,9 @@ assert(settings.dock.responsiveMetadata == false, "responsive metadata lock did 
 config.dockClassColorNamesToggle:SetValue(false)
 assert(settings.dock.classColorNames == false,
 	"Smart Chat player class-color toggle did not save its own setting")
+config.dockHideSenderRealmsToggle:SetValue(true)
+assert(settings.dock.hideSenderRealms == true,
+	"Readability's realm-name toggle did not save its display preference")
 config.dockMessageBandsToggle:SetValue(true)
 config.dockMessageBandsScrollbarToggle:SetValue(true)
 config.dockMessageBandExtentButtons.afterPlayer.scripts.OnClick(config.dockMessageBandExtentButtons.afterPlayer)

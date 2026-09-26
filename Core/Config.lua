@@ -903,8 +903,8 @@ local dockLayoutCategoryDefinitions = {
 	readability = {
 		title = "READABILITY",
 		heading = "Message readability",
-		hint = "Tune line spacing, let narrow windows simplify message details, and optionally shade alternating messages.",
-		tooltip = "Global line spacing, responsive timestamp/channel/name visibility, and alternating message backgrounds.",
+		hint = "Tune line spacing and sender names, simplify narrow-window details, or shade alternating messages.",
+		tooltip = "Global line spacing, visible sender names, responsive metadata, and alternating message backgrounds.",
 	},
 	unread = {
 		title = "UNREAD",
@@ -1569,6 +1569,10 @@ function Config:RefreshDockPage()
 		and addon:GetSmartChatClassColorNames()
 	if classColorNames == nil then classColorNames = dock.classColorNames ~= false end
 	if self.dockClassColorNamesToggle then self.dockClassColorNamesToggle:SetValue(classColorNames, true) end
+	local hideSenderRealms = type(addon.GetHideSenderRealms) == "function"
+		and addon:GetHideSenderRealms()
+	if hideSenderRealms == nil then hideSenderRealms = dock.hideSenderRealms == true end
+	if self.dockHideSenderRealmsToggle then self.dockHideSenderRealmsToggle:SetValue(hideSenderRealms, true) end
 	if self.dockLineSpacingEdit then
 		local appearance
 		if type(addon.GetSmartChatTextAppearance) == "function" then
@@ -2453,6 +2457,22 @@ function Config:BuildDockPage()
 	end
 	setControlTooltip(self.dockClassColorNamesToggle, "Color player names by class",
 		"Smart Chat colors a name when the client's class or an exact Guild roster match is known. Unknown Guild names use one clear accent; message text stays unchanged. The old Player Class Colors module only affects Blizzard chat.")
+	self.dockHideSenderRealmsToggle = Theme:CreateCompactToggle(page, "HIDE REALM IN NAMES", 270)
+	self.dockHideSenderRealmsToggle:SetPoint("TOPLEFT", page, "TOPLEFT", 300, -440)
+	self.dockHideSenderRealmsToggle.OnValueChanged = function(_, value)
+		if type(addon.SetHideSenderRealms) == "function" then
+			addon:SetHideSenderRealms(value)
+		else
+			getDockSettings().hideSenderRealms = value and true or false
+			if addon.SmartDock and addon.SmartDock.RebuildActiveViewPreservingScroll then
+				addon.SmartDock:RebuildActiveViewPreservingScroll()
+			end
+		end
+		Config:SetDockStatus(value and "Chat labels now show character names without realms."
+			or "Chat labels show full character-realm names.", "success")
+	end
+	setControlTooltip(self.dockHideSenderRealmsToggle, "Hide realm in chat names",
+		"Show only the character name in visible sender labels and text emotes. Full names remain stored for whispers, player actions, and history. Existing profiles keep full names until enabled.")
 
 	local newMessagesTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
 	newMessagesTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
@@ -2939,6 +2959,7 @@ function Config:BuildDockPage()
 			bandsTitle, self.dockMessageBandsToggle, self.dockMessageBandsScrollbarToggle, extentTitle,
 			bandColorTitle, bandAlphaLabel, self.dockMessageBandAlphaEdit,
 			self.dockMessageBandsResetButton, bandsHint, self.dockClassColorNamesToggle,
+			self.dockHideSenderRealmsToggle,
 		},
 		unread = {
 			newMessagesTitle, self.dockNewMessagesToggle, self.dockNewMessagesCountToggle,
@@ -15978,6 +15999,7 @@ function Config:ReloadProfile()
 	self.dockClearHistoryButton = nil
 	self.dockResponsiveMetadataToggle = nil
 	self.dockClassColorNamesToggle = nil
+	self.dockHideSenderRealmsToggle = nil
 	self.dockLineSpacingTitle = nil
 	self.dockLineSpacingEdit = nil
 	self.dockLineSpacingHint = nil

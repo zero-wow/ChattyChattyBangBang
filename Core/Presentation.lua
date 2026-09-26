@@ -1030,9 +1030,34 @@ local guildSenderEvents = {
 	CHAT_MSG_GUILD_ITEM_LOOTED = true,
 }
 
+-- Keep the canonical realm-qualified sender on the record for player actions,
+-- whispers, history, and exact class lookups. Only the rendered name changes.
+function Presentation:GetDisplaySenderName(record)
+	local sender = record and record.sender
+	if not accessibleTemplateValue(sender) or type(sender) ~= "string" then
+		return nil
+	end
+	if sender == "" or record.isBNet then
+		return sender
+	end
+	local settings = addon.GetPreparedSmartSettings and addon:GetPreparedSmartSettings()
+	local hideRealms = settings and settings.dock and settings.dock.hideSenderRealms == true
+	if not settings and addon.GetHideSenderRealms then
+		hideRealms = addon:GetHideSenderRealms()
+	end
+	if not hideRealms then
+		return sender
+	end
+	local separator = find(sender, "-", 1, true)
+	if not separator or separator == 1 or separator == #sender then
+		return sender
+	end
+	return sub(sender, 1, separator - 1)
+end
+
 function Presentation:GetColoredName(record, displayName)
 	local originalName = record.sender
-	local name = displayName or originalName
+	local name = displayName or self:GetDisplaySenderName(record)
 	if not name or name == "" then
 		return nil
 	end
@@ -1046,7 +1071,7 @@ function Presentation:GetColoredName(record, displayName)
 	-- Player Class Colors resolves its colour from the original full name. A
 	-- fixed lane can abbreviate only the visible label, so avoid asking that
 	-- module to hand back the unabridged text in the rare over-width case.
-	if classColorsEnabled and (displayName == nil or displayName == originalName)
+	if classColorsEnabled and name == originalName
 		and playerNames and playerNames.ColorName and playerNames.db and playerNames:IsEnabled() then
 		local ok, coloredName = pcall(playerNames.ColorName, playerNames, name)
 		if ok and coloredName then
@@ -1232,6 +1257,19 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 	local timestamp = self:Color(record.timestamp or "", "textMuted")
 	local sourceText = self:GetSource(record)
 	local eventText = self:FormatEventText(record)
+	local displaySender = self:GetDisplaySenderName(record)
+	local canShortenSender = accessibleTemplateValue(record.sender)
+		and type(record.sender) == "string" and displaySender ~= record.sender
+	-- Blizzard's text-emote payload repeats its speaker at the start of the
+	-- sentence. Shorten only that exact prefix, never arbitrary chat content.
+	if record.event == "CHAT_MSG_TEXT_EMOTE" and canShortenSender
+		and accessibleTemplateValue(eventText) and type(eventText) == "string"
+		and find(eventText, record.sender, 1, true) == 1 then
+		local following = sub(eventText, #record.sender + 1, #record.sender + 1)
+		if following == "" or string.match(following, "[%s%p]") then
+			eventText = displaySender .. sub(eventText, #record.sender + 1)
+		end
+	end
 	-- Responsive metadata is presentation-only.  Missing fields never reserve a
 	-- blank lane, and the default nil contract preserves every historical caller.
 	local showTimestamp = (not metadata or metadata.showTimestamp ~= false)
@@ -1269,7 +1307,8 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 	end
 	local messageContext = { sourceId = record.sourceId, viewId = viewId }
 	local message
-	if record.event == "CHAT_MSG_GUILD_ACHIEVEMENT"
+	if (record.event == "CHAT_MSG_GUILD_ACHIEVEMENT"
+		or (record.event == "CHAT_MSG_ACHIEVEMENT" and canShortenSender))
 		and accessibleTemplateValue(record.sender) and type(record.sender) == "string"
 		and record.sender ~= "" and accessibleTemplateValue(eventText)
 		and type(eventText) == "string" then
@@ -1289,7 +1328,7 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 			if (preceding == "" or string.match(preceding, "[%s%p]"))
 				and (following == "" or string.match(following, "[%s%p]")) then
 				message = (before ~= "" and self:Color(before, "textMuted") or "")
-					.. self:GetColoredName(record)
+					.. self:GetColoredName(record, displaySender)
 					.. (after ~= "" and self:Color(after, "textMuted") or "")
 					.. self:ColorizeMessage(linkedBody, nil, messageContext)
 			end
@@ -1298,7 +1337,7 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 	if not message then
 		message = self:ColorizeMessage(eventText, nil, messageContext)
 	end
-	local rawSender = record.sender
+	local rawSender = displaySender
 	local normalizedSenderSpacing = math.max(-8,
 		math.min(8, math.floor(tonumber(senderColumnSpacing) or 2)))
 	local effectiveSenderWidth = senderColumnWidth
