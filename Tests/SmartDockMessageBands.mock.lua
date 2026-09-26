@@ -131,6 +131,11 @@ bandSettings.extendUnderScrollbar = true
 dock:RefreshMessageBands()
 assert(textures[1].points[1][4] == -3 and textures[1].points[2][4] == 15,
 	"full-bleed shade did not reach both one-pixel inner panel edges")
+dock.transientMessageLeftInset = 20
+dock:RefreshMessageBands()
+assert(textures[1].points[1][4] == -19 and textures[1].points[2][4] == 15,
+	"message-dot text gutter stopped a FULL ROW background before the panel edge")
+dock.transientMessageLeftInset = nil
 bandSettings.extent = "afterPlayer"
 dock:RefreshMessageBands()
 assert(textures[1].points[1][4] == 60 and textures[1].points[2][4] == 15,

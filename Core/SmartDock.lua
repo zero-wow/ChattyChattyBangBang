@@ -122,6 +122,12 @@ local SEARCH_EXPORT_MAX_BYTES = 8192
 -- lane, but stops at the backdrop's one-pixel inner inset so the panel border
 -- remains crisp. The message viewport and scrollbar hit geometry never move.
 local MESSAGE_BAND_PANEL_EDGE_INSET = 1
+-- A real hit target sits in this reserved lane, never on top of chat text.
+-- Turning message markers off restores the original four-pixel text inset.
+local MESSAGE_DOT_DISPLAY_LEFT_INSET = 20
+local MESSAGE_DOT_SIZE = 14
+local MESSAGE_DOT_POOL_LIMIT = 128
+local MESSAGE_DOT_TEXTURE = "Interface\\AddOns\\ChattyChattyBangBang\\Media\\Dock\\message-orb.tga"
 -- The readable ScrollingMessageFrame begins four pixels inside its content
 -- panel. Full-row artwork starts at the matching one-pixel inner border;
 -- text and scrollbar hit targets retain their independent layout.
@@ -1650,6 +1656,7 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 		topInset = topInset + HISTORY_PAGER_HEIGHT + HISTORY_PAGER_GUTTER
 	end
 	local rightInset = showMessageScrollbar and MESSAGE_SCROLLBAR_DISPLAY_INSET or 4
+	local leftInset = self:AreMessageTypeDotsEnabled() and MESSAGE_DOT_DISPLAY_LEFT_INSET or 4
 	local availableHeight = contentHeight > 0 and math.max(0, contentHeight - topInset - bottomInset) or nil
 	local minimumLineHeight = TRANSIENT_MESSAGE_LINE_HEIGHT_FALLBACK
 	if display.GetFont then
@@ -1674,6 +1681,7 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 	local wasDisplaySuppressed = self.transientMessageViewportSuppressed == true
 	local layoutChanged = self.transientMessageTopInset ~= topInset
 		or self.transientMessageBottomInset ~= bottomInset
+		or self.transientMessageLeftInset ~= leftInset
 		or self.transientMessageRightInset ~= rightInset
 		or self.transientMessageContentHeight ~= contentHeight
 		or wasDisplaySuppressed ~= suppressDisplay
@@ -1693,13 +1701,14 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 
 	self.transientMessageTopInset = topInset
 	self.transientMessageBottomInset = bottomInset
+	self.transientMessageLeftInset = leftInset
 	self.transientMessageRightInset = rightInset
 	self.transientMessageContentHeight = contentHeight
 	self.transientMessageViewportSuppressed = suppressDisplay
 	self.transientMessageScrollbarSuppressed = suppressScrollbar
 
 	display:ClearAllPoints()
-	display:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -topInset)
+	display:SetPoint("TOPLEFT", content, "TOPLEFT", leftInset, -topInset)
 	display:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -rightInset, bottomInset)
 
 	if self.emptyState then
@@ -1723,6 +1732,7 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 		if display.Hide then display:Hide() end
 		if self.emptyState and self.emptyState.Hide then self.emptyState:Hide() end
 		self:HideMessageBands()
+		self:HideMessageTypeDots()
 		self:HideMessageActionHighlight()
 	else
 		if wasDisplaySuppressed then
@@ -2945,6 +2955,7 @@ function Dock:ClearDisplayRecordCache()
 	if self.HideMessageBands then
 		self:HideMessageBands()
 	end
+	if self.HideMessageTypeDots then self:HideMessageTypeDots() end
 end
 
 function Dock:IsSourceColumnAlignmentEnabled(viewId)
@@ -3793,6 +3804,161 @@ function Dock:HideMessageBands()
 	self.messageBandVisibleCount = 0
 end
 
+function Dock:AreMessageTypeDotsEnabled()
+	local settings = addon.GetSmartSettings and addon:GetSmartSettings() or nil
+	local dock = settings and settings.dock
+	return not dock or dock.messageTypeDots ~= false
+end
+
+function Dock:GetMessageTypeDotStyle(record)
+	if type(record) ~= "table" then return "Message", 0.70, 0.77, 0.86 end
+	local event = tostring(record.event or "")
+	local category = tostring(record.category or "general")
+	if record.isAddonMessage or event == "CHAT_MSG_ADDON" then
+		return "Add-on message", 0.67, 0.58, 0.98
+	end
+	if event == "CHAT_MSG_SAY" then return "Say", 0.43, 0.76, 1 end
+	if event == "CHAT_MSG_YELL" then return "Yell", 1, 0.55, 0.32 end
+	if event == "CHAT_MSG_EMOTE" or event == "CHAT_MSG_TEXT_EMOTE" then
+		return "Emote", 0.92, 0.67, 0.98
+	end
+	if event == "CHAT_MSG_PARTY" or event == "CHAT_MSG_PARTY_LEADER" then
+		return "Party", 0.59, 0.76, 1
+	end
+	if event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER"
+		or event == "CHAT_MSG_RAID_WARNING" or event == "CHAT_MSG_INSTANCE_CHAT"
+		or event == "CHAT_MSG_INSTANCE_CHAT_LEADER" then
+		return "Raid or instance", 1, 0.59, 0.50
+	end
+	if category == "guild" then return "Guild", 0.43, 0.86, 0.54 end
+	if category == "conversations" then return "Whisper", 0.97, 0.64, 0.82 end
+	if category == "trade" then return "Trade", 1, 0.78, 0.39 end
+	if category == "groupFinder" then return "Group finder", 0.57, 0.90, 0.62 end
+	if category == "guildInvites" then return "Guild invitation", 0.47, 0.84, 0.75 end
+	if category == "pvp" then return "PvP", 1, 0.43, 0.47 end
+	if category == "loot" then return "Loot", 0.97, 0.84, 0.42 end
+	if category == "sync" then return "Sync", 0.55, 0.68, 0.89 end
+	if category == "system" then return "System", 0.70, 0.77, 0.86 end
+	if event == "CHAT_MSG_CHANNEL" and category == "general" then
+		-- An amber dot is a review cue, not a claim that a classifier is wrong.
+		-- Reuse its read-only evidence so this cue agrees with the analysis popup.
+		self.messageTypeDotSemanticCache = self.messageTypeDotSemanticCache
+			or setmetatable({}, { __mode = "k" })
+		local semantic = self.messageTypeDotSemanticCache[record]
+		if semantic == nil and addon.MessageEngine and addon.MessageEngine.AnalyzeRecord then
+			local ok, analysis = pcall(addon.MessageEngine.AnalyzeRecord, addon.MessageEngine, record)
+			semantic = ok and type(analysis) == "table" and analysis.semantic or false
+			self.messageTypeDotSemanticCache[record] = semantic
+		end
+		local scores = type(semantic) == "table" and semantic.scores or nil
+		local thresholds = type(semantic) == "table" and semantic.threshold or nil
+		local normalized = type(record.normalized) == "string" and record.normalized
+			or string.lower(type(record.text) == "string" and record.text or "")
+		local saleCue = string.find(normalized, "%f[%a]wts%f[%A]")
+			or string.find(normalized, "%f[%a]wtb%f[%A]")
+			or string.find(normalized, "%f[%a]selling%f[%A]")
+			or string.find(normalized, "%f[%a]buying%f[%A]")
+			or string.find(normalized, "%f[%a]boost%f[%A]")
+		local nearTradeThreshold = scores and thresholds
+			and tonumber(scores.trade) and tonumber(thresholds.trade)
+			and scores.trade > 0 and scores.trade >= thresholds.trade - 1
+		if saleCue or nearTradeThreshold then
+			return "Possible sale - review route", 1, 0.64, 0.25
+		end
+		return "Public channel", 0.52, 0.78, 0.95
+	end
+	return "Message", 0.68, 0.78, 0.88
+end
+
+function Dock:HideMessageTypeDots()
+	for _, button in ipairs(self.messageTypeDotPool or {}) do button:Hide() end
+	self.messageTypeDotVisibleCount = 0
+end
+
+function Dock:AcquireMessageTypeDot(index)
+	if index > MESSAGE_DOT_POOL_LIMIT then return nil end
+	self.messageTypeDotPool = self.messageTypeDotPool or {}
+	local button = self.messageTypeDotPool[index]
+	if button then return button end
+	if not self.content or not self.display or not CreateFrame then return nil end
+	button = CreateFrame("Button", nil, self.content)
+	button:SetFrameLevel((self.display.GetFrameLevel and self.display:GetFrameLevel() or 1) + 2)
+	button:RegisterForClicks("LeftButtonUp")
+	local dot = button:CreateTexture(nil, "ARTWORK")
+	dot:SetTexture(MESSAGE_DOT_TEXTURE)
+	dot:SetPoint("CENTER", button, "CENTER", 0, 0)
+	dot:SetSize(10, 10)
+	button.dotTexture = dot
+	button:SetScript("OnClick", function(self)
+		if not self.messageRecord then return end
+		Dock.analysisDotExpires = (GetTime and GetTime() or 0) + 10
+		Dock:ShowMessageAnalysis(self.messageRecord)
+	end)
+	button:SetScript("OnEnter", function(self)
+		if GameTooltip then
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText(self.messageKind or "Message")
+			GameTooltip:AddLine("Click to inspect, correct the route, or save a review report.", 0.83, 0.86, 0.92, true)
+			GameTooltip:Show()
+		end
+	end)
+	button:SetScript("OnLeave", function(self)
+		if GameTooltip and (not GameTooltip.GetOwner or GameTooltip:GetOwner() == self) then
+			GameTooltip:Hide()
+		end
+	end)
+	self.messageTypeDotPool[index] = button
+	return button
+end
+
+function Dock:RefreshMessageTypeDots(visibleEntries, geometry)
+	local display = self.display
+	if not self:AreMessageTypeDotsEnabled() or self.transientMessageViewportSuppressed
+		or not display or not frameIsShown(display) then
+		self:HideMessageTypeDots()
+		return false
+	end
+	if not visibleEntries or not geometry then
+		visibleEntries, geometry = self:GetVisibleDisplayRecordEntries()
+	end
+	if not geometry then self:HideMessageTypeDots(); return false end
+	local lineHeight = geometry.lineHeight
+	local displayHeight = geometry.displayHeight
+	local used = 0
+	for _, visible in ipairs(visibleEntries) do
+		-- The marker belongs to the first content row, not a spacer or a clipped
+		-- wrapped continuation. The visible cache bounds pool growth.
+		if visible.record and visible.contentFirstLine >= geometry.firstVisibleLine
+			and visible.contentFirstLine <= geometry.lastVisibleLine
+			and used < MESSAGE_DOT_POOL_LIMIT then
+			local top = geometry.topInset
+				+ (visible.contentFirstLine - geometry.firstVisibleLine) * lineHeight
+			local hitHeight = math.min(MESSAGE_DOT_SIZE, lineHeight)
+			if top >= 0 and top + hitHeight <= displayHeight then
+				used = used + 1
+				local button = self:AcquireMessageTypeDot(used)
+				if button then
+					local label, r, g, b = self:GetMessageTypeDotStyle(visible.record)
+					button.messageRecord = visible.record
+					button.messageKind = label
+					button:SetSize(MESSAGE_DOT_SIZE, hitHeight)
+					button:ClearAllPoints()
+					button:SetPoint("TOPRIGHT", display, "TOPLEFT", -2, -top)
+						local orbSize = math.max(1, math.min(10, hitHeight - 2))
+						button.dotTexture:SetSize(orbSize, orbSize)
+					button.dotTexture:SetVertexColor(r, g, b, 1)
+					button:Show()
+				end
+			end
+		end
+	end
+	for index = used + 1, #(self.messageTypeDotPool or {}) do
+		self.messageTypeDotPool[index]:Hide()
+	end
+	self.messageTypeDotVisibleCount = used
+	return true
+end
+
 function Dock:HideMessageActionHighlight()
 	if self.messageActionHighlight then
 		self.messageActionHighlight:Hide()
@@ -3922,10 +4088,12 @@ function Dock:RefreshMessageBands()
 	if self.transientMessageViewportSuppressed or not appearance.enabled or appearance.alpha <= 0 or not display
 		or type(records) ~= "table" or #records == 0 then
 		self:HideMessageBands()
+		self:RefreshMessageTypeDots()
 		return false
 	end
 
 	local visibleEntries, geometry = self:GetVisibleDisplayRecordEntries()
+	self:RefreshMessageTypeDots(visibleEntries, geometry)
 	local lineHeight = geometry and geometry.lineHeight or self:GetDisplayLineHeight()
 	local displayHeight = geometry and geometry.displayHeight
 		or tonumber(display.GetHeight and display:GetHeight()) or 0
@@ -3969,7 +4137,8 @@ function Dock:RefreshMessageBands()
 						+ verticalPadding)
 					band:ClearAllPoints()
 					local bandStartX = appearance.extent == "full"
-						and -MESSAGE_BAND_FULL_LEFT_OVERHANG or math.max(0, startX)
+						and -(math.max(4, tonumber(self.transientMessageLeftInset) or 4)
+							- MESSAGE_BAND_PANEL_EDGE_INSET) or math.max(0, startX)
 					band:SetPoint("TOPLEFT", display, "TOPLEFT", bandStartX, -top)
 					band:SetPoint("BOTTOMRIGHT", display, "TOPRIGHT", bandRightOffset, -bottom)
 					band:SetVertexColor(appearance.r, appearance.g, appearance.b, appearance.alpha)
@@ -4441,6 +4610,8 @@ function Dock:HideMessageBlockControls()
 	self.blockChoicesRecord = nil
 	self.analysisActionRecord = nil
 	self.analysisRecord = nil
+	self.analysisDotExpires = nil
+	self.analysisReportExpectedRoute = nil
 end
 
 function Dock:EnsureMessageBlockDriver()
@@ -4501,6 +4672,13 @@ function Dock:UpdateMessageBlockAction()
 	local overAnalyze = self.analysisAction and self.analysisAction.IsMouseOver and self.analysisAction:IsMouseOver()
 	local overAnalysisPanel = (self.analysisPanel and self.analysisPanel.IsMouseOver and self.analysisPanel:IsMouseOver())
 		or (self.analysisRouteMenu and self.analysisRouteMenu.IsMouseOver and self.analysisRouteMenu:IsMouseOver())
+	local overMessageDot = false
+	for _, dot in ipairs(self.messageTypeDotPool or {}) do
+		if dot.IsShown and dot:IsShown() and dot.IsMouseOver and dot:IsMouseOver() then
+			overMessageDot = true
+			break
+		end
+	end
 	if self.blockChoices and self.blockChoices:IsShown() then
 		if not overDisplay and not overAction and not overChoices and not overAnalyze and not overAnalysisPanel and not isShiftDown() then
 			self:HideMessageBlockControls()
@@ -4508,7 +4686,9 @@ function Dock:UpdateMessageBlockAction()
 		return
 	end
 	if self.analysisPanel and self.analysisPanel:IsShown() then
-		if not overDisplay and not overAction and not overChoices and not overAnalyze and not overAnalysisPanel and not isShiftDown() then
+		local dotGrace = self.analysisDotExpires and GetTime and GetTime() < self.analysisDotExpires
+		if not overDisplay and not overAction and not overChoices and not overAnalyze
+			and not overAnalysisPanel and not overMessageDot and not dotGrace and not isShiftDown() then
 			self:HideMessageBlockControls()
 		end
 		return
@@ -4675,6 +4855,7 @@ function Dock:ShowMessageAnalysis(record)
 
 	self:HideDisplayHoverHint()
 	self.analysisRecord = record
+	self.analysisReportExpectedRoute = nil
 	local source = analysis.sourceLabel or analysis.sourceId or "Unknown source"
 	if analysis.channel and analysis.channel ~= "" then
 		source = source .. " / " .. analysis.channel
@@ -4737,6 +4918,28 @@ function Dock:ShowMessageAnalysis(record)
 	return true, analysis
 end
 
+function Dock:ReportSelectedMessageRoute()
+	local record = self.analysisRecord
+	if not record or type(addon.ReportMessageRoute) ~= "function" then
+		return false, "unavailable"
+	end
+	local invoked, saved, detail, existing = pcall(addon.ReportMessageRoute, addon,
+		record, self.analysisReportExpectedRoute)
+	if not invoked then saved, detail = false, "failed" end
+	if self.analysisFootnote then
+		if saved then
+			self.analysisFootnote:SetText("Review " .. tostring(detail and detail.id or "?")
+				.. " saved. /reload or logout writes it; nothing is sent.")
+		elseif detail == "already-reported" then
+			self.analysisFootnote:SetText("This line is already in your saved review queue.")
+		else
+			self.analysisFootnote:SetText("Could not save review: " .. tostring(detail or "failed") .. ".")
+		end
+	end
+	self.analysisDotExpires = (GetTime and GetTime() or 0) + 10
+	return saved == true, detail, existing
+end
+
 local fallbackMessageRouteDestinations = {
 	{ id = "general", label = "GENERAL" },
 	{ id = "groupFinder", label = "GROUP FINDER" },
@@ -4786,6 +4989,7 @@ function Dock:SetMessageRouteOverrideDestination(category, quiet)
 		return false
 	end
 	self.analysisRouteDestination = category
+	if not quiet then self.analysisReportExpectedRoute = category end
 	if self.analysisRouteSelector then
 		self.analysisRouteSelector:SetLabel(label .. " v")
 	end
@@ -7464,6 +7668,9 @@ function Dock:DiscardPartialBuild()
 	self.messageBandHost = nil
 	self.messageBandPool = nil
 	self.messageBandVisibleCount = nil
+	self.messageTypeDotPool = nil
+	self.messageTypeDotVisibleCount = nil
+	self.messageTypeDotSemanticCache = nil
 	self.messageActionHighlight = nil
 	self.messageActionHighlightRecord = nil
 	self.content = nil
@@ -7523,6 +7730,7 @@ function Dock:DiscardPartialBuild()
 	self.historyPageOffset = nil
 	self.historyEligibleCount = nil
 	self.transientMessageTopInset = nil
+	self.transientMessageLeftInset = nil
 	self.transientMessageBottomInset = nil
 	self.transientMessageRightInset = nil
 	self.transientMessageContentHeight = nil
@@ -7578,6 +7786,7 @@ function Dock:DiscardPartialBuild()
 	self.analysisAction = nil
 	self.analysisActionRecord = nil
 	self.analysisPanel = nil
+	self.analysisReport = nil
 	self.analysisRecord = nil
 	self.analysisSource = nil
 	self.analysisRoute = nil
@@ -8576,6 +8785,16 @@ function Dock:BuildMessageBlockControls()
 		Dock:HideMessageBlockControls()
 	end)
 	self:BindHeaderHover(analysisClose)
+	local analysisReport = createTightButton(analysisPanel, "REPORT", 18, false)
+	analysisReport:SetPoint("RIGHT", analysisClose, "LEFT", -4, 0)
+	analysisReport:SetScript("OnClick", function() Dock:ReportSelectedMessageRoute() end)
+	self:BindHeaderHover(analysisReport)
+	self:BindDockControlTooltip(analysisReport, "Save a route review",
+		"Save this line's route evidence for later Codex review. Public chat may include text; private and add-on messages store metadata only. Nothing is sent automatically.")
+	analysisTitle:SetPoint("RIGHT", analysisReport, "LEFT", -5, 0)
+	analysisTitle:SetJustifyH("LEFT")
+	if analysisTitle.SetWordWrap then analysisTitle:SetWordWrap(false) end
+	self.analysisReport = analysisReport
 
 	local function addAnalysisRow(labelText, top)
 		local label = Theme:CreateText(analysisPanel, "GameFontNormalSmall", "gold")
@@ -8614,6 +8833,7 @@ function Dock:BuildMessageBlockControls()
 	self.analysisWhy = addAnalysisRow("WHY", -96)
 	local analysisFootnote = Theme:CreateText(analysisPanel, "GameFontHighlightSmall", "textMuted")
 	analysisFootnote:SetPoint("BOTTOMLEFT", analysisPanel, "BOTTOMLEFT", 7, 29)
+	analysisFootnote:SetPoint("RIGHT", analysisPanel, "RIGHT", -7, 0)
 	analysisFootnote:SetText("Exact public text only; case and extra spaces are ignored.")
 	self.analysisFootnote = analysisFootnote
 
@@ -9572,6 +9792,9 @@ function Dock:Build()
 		if Dock.active then
 			Dock:SyncDockHoverState()
 			Dock:ApplyLayout()
+			-- Build can finish rendering while the parent is still hidden. Repaint
+			-- visible-only dots after the real surface becomes shown.
+			Dock:RefreshMessageBands()
 			Dock:SyncNativeChatVisibility()
 			Dock:ScheduleHeaderHoverRefresh(0)
 		end
@@ -9597,6 +9820,7 @@ function Dock:Build()
 		Dock:HideChatHelpMenu(false)
 		Dock:HideDisplayHoverHint()
 		Dock:HideMessageBlockControls()
+		Dock:HideMessageTypeDots()
 		Dock:HidePlayerActions()
 		Dock.headerHover = false
 		Dock.railMouseoverRevealed = false
@@ -9867,6 +10091,7 @@ function Dock:Build()
 	-- native hyperlink renderer.
 	self.messageBandHost = content
 	self.messageBandPool = {}
+	self.messageTypeDotPool = {}
 	local messageActionHighlight = content:CreateTexture(nil, "ARTWORK")
 	messageActionHighlight:SetTexture("Interface\\Buttons\\WHITE8x8")
 	if messageActionHighlight.SetDrawLayer then
@@ -9901,7 +10126,8 @@ function Dock:Build()
 	self.messageMeasure = measure
 
 	local display = CreateFrame("ScrollingMessageFrame", nil, content)
-	display:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -4)
+	display:SetPoint("TOPLEFT", content, "TOPLEFT",
+		self:AreMessageTypeDotsEnabled() and MESSAGE_DOT_DISPLAY_LEFT_INSET or 4, -4)
 	display:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -18, 4)
 	display:SetFontObject(ChatFontNormal)
 	display:SetJustifyH("LEFT")

@@ -912,9 +912,15 @@ local dockLayoutCategoryDefinitions = {
 		hint = "Configure the movable NEW marker and the unread numbers shown on inactive chat tabs.",
 		tooltip = "NEW-marker behavior and styling, plus independent tab unread-count size and opacity.",
 	},
+	markers = {
+		title = "DOTS",
+		heading = "Message type dots",
+		hint = "Spot what kind of message you are reading, then click its dot for line-specific actions.",
+		tooltip = "Colored message dots, route analysis, manual correction, and saved review reports.",
+	},
 }
 
-local dockLayoutCategoryOrder = { "window", "tabs", "input", "readability", "unread" }
+local dockLayoutCategoryOrder = { "window", "tabs", "input", "readability", "unread", "markers" }
 
 function Config:SetDockLayoutCategory(category)
 	if not dockLayoutCategoryDefinitions[category] then
@@ -1573,6 +1579,9 @@ function Config:RefreshDockPage()
 		and addon:GetHideSenderRealms()
 	if hideSenderRealms == nil then hideSenderRealms = dock.hideSenderRealms == true end
 	if self.dockHideSenderRealmsToggle then self.dockHideSenderRealmsToggle:SetValue(hideSenderRealms, true) end
+	if self.dockMessageTypeDotsToggle then
+		self.dockMessageTypeDotsToggle:SetValue(dock.messageTypeDots ~= false, true)
+	end
 	if self.dockLineSpacingEdit then
 		local appearance
 		if type(addon.GetSmartChatTextAppearance) == "function" then
@@ -2474,6 +2483,68 @@ function Config:BuildDockPage()
 	setControlTooltip(self.dockHideSenderRealmsToggle, "Hide realm in chat names",
 		"Show only the character name in visible sender labels and text emotes. Full names remain stored for whispers, player actions, and history. Existing profiles keep full names until enabled.")
 
+	local messageDotsTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
+	messageDotsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
+	messageDotsTitle:SetText("AT THE START OF EACH MESSAGE")
+	self.dockMessageTypeDotsToggle = Theme:CreateCompactToggle(page, "SHOW COLORED DOTS", 250)
+	self.dockMessageTypeDotsToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -154)
+	self.dockMessageTypeDotsToggle.OnValueChanged = function(_, value)
+		getDockSettings().messageTypeDots = value and true or false
+		local dock = addon.SmartDock
+		if dock and dock.RefreshTransientMessageLayout then
+			dock:RefreshTransientMessageLayout(true)
+		end
+		if dock and dock.RebuildActiveViewPreservingScroll then
+			dock:RebuildActiveViewPreservingScroll()
+		end
+		Config:SetDockStatus(value and "Message dots now identify visible chat entries."
+			or "Message dots hidden; chat text uses the original gutter.", "success")
+	end
+	setControlTooltip(self.dockMessageTypeDotsToggle, "Show message type dots",
+		"Each visible message gets one colored dot at the start, even when its text wraps. The dot has its own click lane and never covers chat links or the scrollbar.")
+	local messageDotsHint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	messageDotsHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -183)
+	messageDotsHint:SetWidth(PAGE_WIDTH)
+	messageDotsHint:SetText("The color describes the source or final route. Amber means review candidate, not a confirmed mistake.")
+	local messageDotLegend = { messageDotsTitle, self.dockMessageTypeDotsToggle, messageDotsHint }
+	local legend = {
+		{ "ADD-ON", 0.67, 0.58, 0.98 }, { "SAY / PUBLIC", 0.43, 0.76, 1 },
+		{ "PARTY / RAID", 0.59, 0.76, 1 }, { "YELL", 1, 0.55, 0.32 },
+		{ "GUILD / GROUP FINDER", 0.43, 0.86, 0.54 }, { "TRADE / LOOT", 1, 0.78, 0.39 },
+		{ "PVP", 1, 0.43, 0.47 }, { "POSSIBLE SALE TO REVIEW", 1, 0.64, 0.25 },
+	}
+	for index, item in ipairs(legend) do
+		local column = (index - 1) % 2
+		local row = math.floor((index - 1) / 2)
+		local x = PAGE_GUTTER + (column * 310)
+		local y = 228 + (row * 30)
+		local dot = page:CreateTexture(nil, "ARTWORK")
+		dot:SetTexture("Interface\\AddOns\\ChattyChattyBangBang\\Media\\Dock\\message-orb.tga")
+		dot:SetSize(12, 12)
+		dot:SetPoint("TOPLEFT", page, "TOPLEFT", x, -y)
+		dot:SetVertexColor(item[2], item[3], item[4], 1)
+		local label = Theme:CreateText(page, "GameFontHighlightSmall", "text")
+		label:SetPoint("LEFT", dot, "RIGHT", 8, 0)
+		label:SetText(item[1])
+		table.insert(messageDotLegend, dot)
+		table.insert(messageDotLegend, label)
+	end
+	local dotActionsTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
+	dotActionsTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -366)
+	dotActionsTitle:SetText("CLICK A DOT")
+	local dotActionsHint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	dotActionsHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -389)
+	dotActionsHint:SetWidth(PAGE_WIDTH)
+	dotActionsHint:SetText("See why Chatty routed that line. MOVE fixes identical public-channel text; REPORT saves evidence for a later code review.")
+	local dotPrivacyHint = Theme:CreateText(page, "GameFontHighlightSmall", "textMuted")
+	dotPrivacyHint:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -429)
+	dotPrivacyHint:SetWidth(PAGE_WIDTH)
+	dotPrivacyHint:SetText("Reports are local SavedVariables. They are written on logout or your own /reload; nothing is auto-sent.")
+	table.insert(messageDotLegend, dotActionsTitle)
+	table.insert(messageDotLegend, dotActionsHint)
+	table.insert(messageDotLegend, dotPrivacyHint)
+	self.dockMessageDotControls = messageDotLegend
+
 	local newMessagesTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
 	newMessagesTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
 	newMessagesTitle:SetText("BEHAVIOR")
@@ -2966,6 +3037,7 @@ function Config:BuildDockPage()
 			newMessagesCapLabel, self.dockNewMessagesMaxEdit,
 			self.dockMarkerAppearanceToggle, self.dockUnreadCountAppearanceToggle,
 		},
+		markers = self.dockMessageDotControls,
 	}
 	for _, button in pairs(self.dockMessageBandExtentButtons or {}) do
 		table.insert(self.dockLayoutGroups.readability, button)

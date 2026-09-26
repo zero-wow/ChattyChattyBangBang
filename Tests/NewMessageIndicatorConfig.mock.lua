@@ -247,7 +247,7 @@ config.navigationButtons = {}
 config.content = frame()
 config:BuildDockPage()
 
-local categoryOrder = { "window", "tabs", "input", "readability", "unread" }
+local categoryOrder = { "window", "tabs", "input", "readability", "unread", "markers" }
 local categoryWidth = 0
 for index, id in ipairs(categoryOrder) do
 	local button = config.dockLayoutCategoryButtons[id]
@@ -261,6 +261,11 @@ assert(config.dockLayoutCategoryButtons.input.text:GetText() == "INPUT"
 
 assert(config.dockLayoutCategory == "window" and config.dockVisibleToggle:IsShown(),
 	"Chat Window did not open on the focused Window inspector")
+config.dockLayoutCategoryButtons.markers.scripts.OnClick(config.dockLayoutCategoryButtons.markers)
+assert(config.dockMessageTypeDotsToggle:IsShown()
+	and not config.dockMessageBandsToggle:IsShown(),
+	"message-dot controls did not get their own focused inspector")
+config.dockLayoutCategoryButtons.window.scripts.OnClick(config.dockLayoutCategoryButtons.window)
 assert(not config.dockMarkerAppearanceToggle:IsShown(),
 	"Unread controls leaked into the Window inspector")
 config.dockLayoutCategoryButtons.unread.scripts.OnClick(config.dockLayoutCategoryButtons.unread)

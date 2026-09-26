@@ -46,6 +46,7 @@ Core\SpamControl.lua
 Core\WhisperGuard.lua
 Core\BlockControl.lua
 Core\MessageEngine.lua
+Core\RouteReview.lua
 Core\ChatRecovery.lua
 Core\KeywordSuggestions.lua
 Core\Alerts.lua

@@ -8,7 +8,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Progress:** 94/100 locally verified; 5 in progress; 0 queued; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
-**Latest follow-up:** 🟢 Alternating entry bands now extend a small, symmetric amount beyond the first and last text lines, clipped to the viewport without changing text or scrollbar lanes. 🟢 Settings `SetSize` now receives a measured numeric width instead of an undefined value. 🟣 Both await Zero's in-game visual/crash check (M29–M30).
+**Latest follow-up:** 🟢 A colored orb now marks each visible Smart Chat entry in its own gutter; click opens route analysis/correction and an explicit 50-item, privacy-limited SavedVariables review queue. Local mock and package checks pass. 🟣 Orb placement, tint, popup usability, and `/reload` persistence still await Zero's in-game check. Earlier alternating-band and Settings `SetSize` fixes also remain unverified in-game (M29–M30).
 
 ## Add — missing capabilities
 

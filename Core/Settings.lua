@@ -178,6 +178,9 @@ local defaults = {
 		-- Keep full sender identities in records and links. This optional display
 		-- preference removes only the realm suffix from visible character names.
 		hideSenderRealms = false,
+		-- One tintable, clickable marker per logical message. The separate gutter
+		-- protects chat text and existing hyperlinks at narrow dock widths.
+		messageTypeDots = true,
 		-- Independent chrome multipliers let a player soften the panel and border
 		-- without fading message text. overallAlpha intentionally affects the whole
 		-- SmartDock tree, including text and controls.
