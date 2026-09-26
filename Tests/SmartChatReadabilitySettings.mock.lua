@@ -45,7 +45,8 @@ assert(dock.transparency.backgroundAlpha == 0 and dock.transparency.borderAlpha 
 	and dock.transparency.overallAlpha == 0.4,
 	"independent opacity settings were not normalized to 0..1")
 assert(dock.messageBands.enabled and dock.messageBands.extent == "full"
-	and dock.messageBands.extendUnderScrollbar == false
+	and dock.messageBands.extendUnderScrollbar == true
+	and dock.messageBands.coverageSchema == 1
 	and dock.messageBands.color.mode == "custom"
 	and dock.messageBands.color.r == 0 and dock.messageBands.color.g == 1
 	and dock.messageBands.color.b == 0.5 and dock.messageBands.alpha == 1,
@@ -121,7 +122,8 @@ assert(settings.dock.transparency.backgroundAlpha == 1
 assert(addon:ResetSmartChatMessageBands())
 assert(settings.dock.messageBands.enabled == false
 	and settings.dock.messageBands.extent == "full"
-	and settings.dock.messageBands.extendUnderScrollbar == false
+	and settings.dock.messageBands.extendUnderScrollbar == true
+	and settings.dock.messageBands.coverageSchema == 1
 	and settings.dock.messageBands.schema == 2
 	and settings.dock.messageBands.color.theme == "surfaceRaised"
 	and settings.dock.messageBands.alpha == 0.50,
@@ -149,5 +151,21 @@ bands = addon:GetSmartChatMessageBandSettings()
 assert(bands.color.theme == "accentSoft" and bands.alpha == 0.22
 	and bands.extent == "afterPlayer" and bands.extendUnderScrollbar == true,
 	"deliberate message-band styling was overwritten by the factory migration")
+
+-- A pre-coverage full-row profile now gets the complete panel, including the
+-- scrollbar lane. Once the setting exists, an explicit choice to turn it off
+-- remains stable across subsequent normalizations.
+addon.db.profile.smartChat.dock.messageBands = {
+	schema = 2, enabled = true, extent = "full", extendUnderScrollbar = false,
+	color = { mode = "theme", theme = "surfaceRaised" }, alpha = 0.50,
+}
+bands = addon:GetSmartChatMessageBandSettings()
+assert(bands.coverageSchema == 1 and bands.extent == "full"
+	and bands.extendUnderScrollbar == true,
+	"existing full-row profile did not gain the new full-width baseline")
+assert(addon:SetSmartChatMessageBandExtendUnderScrollbar(false))
+bands = addon:GetSmartChatMessageBandSettings()
+assert(bands.coverageSchema == 1 and bands.extendUnderScrollbar == false,
+	"a later explicit scrollbar-lane choice was overwritten by migration")
 
 print("Smart Chat readability settings mock passed")

@@ -20,6 +20,9 @@ local PLAYER_ACTION_AUTO_HIDE_MAX_SECONDS = 120
 -- surface used by ordinary table zebra rows.  The schema lets us repair only
 -- the exact factory style while leaving deliberate colors/opacity untouched.
 local MESSAGE_BAND_STYLE_SCHEMA = 2
+-- Promote full-width rows once for profiles saved before the scrollbar-lane
+-- option became the desired baseline. Subsequent explicit OFF choices stick.
+local MESSAGE_BAND_COVERAGE_SCHEMA = 1
 -- Rail unread counts are independent from the active-view NEW marker.  Zero
 -- font size deliberately means inherit the compact rail FontObject, retaining
 -- existing tab geometry until a player explicitly asks for a larger count.
@@ -187,9 +190,10 @@ local defaults = {
 		-- continuation receives the same bounded background band.
 		messageBands = {
 			schema = MESSAGE_BAND_STYLE_SCHEMA,
+			coverageSchema = MESSAGE_BAND_COVERAGE_SCHEMA,
 			enabled = false,
 			extent = "full",
-			extendUnderScrollbar = false,
+			extendUnderScrollbar = true,
 			color = { mode = "theme", theme = "surfaceRaised", r = 0.085, g = 0.112, b = 0.158 },
 			alpha = 0.50,
 		},
@@ -3622,6 +3626,8 @@ end
 local function normalizeDockMessageBands(dock)
 	local stored = type(dock.messageBands) == "table" and dock.messageBands or {}
 	local fallback = defaults.dock.messageBands
+	local oldCoverage = (tonumber(rawget(stored, "coverageSchema")) or 0)
+		< MESSAGE_BAND_COVERAGE_SCHEMA
 	local storedColor = type(stored.color) == "table" and stored.color or {}
 	local fallbackColor = fallback.color
 	local theme = type(stored.color) == "string" and stored.color or storedColor.theme
@@ -3649,9 +3655,10 @@ local function normalizeDockMessageBands(dock)
 	end
 	dock.messageBands = {
 		schema = MESSAGE_BAND_STYLE_SCHEMA,
+		coverageSchema = MESSAGE_BAND_COVERAGE_SCHEMA,
 		enabled = stored.enabled == true,
 		extent = messageBandExtents[stored.extent] and stored.extent or fallback.extent,
-		extendUnderScrollbar = stored.extendUnderScrollbar == true,
+		extendUnderScrollbar = oldCoverage and true or stored.extendUnderScrollbar == true,
 		color = {
 			mode = mode,
 			theme = theme,
@@ -4000,6 +4007,9 @@ function addon:GetSmartSettings()
 	-- This one-time bridge lets existing compact profiles become the matching
 	-- new module setting without treating all historical profiles as opt-in.
 	local rawDock = type(profile.smartChat.dock) == "table" and profile.smartChat.dock or nil
+	local rawBands = rawDock and rawget(rawDock, "messageBands")
+	local migrateMessageBandCoverage = type(rawBands) ~= "table"
+		or (tonumber(rawget(rawBands, "coverageSchema")) or 0) < MESSAGE_BAND_COVERAGE_SCHEMA
 	-- Capture the first-release factory stripe before applyDefaults can expose
 	-- schema 2 through AceDB's defaults metatable. Only that exact accentSoft
 	-- style is corrected; custom and deliberately re-tuned theme rows survive.
@@ -4052,6 +4062,13 @@ function addon:GetSmartSettings()
 		previousKeywordColorGroups = copy(profile.smartChat.keywordColorGroups)
 	end
 	applyDefaults(profile.smartChat, defaults)
+	if migrateMessageBandCoverage then
+		-- applyDefaults writes the new schema before normalization, so capture the
+		-- old raw state above and promote its right-edge coverage explicitly.
+		local bands = profile.smartChat.dock.messageBands
+		bands.extendUnderScrollbar = true
+		bands.coverageSchema = MESSAGE_BAND_COVERAGE_SCHEMA
+	end
 	if migrateTellTargetSettings then
 		local conversations = profile.smartChat.conversations
 		if rawTellTargetEnabled == nil then

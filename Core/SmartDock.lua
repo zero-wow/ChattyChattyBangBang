@@ -122,6 +122,10 @@ local SEARCH_EXPORT_MAX_BYTES = 8192
 -- lane, but stops at the backdrop's one-pixel inner inset so the panel border
 -- remains crisp. The message viewport and scrollbar hit geometry never move.
 local MESSAGE_BAND_PANEL_EDGE_INSET = 1
+-- The readable ScrollingMessageFrame begins four pixels inside its content
+-- panel. Full-row artwork starts at the matching one-pixel inner border;
+-- text and scrollbar hit targets retain their independent layout.
+local MESSAGE_BAND_FULL_LEFT_OVERHANG = 4 - MESSAGE_BAND_PANEL_EDGE_INSET
 -- When the title bar is intentionally hidden, the unused portion of the tab
 -- rail becomes its quiet replacement grab area.  Use the same small movement
 -- threshold as tab reordering so a simple click in the rail never nudges the
@@ -3964,7 +3968,9 @@ function Dock:RefreshMessageBands()
 						+ (visible.visibleContentLastLine - geometry.firstVisibleLine + 1) * lineHeight
 						+ verticalPadding)
 					band:ClearAllPoints()
-					band:SetPoint("TOPLEFT", display, "TOPLEFT", math.max(0, startX), -top)
+					local bandStartX = appearance.extent == "full"
+						and -MESSAGE_BAND_FULL_LEFT_OVERHANG or math.max(0, startX)
+					band:SetPoint("TOPLEFT", display, "TOPLEFT", bandStartX, -top)
 					band:SetPoint("BOTTOMRIGHT", display, "TOPRIGHT", bandRightOffset, -bottom)
 					band:SetVertexColor(appearance.r, appearance.g, appearance.b, appearance.alpha)
 					band:Show()

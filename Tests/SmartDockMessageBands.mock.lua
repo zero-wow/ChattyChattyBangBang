@@ -120,7 +120,8 @@ dock:RefreshMessageBands()
 assert(textures[1].points[1][4] == 35, "AFTER CHANNEL used the wrong formatted boundary")
 bandSettings.extent = "full"
 dock:RefreshMessageBands()
-assert(textures[1].points[1][4] == 0, "FULL LINE did not begin at the chat edge")
+assert(textures[1].points[1][4] == -3,
+	"FULL ROW did not reach the content panel's one-pixel inner left edge")
 assert(textures[1].points[2][4] == 0,
 	"ordinary message shade no longer stopped at the readable text viewport")
 
@@ -128,8 +129,8 @@ assert(textures[1].points[2][4] == 0,
 -- every configured left boundary, and the scrollbar hit lane remain separate.
 bandSettings.extendUnderScrollbar = true
 dock:RefreshMessageBands()
-assert(textures[1].points[1][4] == 0 and textures[1].points[2][4] == 15,
-	"full-bleed shade did not reach the content panel's one-pixel inner edge")
+assert(textures[1].points[1][4] == -3 and textures[1].points[2][4] == 15,
+	"full-bleed shade did not reach both one-pixel inner panel edges")
 bandSettings.extent = "afterPlayer"
 dock:RefreshMessageBands()
 assert(textures[1].points[1][4] == 60 and textures[1].points[2][4] == 15,
@@ -157,7 +158,8 @@ dock.displayRecords = {
 }
 assert(dock:RefreshMessageBands() and dock.messageBandVisibleCount == 1,
 	"single-line alternating entry did not paint")
-assert(textures[1].points[1][5] == -28 and textures[1].points[2][5] == -42
+assert(textures[1].points[1][4] == -3
+	and textures[1].points[1][5] == -28 and textures[1].points[2][5] == -42
 	and textures[1].points[2][4] == 0,
 	"single-line band did not retain symmetric padding inside the text viewport")
 

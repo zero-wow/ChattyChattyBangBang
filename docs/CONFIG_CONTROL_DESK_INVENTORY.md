@@ -202,7 +202,7 @@ First-contact protection applies to in-game character whispers (`CHAT_MSG_WHISPE
 | A | Player name max length / `dock.senderColumnMaxLength` | Truncates overly long sender labels in aligned view. | Narrow tabs preserve message text. |
 | A | Visible-only alignment / `dock.alignmentVisibleOnly` | Calculates widths from currently visible logical messages. | Columns adapt while scrolling instead of remembering old wider names. |
 | A | Message band extent / `dock.messageBands.extent` | Chooses full or content-lane shading. | Alternating bands cover different widths. |
-| A | Bands under scrollbar / `dock.messageBands.extendUnderScrollbar` | Extends stripes beneath scroll lane. | Shading reaches the right edge. |
+| A | Bands under scrollbar / `dock.messageBands.extendUnderScrollbar` | Extends stripes beneath the transparent scroll lane. | Full Row shading reaches both one-pixel inner panel edges by default; chat text and scrollbar hit targets stay in their own lanes. Existing profiles receive this width once and can turn it off again. |
 | A | Band color and alpha / `dock.messageBands.color,alpha` | Changes band tint/strength. | More/less prominent alternating rows; reset restores theme default. |
 | A | NEW marker count/cap / `dock.newMessages.showCount,maxCount` | Shows bounded unseen count. | `NEW 7` or `NEW 99+` appears as configured. |
 | A | NEW marker position / `dock.newMessages.appearance.position` | Saves marker anchor/drag offset. | Marker moves without changing message order. |
