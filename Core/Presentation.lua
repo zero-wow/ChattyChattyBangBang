@@ -478,7 +478,7 @@ local chatStatusTemplateNames = {
 	CHAT_MSG_FILTERED = "CHAT_FILTERED",
 }
 
-local function accessibleTemplateValue(value)
+local function canInspectValue(value)
 	local canAccess = _G.canaccessvalue
 	if type(canAccess) == "function" then
 		local ok, accessible = pcall(canAccess, value)
@@ -487,6 +487,11 @@ local function accessibleTemplateValue(value)
 		local ok, secret = pcall(_G.issecretvalue, value)
 		if not ok or secret then return false end
 	end
+	return true
+end
+
+local function accessibleTemplateValue(value)
+	if not canInspectValue(value) then return false end
 	return type(value) == "string" or type(value) == "number"
 end
 
@@ -966,6 +971,65 @@ function Presentation:ColorizeMessage(text, skipExpressionReplacement, context)
 	return table.concat(result)
 end
 
+-- Some guild events (notably achievement announcements) arrive without a
+-- usable sender GUID. Only an exact roster name may supply their class: a
+-- same-named character on another realm must never inherit a guessed color.
+local guildRosterClasses = {}
+local nextGuildRosterClassRefresh = 0
+local function guildRosterClass(name)
+	if not accessibleTemplateValue(name) or type(name) ~= "string" or name == "" then
+		return nil
+	end
+	local now = type(_G.GetTime) == "function" and _G.GetTime() or nil
+	if not now or now >= nextGuildRosterClassRefresh then
+		local guildInfo = _G.C_GuildInfo
+		local rosterInfo = _G.GetGuildRosterInfo
+		if type(rosterInfo) ~= "function" then
+			rosterInfo = guildInfo and guildInfo.GetGuildRosterInfo
+		end
+		if type(_G.GetNumGuildMembers) == "function" and type(rosterInfo) == "function" then
+			local ok, count = pcall(_G.GetNumGuildMembers)
+			if ok and accessibleTemplateValue(count) and type(count) == "number" and count >= 0 then
+				local classes, ambiguous = {}, {}
+				for index = 1, min(count, 1000) do
+					local success, rosterName, _, _, _, _, _, _, _, _, _, classToken = pcall(rosterInfo, index)
+					if success and canInspectValue(rosterName) and type(rosterName) == "table" then
+						local readable, savedName, savedClass = pcall(function()
+							return rosterName.name, rosterName.classFileName
+						end)
+						rosterName = readable and savedName or nil
+						classToken = readable and savedClass or nil
+					end
+					if success and accessibleTemplateValue(rosterName)
+						and type(rosterName) == "string" and rosterName ~= ""
+						and accessibleTemplateValue(classToken)
+						and type(classToken) == "string"
+						and _G.RAID_CLASS_COLORS and _G.RAID_CLASS_COLORS[classToken] then
+						local key = lower(rosterName)
+						if classes[key] and classes[key] ~= classToken then
+							ambiguous[key] = true
+						else
+							classes[key] = classToken
+						end
+					end
+				end
+				for key in pairs(ambiguous) do classes[key] = nil end
+				guildRosterClasses = classes
+			end
+		end
+		if now then nextGuildRosterClassRefresh = now + 30 end
+	end
+	return guildRosterClasses[lower(name)]
+end
+
+local guildSenderEvents = {
+	CHAT_MSG_GUILD = true,
+	CHAT_MSG_OFFICER = true,
+	CHAT_MSG_GUILD_DISCORD = true,
+	CHAT_MSG_GUILD_ACHIEVEMENT = true,
+	CHAT_MSG_GUILD_ITEM_LOOTED = true,
+}
+
 function Presentation:GetColoredName(record, displayName)
 	local originalName = record.sender
 	local name = displayName or originalName
@@ -973,12 +1037,16 @@ function Presentation:GetColoredName(record, displayName)
 		return nil
 	end
 	name = tostring(name)
+	local settings = addon.GetPreparedSmartSettings and addon:GetPreparedSmartSettings()
+		or addon.GetSmartSettings and addon:GetSmartSettings()
+	local classColorsEnabled = not settings or not settings.dock
+		or settings.dock.classColorNames ~= false
 
 	local playerNames = addon.GetModule and addon:GetModule("Player Class Colors", true)
 	-- Player Class Colors resolves its colour from the original full name. A
 	-- fixed lane can abbreviate only the visible label, so avoid asking that
 	-- module to hand back the unabridged text in the rare over-width case.
-	if (displayName == nil or displayName == originalName)
+	if classColorsEnabled and (displayName == nil or displayName == originalName)
 		and playerNames and playerNames.ColorName and playerNames.db and playerNames:IsEnabled() then
 		local ok, coloredName = pcall(playerNames.ColorName, playerNames, name)
 		if ok and coloredName then
@@ -986,9 +1054,17 @@ function Presentation:GetColoredName(record, displayName)
 		end
 	end
 
-	local classColor = record.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[record.class]
+	local classToken = classColorsEnabled and accessibleTemplateValue(record.class)
+		and type(record.class) == "string" and record.class or nil
+	if classColorsEnabled and not classToken and guildSenderEvents[record.event] then
+		classToken = guildRosterClass(originalName)
+	end
+	local classColor = classToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classToken]
 	if classColor then
 		return format("|cff%02x%02x%02x%s|r", floor(classColor.r * 255), floor(classColor.g * 255), floor(classColor.b * 255), name)
+	end
+	if guildSenderEvents[record.event] then
+		return self:Color(name, "success")
 	end
 	return self:Color(name, "text")
 end
@@ -1155,13 +1231,26 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 	metadata = type(metadata) == "table" and metadata or nil
 	local timestamp = self:Color(record.timestamp or "", "textMuted")
 	local sourceText = self:GetSource(record)
+	local eventText = self:FormatEventText(record)
 	-- Responsive metadata is presentation-only.  Missing fields never reserve a
 	-- blank lane, and the default nil contract preserves every historical caller.
 	local showTimestamp = (not metadata or metadata.showTimestamp ~= false)
 		and tostring(record.timestamp or "") ~= ""
 	local showSource = (not metadata or metadata.showSource ~= false)
 		and record.event ~= nil and tostring(sourceText or "") ~= ""
+	-- Achievement templates often put the player inside their localized
+	-- message. Suppress the second sender lane only when that name rendered.
+	local firstMessageControl = accessibleTemplateValue(eventText)
+		and type(eventText) == "string" and findNextControlSequence(eventText, 1) or nil
+	local plainEventText = firstMessageControl and sub(eventText, 1, firstMessageControl - 1)
+		or eventText
+	local embeddedAchievementSender = achievementTemplateEvents[record.event]
+		and accessibleTemplateValue(record.sender) and type(record.sender) == "string"
+		and record.sender ~= "" and accessibleTemplateValue(plainEventText)
+		and type(plainEventText) == "string"
+		and find(plainEventText, record.sender, 1, true) ~= nil
 	local showSender = (not metadata or metadata.showSender ~= false)
+		and not embeddedAchievementSender
 	local sourceSpacing = sourceColumnWidth and math.max(0, getAlignedSourceColumnSpacing()) or 0
 	local formattedSourceText = fitAndPadPresentationColumn(sourceText, sourceColumnWidth, sourceSpacing)
 	local source = self:Color(formattedSourceText, sourceColors[record.view] or "textMuted")
@@ -1178,8 +1267,37 @@ function Presentation:FormatParts(record, sourceColumnWidth, senderColumnWidth, 
 	if red then
 		source = self:ColorRGB(formattedSourceText, red, green, blue)
 	end
-	local message = self:ColorizeMessage(self:FormatEventText(record), nil,
-		{ sourceId = record.sourceId, viewId = viewId })
+	local messageContext = { sourceId = record.sourceId, viewId = viewId }
+	local message
+	if record.event == "CHAT_MSG_GUILD_ACHIEVEMENT"
+		and accessibleTemplateValue(record.sender) and type(record.sender) == "string"
+		and record.sender ~= "" and accessibleTemplateValue(eventText)
+		and type(eventText) == "string" then
+		-- The announcement's name is part of its localized text, not the sender
+		-- lane. Style only its exact occurrence in the plain announcement,
+		-- including localized templates that put a verb before the player. The
+		-- first native color/link and everything after it stay untouched.
+		local controlStart = findNextControlSequence(eventText, 1)
+		local plainBody = controlStart and sub(eventText, 1, controlStart - 1) or eventText
+		local linkedBody = controlStart and sub(eventText, controlStart) or ""
+		local nameStart, nameEnd = find(plainBody, record.sender, 1, true)
+		if nameStart then
+			local before = sub(plainBody, 1, nameStart - 1)
+			local after = sub(plainBody, nameEnd + 1)
+			local preceding = sub(before, -1)
+			local following = sub(after, 1, 1)
+			if (preceding == "" or string.match(preceding, "[%s%p]"))
+				and (following == "" or string.match(following, "[%s%p]")) then
+				message = (before ~= "" and self:Color(before, "textMuted") or "")
+					.. self:GetColoredName(record)
+					.. (after ~= "" and self:Color(after, "textMuted") or "")
+					.. self:ColorizeMessage(linkedBody, nil, messageContext)
+			end
+		end
+	end
+	if not message then
+		message = self:ColorizeMessage(eventText, nil, messageContext)
+	end
 	local rawSender = record.sender
 	local normalizedSenderSpacing = math.max(-8,
 		math.min(8, math.floor(tonumber(senderColumnSpacing) or 2)))

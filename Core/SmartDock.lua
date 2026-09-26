@@ -3297,6 +3297,21 @@ function Dock:ResolveResponsiveMetadataLayout(totalColumns, spec)
 			sourceAlignedWidth, compactSenderWidth, compactSpacing, narrowLeader)
 	end
 
+	-- At the last responsive step the speaker is more useful than the source
+	-- or clock. Shrink the visible name lane enough to keep twelve body cells;
+	-- only fall back to message-only when even a three-cell [N] label cannot fit.
+	-- This is presentation-only and does not alter the saved alignment choice.
+	if hasSender and totalColumns then
+		local compactNameSpacing = 1
+		local nameBudget = totalColumns - RESPONSIVE_NARROW_MIN_BODY_COLUMNS - compactNameSpacing
+		if nameBudget >= 3 then
+			local compactNameWidth = math.min(RESPONSIVE_COMPACT_SENDER_CHARACTER_CAP,
+				math.max(3, senderAlignedWidth or naturalSenderWidth), nameBudget)
+			local leaderColumns = compactNameWidth + compactNameSpacing
+			return result("EXTREME", false, false, true,
+				nil, compactNameWidth, compactNameSpacing, leaderColumns)
+		end
+	end
 	return result("EXTREME", false, false, false, nil, nil, 0, 0)
 end
 
@@ -3357,7 +3372,8 @@ function Dock:GetResponsiveMetadataForRecord(record)
 			showSender = hasSender and true or false,
 		}
 	elseif mode == "EXTREME" then
-		return { showTimestamp = false, showSource = false, showSender = false }
+		return { showTimestamp = false, showSource = false,
+			showSender = hasSender and self.activeSenderColumnWidth ~= nil }
 	end
 	return { showTimestamp = true, showSource = hasSource, showSender = hasSender and true or false }
 end

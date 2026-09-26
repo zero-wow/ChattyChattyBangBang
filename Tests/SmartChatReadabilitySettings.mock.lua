@@ -7,6 +7,7 @@ ChattyChattyBangBang = {
 			smartChat = {
 				dock = {
 					responsiveMetadata = false,
+					classColorNames = false,
 					transparency = {
 						backgroundAlpha = -2,
 						borderAlpha = 3,
@@ -32,6 +33,8 @@ local dock = settings.dock
 
 assert(addon:GetResponsiveMetadata() == false,
 	"explicit responsive metadata preference was not preserved")
+assert(addon:GetSmartChatClassColorNames() == false,
+	"explicit Smart Chat class-name color preference was not preserved")
 assert(dock.transparency.backgroundAlpha == 0 and dock.transparency.borderAlpha == 1
 	and dock.transparency.overallAlpha == 0.4,
 	"independent opacity settings were not normalized to 0..1")
@@ -42,16 +45,27 @@ assert(dock.messageBands.enabled and dock.messageBands.extent == "full"
 	and dock.messageBands.color.b == 0.5 and dock.messageBands.alpha == 1,
 	"message-band settings were not normalized without losing custom color mode")
 
-local responsiveRefreshes, opacityRefreshes, bandRefreshes = 0, 0, 0
+local responsiveRefreshes, opacityRefreshes, bandRefreshes, nameRefreshes, messengerRefreshes = 0, 0, 0, 0, 0
 addon.SmartDock = {
 	RefreshResponsiveMetadata = function() responsiveRefreshes = responsiveRefreshes + 1 end,
 	RefreshTransparency = function() opacityRefreshes = opacityRefreshes + 1 end,
 	RefreshMessageBands = function() bandRefreshes = bandRefreshes + 1 end,
+	RebuildActiveViewPreservingScroll = function() nameRefreshes = nameRefreshes + 1 end,
+}
+addon.ConversationWindows = {
+	shell = {
+		GetActiveSession = function() return { playerName = "Guildmate" } end,
+		RenderSession = function(_, _, preserveReader) assert(preserveReader); messengerRefreshes = messengerRefreshes + 1 end,
+	},
 }
 
 assert(addon:SetResponsiveMetadata(true))
 assert(settings.dock.responsiveMetadata == true and responsiveRefreshes == 1,
 	"responsive metadata setter did not persist and refresh immediately")
+assert(addon:SetSmartChatClassColorNames(true)
+	and addon:GetSmartChatClassColorNames() == true
+	and nameRefreshes == 1 and messengerRefreshes == 1,
+	"Smart Chat class-name color setter did not refresh both visible chat surfaces")
 
 assert(not addon:SetSmartChatWindowBackgroundAlpha("bad"),
 	"invalid background alpha was accepted")

@@ -17,6 +17,7 @@ Current-stage note: the first Simple control desk implements only its task-front
 | A | Helper classification tags / `dock.showClassificationTags` | Adds route hints to presented messages. | You see extra topic labels; message routing does not change. |
 | A | Dock position and lock / `dock.point,x,y,locked` | Retains the draggable window position and lock state. | Chat stays where placed; locked mode resists accidental movement. |
 | A | Window width and height / `dock.width,height` and reset | Resizes SmartDock within guarded bounds. | More/fewer wrapped lines fit; reset restores factory geometry. |
+| A | Player class colors / `dock.classColorNames` | Colors Smart Chat sender names by known class, including exact Guild roster matches when the event has no class; unknown Guild senders use one accent. | Guild speakers stand apart from message text; the legacy Player Class Colors module only affects native Blizzard chat. |
 | A | Background, border, overall opacity / `dock.transparency.*` and reset | Adjusts separate surface alpha multipliers. | Panel/border soften; overall opacity also fades text and controls. |
 | S | Minimap launcher / `launcher.minimap.hide`, `SetMinimapHidden` | Shows a launcher for dock and settings access. | Left click toggles chat; right click opens settings; middle click hides launcher. |
 | A | LDB launcher / `Core/Launcher.lua` | Exposes the same launcher to installed LDB displays. | Players with an LDB display can access Chatty there. |

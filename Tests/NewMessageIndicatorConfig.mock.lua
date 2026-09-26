@@ -388,8 +388,15 @@ assert(settings.persistHistory == false, "restore-after-login toggle did not upd
 config.dockLayoutCategoryButtons.readability.scripts.OnClick(config.dockLayoutCategoryButtons.readability)
 assert(config.dockResponsiveMetadataToggle:IsShown() and config.dockMessageBandsToggle:IsShown()
 	and config.dockMessageBandsScrollbarToggle:IsShown()
-	and config.dockMessageBandAlphaEdit:IsShown() and config.dockLineSpacingEdit:IsShown(),
+	and config.dockMessageBandAlphaEdit:IsShown() and config.dockLineSpacingEdit:IsShown()
+	and config.dockClassColorNamesToggle:IsShown(),
 	"Readability did not isolate responsive metadata and alternating-message controls")
+assert(config.dockClassColorNamesToggle.point[5] == -440
+	and config.dockClassColorNamesToggle.width == 230
+	and config.dockClassColorNamesToggle.height == 20
+	and config.dockClassColorNamesToggle.text:GetText() == "PLAYER CLASS COLORS"
+	and config.dockStatus.point[5] == -474,
+	"class-name color control clipped the compact Readability page or its status gutter")
 assert(config.dockMessageBandsToggle.text:GetText() == "ALTERNATING ROWS"
 	and config.dockMessageBandsScrollbarToggle.text:GetText() == "UNDER SCROLLBAR",
 	"message band toggles lost their compact wide-font-safe labels")
@@ -408,6 +415,9 @@ assert(settings.textAppearance.spacing == 4 and config.dockLineSpacingEdit:GetTe
 	"Readability rounded a decimal line gap instead of rejecting it truthfully")
 config.dockResponsiveMetadataToggle:SetValue(false)
 assert(settings.dock.responsiveMetadata == false, "responsive metadata lock did not persist")
+config.dockClassColorNamesToggle:SetValue(false)
+assert(settings.dock.classColorNames == false,
+	"Smart Chat player class-color toggle did not save its own setting")
 config.dockMessageBandsToggle:SetValue(true)
 config.dockMessageBandsScrollbarToggle:SetValue(true)
 config.dockMessageBandExtentButtons.afterPlayer.scripts.OnClick(config.dockMessageBandExtentButtons.afterPlayer)

@@ -28,7 +28,8 @@ assert(presentation:FormatEventText(savedGuildAchievement) ==
 	"Cindry-Hyjal has earned the achievement |cffffff00|Hachievement:10826|h[Mythic: Cenarius]|h|r!",
 	"saved guild-achievement template was not formatted using its event sender")
 local _, rendered = presentation:FormatParts(savedGuildAchievement)
-assert(string.find(rendered, "Cindry-Hyjal has earned", 1, true),
+local renderedPlain = rendered:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+assert(string.find(renderedPlain, "Cindry-Hyjal has earned", 1, true),
 	"historical achievement still showed a raw %s in the visible chat row")
 assert(savedGuildAchievement.text == original, "presentation modified the historical raw record")
 

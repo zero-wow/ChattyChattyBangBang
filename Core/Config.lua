@@ -1565,6 +1565,10 @@ function Config:RefreshDockPage()
 	local responsive = type(addon.GetResponsiveMetadata) == "function" and addon:GetResponsiveMetadata()
 	if responsive == nil then responsive = dock.responsiveMetadata ~= false end
 	if self.dockResponsiveMetadataToggle then self.dockResponsiveMetadataToggle:SetValue(responsive ~= false, true) end
+	local classColorNames = type(addon.GetSmartChatClassColorNames) == "function"
+		and addon:GetSmartChatClassColorNames()
+	if classColorNames == nil then classColorNames = dock.classColorNames ~= false end
+	if self.dockClassColorNamesToggle then self.dockClassColorNamesToggle:SetValue(classColorNames, true) end
 	if self.dockLineSpacingEdit then
 		local appearance
 		if type(addon.GetSmartChatTextAppearance) == "function" then
@@ -2254,7 +2258,7 @@ function Config:BuildDockPage()
 			or "Full timestamp, channel, and player metadata is locked on at every width.", "success")
 	end
 	setControlTooltip(self.dockResponsiveMetadataToggle, "Adapt details to window width",
-		"Wide: time + channel + player. Medium: channel + player. Narrow: player. Extremely narrow: message only. Turning this off locks the full layout.")
+		"Wide: time + channel + player. Medium: channel + player. Narrow: player. Extremely narrow: a shortened player name when it fits, otherwise message only. Turning this off locks the full layout.")
 	local lineSpacingTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
 	lineSpacingTitle:SetPoint("TOPLEFT", page, "TOPLEFT", 300, -132)
 	lineSpacingTitle:SetText("GLOBAL LINE GAP")
@@ -2433,6 +2437,22 @@ function Config:BuildDockPage()
 	bandsHint:SetWidth(PAGE_WIDTH)
 	bandsHint:SetJustifyH("LEFT")
 	bandsHint:SetText("FULL ROW + NEUTRAL creates the familiar, quiet zebra pattern used by readable tables.")
+	self.dockClassColorNamesToggle = Theme:CreateCompactToggle(page, "PLAYER CLASS COLORS", 230)
+	self.dockClassColorNamesToggle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -440)
+	self.dockClassColorNamesToggle.OnValueChanged = function(_, value)
+		if type(addon.SetSmartChatClassColorNames) == "function" then
+			addon:SetSmartChatClassColorNames(value)
+		else
+			getDockSettings().classColorNames = value and true or false
+			if addon.SmartDock and addon.SmartDock.RebuildActiveViewPreservingScroll then
+				addon.SmartDock:RebuildActiveViewPreservingScroll()
+			end
+		end
+		Config:SetDockStatus(value and "Known player classes now color their names."
+			or "Player class colors are off; Guild names keep one clear accent.", "success")
+	end
+	setControlTooltip(self.dockClassColorNamesToggle, "Color player names by class",
+		"Smart Chat colors a name when the client's class or an exact Guild roster match is known. Unknown Guild names use one clear accent; message text stays unchanged. The old Player Class Colors module only affects Blizzard chat.")
 
 	local newMessagesTitle = Theme:CreateText(page, "GameFontNormalSmall", "gold")
 	newMessagesTitle:SetPoint("TOPLEFT", page, "TOPLEFT", PAGE_GUTTER, -132)
@@ -2918,7 +2938,7 @@ function Config:BuildDockPage()
 			responsiveHint,
 			bandsTitle, self.dockMessageBandsToggle, self.dockMessageBandsScrollbarToggle, extentTitle,
 			bandColorTitle, bandAlphaLabel, self.dockMessageBandAlphaEdit,
-			self.dockMessageBandsResetButton, bandsHint,
+			self.dockMessageBandsResetButton, bandsHint, self.dockClassColorNamesToggle,
 		},
 		unread = {
 			newMessagesTitle, self.dockNewMessagesToggle, self.dockNewMessagesCountToggle,
@@ -15957,6 +15977,7 @@ function Config:ReloadProfile()
 	self.dockHistoryLinesEdit = nil
 	self.dockClearHistoryButton = nil
 	self.dockResponsiveMetadataToggle = nil
+	self.dockClassColorNamesToggle = nil
 	self.dockLineSpacingTitle = nil
 	self.dockLineSpacingEdit = nil
 	self.dockLineSpacingHint = nil

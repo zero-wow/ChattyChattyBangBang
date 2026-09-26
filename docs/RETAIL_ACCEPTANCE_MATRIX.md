@@ -47,6 +47,7 @@ automate `/reload` or scan game logs for it.
 | M28 | No | Semantic Routes BATCH EDIT stages Trade/LFG/PvP switches until Apply, Cancel leaves them unchanged, and a successful Apply updates displayed routes and unread badges without duplicated lines. | ⬜ | — |
 | M29 | No | At narrow and normal chat widths, alternating backgrounds leave visible top and bottom room around single-line and wrapped entries; bands clip cleanly at viewport edges and do not move text into the scrollbar lane. | ⬜ | — |
 | M30 | No | `/ccbb` opens settings without a SetSize Lua error at normal and compact UI sizes; `/ccbb tabs` still enters keyboard navigation. | ⬜ | — |
+| M31 | No | In Guild/Officer chat, known player names use class colors, unknown senders remain visibly distinct, achievement notices color only the player and preserve the achievement link, and a narrow chat keeps a shortened player label until the message-only threshold. | ⬜ | — |
 
 The [replacement audit](RETAIL_REPLACEMENT_AUDIT.md) explains the product
 invariants behind these checks. The [local test inventory](RETAIL_TESTING.md)

@@ -165,9 +165,13 @@ local defaults = {
 		-- layout across every Smart Chat tab.
 		senderColumnAlignment = false,
 		-- Keep aligned metadata readable as the dock narrows. Runtime presentation
-		-- sheds the timestamp, then channel, then player lane without changing the
-		-- player's saved alignment choices; disabling this locks the full leader.
+		-- sheds the timestamp, then channel, then compacts the player lane when
+		-- possible without changing saved alignment choices; disabling this locks
+		-- the full leader.
 		responsiveMetadata = true,
+		-- Smart Chat owns its own sender rendering; the legacy Player Class
+		-- Colors module only affects Blizzard's native fallback frames.
+		classColorNames = true,
 		-- Independent chrome multipliers let a player soften the panel and border
 		-- without fading message text. overallAlpha intentionally affects the whole
 		-- SmartDock tree, including text and controls.
@@ -3748,6 +3752,7 @@ local function migrateSmartSettings(settings)
 	dock.sourceColumnAlignment = dock.sourceColumnAlignment == true
 	dock.senderColumnAlignment = dock.senderColumnAlignment == true
 	dock.responsiveMetadata = dock.responsiveMetadata ~= false
+	dock.classColorNames = dock.classColorNames ~= false
 	normalizeDockPlayerActions(dock)
 	normalizeDockTransparency(dock)
 	normalizeDockMessageBands(dock)
@@ -4772,6 +4777,29 @@ function addon:SetResponsiveMetadata(enabled)
 	settings.dock.responsiveMetadata = enabled and true or false
 	refreshResponsiveMetadata(self)
 	return true, settings.dock.responsiveMetadata
+end
+
+function addon:GetSmartChatClassColorNames()
+	local settings = self:GetSmartSettings()
+	return not settings.dock or settings.dock.classColorNames ~= false
+end
+
+function addon:SetSmartChatClassColorNames(enabled)
+	local settings = self:GetSmartSettings()
+	settings.dock.classColorNames = enabled and true or false
+	local dock = self.SmartDock
+	if dock and type(dock.RebuildActiveViewPreservingScroll) == "function" then
+		dock:RebuildActiveViewPreservingScroll()
+	elseif dock and type(dock.RebuildActiveView) == "function" then
+		dock:RebuildActiveView()
+	end
+	local shell = self.ConversationWindows and self.ConversationWindows.shell
+	if shell and type(shell.GetActiveSession) == "function"
+		and type(shell.RenderSession) == "function" then
+		local active = shell:GetActiveSession()
+		if active then shell:RenderSession(active, true) end
+	end
+	return true, settings.dock.classColorNames
 end
 
 local function refreshSmartChatTransparency(owner)

@@ -82,8 +82,12 @@ assert(narrowBoundary.mode == "NARROW" and narrowBoundary.bodyColumns == 12,
 	"narrow metadata did not retain the exact 12-cell readable-body boundary")
 local extreme = dock:ResolveResponsiveMetadataLayout(25, alignedSpec)
 assert(extreme.mode == "EXTREME" and not extreme.showTimestamp
-	and not extreme.showSource and not extreme.showSender,
-	"width below the narrow boundary did not protect a message-only surface")
+	and not extreme.showSource and extreme.showSender
+	and extreme.senderColumnWidth == 12 and extreme.bodyColumns == 12,
+	"extreme width discarded the last useful player lane instead of compacting it")
+local tooSmall = dock:ResolveResponsiveMetadataLayout(15, alignedSpec)
+assert(tooSmall.mode == "EXTREME" and not tooSmall.showSender,
+	"impossibly narrow width did not preserve a readable message-only fallback")
 
 local lockedSpec = {}
 for key, value in pairs(alignedSpec) do lockedSpec[key] = value end
@@ -161,12 +165,15 @@ assert(string.find(narrowSystem, "SYSTEM", 1, true)
 	"senderless narrow row did not retain source provenance without a blank sender lane")
 
 dock.activeMetadataMode = "EXTREME"
+dock.activeSenderColumnWidth = extreme.senderColumnWidth
 local extremePlayer = addon.Presentation:Format(
-	playerRecord, nil, nil, 0, dock:GetResponsiveMetadataForRecord(playerRecord))
+	playerRecord, nil, extreme.senderColumnWidth, extreme.senderSpacing,
+	dock:GetResponsiveMetadataForRecord(playerRecord))
 assert(not string.find(stripChatMarkup(extremePlayer), "12:34", 1, true)
-	and not string.find(stripChatMarkup(extremePlayer), "TRADE", 1, true)
-	and not string.find(stripChatMarkup(extremePlayer), "Armageddonu", 1, true),
+	and not string.find(stripChatMarkup(extremePlayer), "TRADE", 1, true),
 	"extreme formatter retained hidden metadata")
+assert(string.find(stripChatMarkup(extremePlayer), "[Armaged...]", 1, true),
+	"extreme formatter failed to preserve a shortened clickable sender")
 assert(string.find(extremePlayer, "|Hitem:12345:0:0:0|h[Ancient Sword]|h", 1, true),
 	"responsive metadata mode damaged an existing item hyperlink")
 
