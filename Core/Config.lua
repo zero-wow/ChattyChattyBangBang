@@ -75,7 +75,7 @@ end
 local PAGE_GUTTER = 8
 local PAGE_WIDTH = 636
 local PAGE_TOP = 46
-local CONTROL_GAP = 3
+local CONTROL_GAP = 6
 -- The sidebar deliberately has no visible scroll bar. Its settings hierarchy
 -- can grow when Modules is expanded, but the list still reads like a compact
 -- settings block and simply responds to the mouse wheel over that area.
@@ -437,7 +437,7 @@ function Config:BuildHomePage()
 	detail:SetWidth(heroTextWidth)
 	detail:SetHeight(28)
 	detail:SetJustifyH("LEFT")
-	detail:SetText("Community, add-on-only lines, and some Blizzard notices are outside capture.")
+	detail:SetText("Readable Community chat is captured. Direct add-on-only lines and some Blizzard notices are not.")
 
 	local status = Theme:CreateText(hero, "GameFontNormalSmall", "warning")
 	status:SetPoint("TOPLEFT", detail, "BOTTOMLEFT", 0, -4)
@@ -14461,7 +14461,10 @@ function Config:BuildFrame()
 		and "RETAIL CHAT  v" or "WRATH / ASCENSION CHAT  v") .. getAddonVersion())
 
 	local close = CreateFrame("Button", nil, header)
-	close:SetSize(18, 18)
+	-- A 30px logical target remains at least 24px wide when the 840px console
+	-- scales down to its reviewed 700px viewport, while the quiet x stays small.
+	close:SetSize(30, 30)
+	self.closeButton = close
 	close.text = Theme:CreateText(close, "GameFontNormalSmall", "textMuted")
 	close.text:SetAllPoints(close)
 	close.text:SetJustifyH("CENTER")

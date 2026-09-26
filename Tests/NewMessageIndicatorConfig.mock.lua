@@ -374,7 +374,7 @@ assert(config.dockMessageBandsToggle.text:GetText() == "ALTERNATING ROWS"
 assert(config.dockMessageBandsScrollbarToggle.width == 230
 	and config.dockMessageBandsScrollbarToggle.point[2] == config.dockMessageBandsToggle
 	and config.dockMessageBandsScrollbarToggle.point[3] == "RIGHT"
-	and config.dockMessageBandsScrollbarToggle.point[4] == 3,
+	and config.dockMessageBandsScrollbarToggle.point[4] == 6,
 	"full-bleed row control did not retain its same-row gutter and reviewed width")
 config.dockLineSpacingEdit:SetText("4")
 config.dockLineSpacingEdit.scripts.OnEditFocusLost(config.dockLineSpacingEdit)

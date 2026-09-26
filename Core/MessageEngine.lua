@@ -22,6 +22,7 @@ local chatEvents = {
 	"CHAT_MSG_AFK",
 	"CHAT_MSG_DND",
 	"CHAT_MSG_CHANNEL",
+	"CHAT_MSG_COMMUNITIES_CHANNEL",
 	"CHAT_MSG_ADDON",
 	"CHAT_MSG_GUILD",
 	"CHAT_MSG_GUILD_DISCORD",
@@ -151,6 +152,9 @@ local directCategories = {
 	-- output is human-visible feedback and belongs in System, where it can be
 	-- hidden through the normal source control if a player does not want it.
 	CHAT_MSG_ADDON = "system",
+	-- Club/stream identity is kept separately from public channel identity.
+	-- Community conversation defaults to General, not semantic public-chat rules.
+	CHAT_MSG_COMMUNITIES_CHANNEL = "general",
 }
 
 -- A source describes where a line originated, independently from its semantic
@@ -850,6 +854,19 @@ local function getChannelSource(record)
 	return "channels", "channel:" .. channelSourceToken(label), label
 end
 
+local function getCommunitySource(record)
+	-- Blizzard constructs these channel names from the immutable club and stream
+	-- IDs. Names and local channel numbers can change; neither is an identity.
+	local channel = string.lower(trim(record.channel, 80))
+	local clubId, streamId = string.match(channel, "^community:(%d+):(%d+)$")
+	if not clubId or #clubId > 20 or #streamId > 20
+		or string.match(clubId, "^0+$") or string.match(streamId, "^0+$") then
+		return nil
+	end
+	return "channels", "community:" .. clubId .. ":" .. streamId,
+		"Community " .. clubId .. " / " .. streamId
+end
+
 local function getFallbackSource(event)
 	local token = string.lower(type(event) == "string" and event or "message")
 	token = string.gsub(token, "[^%w]+", "-")
@@ -1529,7 +1546,8 @@ function Engine:LoadLearnedSources()
 	local sourceIds = {}
 	for sourceId, definition in pairs(stored) do
 		if type(sourceId) == "string" and type(definition) == "table"
-			and string.find(sourceId, "channel:", 1, true) == 1 then
+			and (string.find(sourceId, "channel:", 1, true) == 1
+				or string.match(sourceId, "^community:%d+:%d+$")) then
 			table.insert(sourceIds, sourceId)
 		end
 	end
@@ -1564,8 +1582,15 @@ function Engine:LoadLearnedSources()
 end
 
 function Engine:LearnSource(record)
-	if type(record) ~= "table" or record.event ~= "CHAT_MSG_CHANNEL"
+	if type(record) ~= "table"
+		or (record.event ~= "CHAT_MSG_CHANNEL" and record.event ~= "CHAT_MSG_COMMUNITIES_CHANNEL")
 		or type(record.sourceId) ~= "string" or record.sourceId == "" then
+		return
+	end
+	-- An unidentified Community line uses an event fallback so the readable
+	-- text survives, but that fallback is not a durable club/stream identity.
+	if record.event == "CHAT_MSG_COMMUNITIES_CHANNEL"
+		and not string.match(record.sourceId, "^community:%d+:%d+$") then
 		return
 	end
 	self.learnedSources = self.learnedSources or {}
@@ -1623,7 +1648,7 @@ function Engine:EnsureSource(record)
 			record.sourceGroup = staticSource.sourceGroup
 			record.sourceLabel = staticSource.sourceLabel
 		end
-		if record.event == "CHAT_MSG_CHANNEL" then
+		if record.event == "CHAT_MSG_CHANNEL" or record.event == "CHAT_MSG_COMMUNITIES_CHANNEL" then
 			self:LearnSource(record)
 		end
 		return record
@@ -1632,6 +1657,11 @@ function Engine:EnsureSource(record)
 	local sourceGroup, sourceId, sourceLabel
 	if record.event == "CHAT_MSG_CHANNEL" then
 		sourceGroup, sourceId, sourceLabel = getChannelSource(record)
+	elseif record.event == "CHAT_MSG_COMMUNITIES_CHANNEL" then
+		sourceGroup, sourceId, sourceLabel = getCommunitySource(record)
+		if not sourceId then
+			sourceGroup, sourceId, sourceLabel = getFallbackSource(record.event)
+		end
 	else
 		local source = eventSources[record.event]
 		if source then
@@ -1645,7 +1675,7 @@ function Engine:EnsureSource(record)
 	record.sourceGroup = sourceGroup
 	record.sourceId = sourceId
 	record.sourceLabel = sourceLabel
-	if record.event == "CHAT_MSG_CHANNEL" then
+	if record.event == "CHAT_MSG_CHANNEL" or record.event == "CHAT_MSG_COMMUNITIES_CHANNEL" then
 		self:LearnSource(record)
 	end
 	return record
@@ -3195,7 +3225,7 @@ function Engine:GetCaptureCoverageStatus()
 		nativeFallbackRequired = self.enabled == true and #requiredFailed > 0,
 		nativeFallbackFailed = coverage.nativeFallbackFailed == true,
 		externalOutputCovered = false,
-		externalOutputNote = "Community, direct third-party chat-frame output, and untracked Blizzard notices are outside event capture coverage.",
+		externalOutputNote = "Readable Community event lines are tracked by club and stream; direct third-party chat-frame output and untracked Blizzard notices remain outside capture.",
 	}
 end
 

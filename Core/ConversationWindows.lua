@@ -2401,6 +2401,8 @@ function Manager:RemoveSession(key, suppressSelection)
 	end
 	self.sessionsByKey[key] = nil
 	self.windowsByKey[key] = nil
+	self.fullNoticeKeys = {}
+	self.fullNoticeOrder = {}
 
 	if not shell then
 		return
@@ -2418,6 +2420,17 @@ function Manager:RemoveSession(key, suppressSelection)
 	else
 		shell:RefreshTabs()
 	end
+end
+
+local function sessionNeedsRetention(session)
+	if not session then return false end
+	return tostring(session.draft or "") ~= ""
+		or (tonumber(session.unread) or 0) > 0
+		or (tonumber(session.pendingVisible) or 0) > 0
+		or (session.unreadIds and next(session.unreadIds) ~= nil)
+		or (session.pendingIds and next(session.pendingIds) ~= nil)
+		or session.sendState == "pending" or session.sendState == "unconfirmed"
+		or session.sendState == "failed"
 end
 
 function Manager:AcquireSession(name, bnetAccountID)
@@ -2443,13 +2456,27 @@ function Manager:AcquireSession(name, bnetAccountID)
 		for index = 1, #self.tabOrder do
 			local candidateKey = self.tabOrder[index]
 			local candidate = self.sessionsByKey[candidateKey]
-			if candidate and candidateKey ~= shell.playerKey and (not leastUsed or candidate.lastUsed < leastUsed) then
+			if candidate and candidateKey ~= shell.playerKey and not sessionNeedsRetention(candidate)
+				and (not leastUsed or (tonumber(candidate.lastUsed) or 0) < leastUsed) then
 				leastKey = candidateKey
-				leastUsed = candidate.lastUsed
+				leastUsed = tonumber(candidate.lastUsed) or 0
 			end
 		end
 		if leastKey then
 			self:RemoveSession(leastKey, true)
+		else
+			self.fullNoticeKeys = self.fullNoticeKeys or {}
+			self.fullNoticeOrder = self.fullNoticeOrder or {}
+			if not self.fullNoticeKeys[key] then
+				if #self.fullNoticeOrder >= MAX_TABS then
+					self.fullNoticeKeys[table.remove(self.fullNoticeOrder, 1)] = nil
+				end
+				table.insert(self.fullNoticeOrder, key)
+				self.fullNoticeKeys[key] = true
+				printStatus("Messenger kept its active tab and tabs with drafts, unread messages, or pending activity. Close a tab to open "
+					.. tostring(cleanPlayerName(name) or key) .. ". Chat history is unchanged.")
+			end
+			return nil, "protected-cap"
 		end
 	end
 
@@ -2555,9 +2582,9 @@ function Manager:OpenForRecord(record, bypassCombatDeferral)
 		return nil, "deferred"
 	end
 
-	local session = self:AcquireSession(name, accountID)
+	local session, acquireReason = self:AcquireSession(name, accountID)
 	if not session then
-		return nil, "invalid-player"
+		return nil, acquireReason or "invalid-player"
 	end
 	local shell = self:SelectSession(session.playerKey)
 	shell:Show(record)
@@ -2629,6 +2656,7 @@ function Manager:OnMessage(record)
 	if not session and (incoming or record.event == "CHAT_MSG_BN_WHISPER_INFORM") then
 		session = self:AcquireSession(name, accountID)
 		shell = self.shell
+		if not session then return end
 	end
 	if session and not (shellWasShown and shell and shell.playerKey == key) then
 		if (session.historyPage or 1) > 1 and record.id then
@@ -2766,6 +2794,8 @@ function Manager:ResetForProfile()
 	self.windowsByKey = {}
 	self.sessionsByKey = {}
 	self.tabOrder = {}
+	self.fullNoticeKeys = {}
+	self.fullNoticeOrder = {}
 	if self.shell then
 		self.shell:Reset()
 	end
@@ -3061,6 +3091,8 @@ function Manager:Initialize()
 	self.windowsByKey = {}
 	self.sessionsByKey = {}
 	self.tabOrder = {}
+	self.fullNoticeKeys = {}
+	self.fullNoticeOrder = {}
 	self.pending = {}
 	self.pendingOrder = {}
 	self.lifecycle = CreateFrame("Frame")

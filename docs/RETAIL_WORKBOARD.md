@@ -4,19 +4,19 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Status key:** 🔴 Queued · 🟡 In progress · 🟢 Code complete and locally verified · 🟣 Awaiting in-game validation · ⚪ Audit claim invalidated by source recheck · ⚫ Blocked or decision needed.
 
-**Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. After deployment, gameplay-dependent items move to purple until Zero validates them.
+**Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. Purple is for work that cannot be considered locally complete until Zero validates it in-game.
 
-**Progress:** 31/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+**Progress:** 35/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
 ## Add — missing capabilities
 
 | ID | Status | Feature |
 | --- | --- | --- |
-| A01 | 🟡 | Known event-registration failures now reveal Blizzard chat and Overview shows tracked coverage; unsupported Community/direct add-on output can still be hidden until A02/A05 or a broader fallback policy is solved. |
-| A02 | 🔴 | Opt-in, allowlisted third-party chat-output bridge if Retail permits it. |
+| A01 | 🟡 | Known event-registration failures now reveal Blizzard chat and Overview shows tracked coverage; direct add-on output and untracked native notices can still be hidden until A02 or a broader fallback policy is solved. |
+| A02 | 🟡 | Feasibility review: existing opt-in DebugMessage bridge is safe; blanket ChatFrame:AddMessage interception also sees normal chat and risks duplicates. Scoped adapter design pending. |
 | A03 | 🟢 | First-class Battle.net Messenger sessions and replies, keyed by account ID; mocked identity, send, and failure paths pass. In-game behavior remains unverified. |
 | A04 | 🟢 | Account-ID quarantine retains first contacts before native hiding; only verified friends bypass, unsafe payloads stay visible. In-game behavior remains unverified. |
-| A05 | 🔴 | Explicit Community chat identities and routing after API validation. |
+| A05 | 🟢 | Readable Community chat now routes with stable club/stream source IDs, defaults to General, and preserves saved source choices; focused mocks pass. Lockdown fallback and in-game behavior remain unverified. |
 | A06 | 🟢 | Messenger distinguishes local failure, pending send, client echo, and no echo without claiming delivery; failed sends retain the draft. |
 | A07 | 🟢 | Messenger pages 200 records at a time, preserving per-tab scroll/drafts/NEW; 450-entry rollover and small-window mocks pass. |
 | A08 | 🔴 | Accept/ignore tab suggestion for newly learned channels. |
@@ -66,7 +66,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | F22 | 🔴 | Remove hard-coded level-80 limit in Player Names fallback. |
 | F23 | 🟢 | Modules status must honor each Smart Chat feature toggle. |
 | F24 | 🟢 | Do not call unavailable native fallback “ready.” |
-| F25 | 🟡 | Added more text-bearing Retail chat families with source/view fixtures; raw channel notices and synthetic native output still need formatting or explicit coverage limits. |
+| F25 | 🟡 | Added more text-bearing Retail chat families and localized ignored/filtered/restricted notices with focused fixtures; raw channel notices and synthetic native output still need formatting or explicit coverage limits. |
 
 ## Improve — reliability, scale, and workflow
 
@@ -78,7 +78,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | I04 | 🔴 | Index Messenger history by conversation partner. |
 | I05 | 🔴 | Add an aggregate history budget across sources. |
 | I06 | 🔴 | Cache friend/guild membership for whisper decisions. |
-| I07 | 🔴 | Protect drafts and unread sessions at Messenger's 12-tab limit. |
+| I07 | 🟢 | Messenger's 12-tab limit evicts only disposable inactive tabs; drafts, unread, NEW, and unresolved sends stay protected. If all tabs are protected, a bounded notice explains why a new tab was not opened; focused mocks pass. |
 | I08 | 🔴 | Unify message visibility and unread-count membership logic. |
 | I09 | 🔴 | Batch route edits before retained-history reclassification. |
 | I10 | 🔴 | Coalesce rapid full-display redraws. |
@@ -105,11 +105,11 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | P01 | 🔴 | Reflow settings at small sizes instead of globally shrinking them. |
 | P02 | 🔴 | Adapt sidebar width for longer labels. |
 | P03 | 🔴 | Add a subtle sidebar scroll affordance. |
-| P04 | 🔴 | Enlarge the settings close-button hit target. |
-| P05 | 🔴 | Reserve visible gutters at page edges/dividers. |
-| P06 | 🔴 | Increase the three-pixel gaps between adjacent controls. |
-| P07 | 🔴 | Let long button labels expand/wrap, with tooltip backup. |
-| P08 | 🔴 | Distinguish selected, hover, and focus states on subpages. |
+| P04 | 🟢 | Settings close target is 30×30, with an 8px header inset and a checked minimum physical hit size; layout mocks pass. |
+| P05 | 🟡 | Reserve visible gutters at page edges/dividers; bounds review underway. |
+| P06 | 🟢 | Shared settings-control gap increased to 6px; existing right-gutter and viewport bounds mocks pass. |
+| P07 | 🟡 | Let long button labels expand/wrap, with tooltip backup; review underway. |
+| P08 | 🟡 | Distinguish selected, hover, and focus states on subpages; review underway. |
 | P09 | 🔴 | Show Start Here's seven steps as a progress map. |
 | P10 | 🔴 | Use actual chat typography/colors/bands in Start Here preview. |
 | P11 | 🔴 | Let the Start Here preview grow when text wraps. |

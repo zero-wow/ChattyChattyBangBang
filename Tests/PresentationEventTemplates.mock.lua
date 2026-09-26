@@ -52,6 +52,22 @@ assert(presentation:FormatEventText({
 	event = "CHAT_MSG_GUILD_ITEM_LOOTED", sender = "Mira", text = "$s looted an item",
 }) == "Mira looted an item", "guild-item event's native $s replacement failed")
 
+_G.CHAT_IGNORED = "You are ignoring %s."
+_G.CHAT_FILTERED = "Message from %s was filtered."
+_G.CHAT_RESTRICTED_TRIAL = "Trial accounts cannot use this chat."
+assert(presentation:FormatEventText({
+	event = "CHAT_MSG_IGNORED", sender = "Mira", text = "IGNORED",
+}) == "You are ignoring Mira.", "ignored status was left as an event marker")
+assert(presentation:FormatEventText({
+	event = "CHAT_MSG_FILTERED", sender = "Mira", text = "FILTERED",
+}) == "Message from Mira was filtered.", "filtered status was left as an event marker")
+assert(presentation:FormatEventText({
+	event = "CHAT_MSG_RESTRICTED", text = "RESTRICTED",
+}) == "Trial accounts cannot use this chat.", "restricted status did not use Blizzard's localized notice")
+_G.CHAT_IGNORED = nil
+_G.CHAT_FILTERED = nil
+_G.CHAT_RESTRICTED_TRIAL = nil
+
 for _, event in ipairs({ "CHAT_MSG_SAY", "CHAT_MSG_GUILD", "CHAT_MSG_SYSTEM", "CHAT_MSG_LOOT" }) do
 	assert(presentation:FormatEventText({ event = event, sender = "Mira", text = "%s says 100%%" })
 		== "%s says 100%%", event .. " was incorrectly treated as a printf template")
@@ -62,6 +78,11 @@ _G.canaccessvalue = function(value) return value ~= "secret" end
 assert(presentation:FormatEventText({
 	event = "CHAT_MSG_ACHIEVEMENT", sender = "secret", text = "%s has earned it",
 }) == "%s has earned it", "inaccessible Retail payload was formatted")
+_G.CHAT_IGNORED = "You are ignoring %s."
+assert(presentation:FormatEventText({
+	event = "CHAT_MSG_IGNORED", sender = "secret", text = "IGNORED",
+}) == "IGNORED", "inaccessible Retail status sender was formatted")
+_G.CHAT_IGNORED = nil
 _G.canaccessvalue = oldCanAccess
 
 print("Presentation event-template tests passed")

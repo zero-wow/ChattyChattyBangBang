@@ -432,6 +432,11 @@ local achievementTemplateEvents = {
 	CHAT_MSG_GUILD_ACHIEVEMENT = true,
 }
 
+local chatStatusTemplateNames = {
+	CHAT_MSG_IGNORED = "CHAT_IGNORED",
+	CHAT_MSG_FILTERED = "CHAT_FILTERED",
+}
+
 local function accessibleTemplateValue(value)
 	local canAccess = _G.canaccessvalue
 	if type(canAccess) == "function" then
@@ -508,6 +513,21 @@ end
 
 function Presentation:FormatEventText(record)
 	local text = record.text or ""
+	-- These event payloads are status markers, not finished lines. Blizzard's
+	-- chat frame renders the localized global with the sender in arg2. Keep the
+	-- fallback payload when either value is unavailable or Retail restricts it.
+	local statusTemplateName = chatStatusTemplateNames[record.event]
+	if statusTemplateName then
+		local template = _G[statusTemplateName]
+		if accessibleTemplateValue(template) and accessibleTemplateValue(record.sender) then
+			return formatTrustedTemplate(template, { record.sender })
+		end
+		return text
+	end
+	if record.event == "CHAT_MSG_RESTRICTED" then
+		local template = _G.CHAT_RESTRICTED_TRIAL
+		return accessibleTemplateValue(template) and template or text
+	end
 	-- Blizzard uses a literal $s token (not printf) for guild item notices.
 	-- This event is not captured by the current engine, but historical records
 	-- and a future event registration can use the same presentation contract.

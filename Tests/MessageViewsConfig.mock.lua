@@ -585,10 +585,10 @@ assert(config.localCommandOutputTitle.point[4] == 8
 	and config.integrationsStatus.width == 620,
 	"local-command controls lost their eight-pixel edge gutters")
 local commandChoiceRight = config.localCommandOutputSystemButton.point[4]
-	+ config.localCommandOutputSystemButton.width + 3
+	+ config.localCommandOutputSystemButton.width + 6
 	+ config.localCommandOutputActiveButton.width
 assert(config.localCommandOutputSystemButton.point[4] == 112
-	and config.localCommandOutputActiveButton.point[4] == 3
+	and config.localCommandOutputActiveButton.point[4] == 6
 	and commandChoiceRight <= 628,
 	"wide-font command destination choices overlap or cross the right gutter")
 assert(config.integrationsStatus.point[5] == -114

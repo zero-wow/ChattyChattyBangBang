@@ -821,7 +821,7 @@ local function inferSourceGroup(sourceId, sourceGroup)
 		return sourceGroup
 	end
 	local prefix = type(sourceId) == "string" and string.match(sourceId, "^([^:]+):") or nil
-	if prefix == "channel" then return "channels" end
+	if prefix == "channel" or prefix == "community" then return "channels" end
 	if prefix == "conversation" then return "conversations" end
 	if prefix == "addon" then return "sync" end
 	if sourceHomeViewByGroup[prefix] then return prefix end

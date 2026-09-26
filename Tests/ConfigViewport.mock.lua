@@ -204,6 +204,12 @@ assert(nearlyEqual(config.frame:GetScale(), expectedSmallScale),
 assert(config.frame.clampedToScreen,
 	"settings frame did not retain the client's built-in screen clamp")
 assertViewportGutters(config.frame, 800, 540, "small viewport")
+local close = config.closeButton
+assert(close and close:GetWidth() == 30 and close:GetHeight() == 30,
+	"settings close button did not provide its enlarged logical hit target")
+assert(close.point and close.point[1] == "RIGHT" and close.point[3] == "RIGHT"
+	and close.point[4] == -8 and close.parent:GetHeight() == 44,
+	"settings close target lost its header inset or vertical gutter")
 
 -- Both target-client viewport events are registered. A larger display restores
 -- exact 1:1 scale without moving any edge beyond the safe screen area.
@@ -231,5 +237,8 @@ local expectedNarrowScale = (700 - 24) / 840
 assert(nearlyEqual(config.frame:GetScale(), expectedNarrowScale),
 	"OnShow did not refit the workspace to the new limiting width")
 assertViewportGutters(config.frame, 700, 500, "OnShow viewport")
+assert(close:GetWidth() * close:GetEffectiveScale() >= 24
+	and close:GetHeight() * close:GetEffectiveScale() >= 24,
+	"settings close hit target became too small at the minimum reviewed viewport")
 
 print("Config viewport mock tests passed")
