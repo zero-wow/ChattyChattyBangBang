@@ -1547,45 +1547,101 @@ function Engine:IsSyncRecord(record)
 	return false, nil
 end
 
+-- A busy channel need not write SavedVariables for every message. Runtime
+-- order is exact within a session; durable last-seen time is sampled at most
+-- once per ten minutes per source and used to seed the next session's order.
+local LEARNED_SOURCE_RECENCY_SAVE_INTERVAL = 600
+local LEARNED_SOURCE_EVICTION_INTERVAL = 30
+local MAX_LEARNED_SOURCE_EPOCH = 4102444800
+
+local function learnedSourceEpoch()
+	local value = time and tonumber(time()) or 0
+	if not value or value ~= value or value < 0 or value > MAX_LEARNED_SOURCE_EPOCH then
+		return 0
+	end
+	return math.floor(value)
+end
+
+local function learnedSourceStoredEpoch(value, now)
+	value = tonumber(value)
+	if not value or value ~= value or value < 0 or value > MAX_LEARNED_SOURCE_EPOCH then
+		return 0
+	end
+	value = math.floor(value)
+	return now > 0 and math.min(value, now) or value
+end
+
+local function isLearnedSourcePinned(settings, sourceId)
+	local decisions = settings.channelTabDecisions
+	local decision = type(decisions) == "table" and decisions[sourceId]
+	if type(decision) == "string" and decision ~= "" and decision ~= "ignored" then
+		return true
+	end
+	local options = settings.viewOptions
+	if type(options) == "table" then
+		for _, option in pairs(options) do
+			if type(option) == "table" and type(option.sources) == "table"
+				and option.sources[sourceId] == true then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function Engine:LoadLearnedSources()
 	self.learnedSources = {}
 	self.learnedSourceCount = 0
+	self.learnedSourceUseSerial = 0
+	self.lastLearnedSourceEvictionAt = nil
 	local settings = addon:GetSmartSettings()
 	local stored = type(settings.learnedSources) == "table" and settings.learnedSources or {}
-	local sourceIds = {}
-	for sourceId, definition in pairs(stored) do
-		if type(sourceId) == "string" and type(definition) == "table"
+	local now = learnedSourceEpoch()
+	local candidates = {}
+	for sourceId, storedDefinition in pairs(stored) do
+		if type(sourceId) == "string" and type(storedDefinition) == "table"
 			and (string.find(sourceId, "channel:", 1, true) == 1
 				or string.match(sourceId, "^community:%d+:%d+$")) then
-			table.insert(sourceIds, sourceId)
+			local normalizedId = trim(sourceId, 96)
+			local sourceLabel = trim(storedDefinition.sourceLabel or storedDefinition.label, 80)
+			if normalizedId ~= "" and sourceLabel ~= "" then
+				table.insert(candidates, {
+					sourceId = normalizedId,
+					sourceLabel = sourceLabel,
+					lastSeenAt = learnedSourceStoredEpoch(storedDefinition.lastSeenAt, now),
+					pinned = isLearnedSourcePinned(settings, sourceId),
+				})
+			end
 		end
 	end
-	table.sort(sourceIds)
+	table.sort(candidates, function(left, right)
+		if left.pinned ~= right.pinned then return left.pinned end
+		if left.lastSeenAt ~= right.lastSeenAt then return left.lastSeenAt > right.lastSeenAt end
+		return left.sourceId < right.sourceId
+	end)
 
 	local normalized = {}
-	for index = 1, #sourceIds do
-		if self.learnedSourceCount >= MAX_LEARNED_CHANNEL_SOURCES then
-			break
-		end
-		local sourceId = trim(sourceIds[index], 96)
-		local storedDefinition = stored[sourceIds[index]]
-		local sourceLabel = trim(storedDefinition.sourceLabel or storedDefinition.label, 80)
-		if sourceId ~= "" and sourceLabel ~= "" then
-			local definition = {
-				sourceId = sourceId,
-				sourceGroup = "channels",
-				sourceLabel = sourceLabel,
-				groupLabel = sourceGroupLabels.channels,
-				learned = true,
-			}
-			self.learnedSources[sourceId] = definition
-			normalized[sourceId] = {
-				sourceId = sourceId,
-				sourceGroup = "channels",
-				sourceLabel = sourceLabel,
-			}
-			self.learnedSourceCount = self.learnedSourceCount + 1
-		end
+	for index = math.min(#candidates, MAX_LEARNED_CHANNEL_SOURCES), 1, -1 do
+		local candidate = candidates[index]
+		self.learnedSourceUseSerial = self.learnedSourceUseSerial + 1
+		local definition = {
+			sourceId = candidate.sourceId,
+			sourceGroup = "channels",
+			sourceLabel = candidate.sourceLabel,
+			groupLabel = sourceGroupLabels.channels,
+			learned = true,
+			lastSeenAt = candidate.lastSeenAt,
+			persistedLastSeenAt = candidate.lastSeenAt,
+			lastUsedOrder = self.learnedSourceUseSerial,
+		}
+		self.learnedSources[candidate.sourceId] = definition
+		normalized[candidate.sourceId] = {
+			sourceId = candidate.sourceId,
+			sourceGroup = "channels",
+			sourceLabel = candidate.sourceLabel,
+			lastSeenAt = candidate.lastSeenAt,
+		}
+		self.learnedSourceCount = self.learnedSourceCount + 1
 	end
 	settings.learnedSources = normalized
 end
@@ -1611,11 +1667,53 @@ function Engine:LearnSource(record)
 		return
 	end
 	local existing = self.learnedSources[sourceId]
-	if existing and existing.sourceLabel == sourceLabel then
-		return
+	local now = learnedSourceEpoch()
+	self.learnedSourceUseSerial = (self.learnedSourceUseSerial or 0) + 1
+	if existing then
+		existing.lastUsedOrder = self.learnedSourceUseSerial
+		if now > 0 then existing.lastSeenAt = now end
+		if existing.sourceLabel == sourceLabel then
+			local lastSaved = existing.persistedLastSeenAt or 0
+			if now == 0 or math.abs(now - lastSaved) < LEARNED_SOURCE_RECENCY_SAVE_INTERVAL then
+				return
+			end
+			local settings = addon:GetSmartSettings()
+			local stored = type(settings.learnedSources) == "table"
+				and settings.learnedSources[sourceId]
+			if type(stored) == "table" then
+				stored.lastSeenAt = now
+				existing.persistedLastSeenAt = now
+				return
+			end
+		end
 	end
+	local settings
 	if not existing and self.learnedSourceCount >= MAX_LEARNED_CHANNEL_SOURCES then
-		return
+		-- Do not rewrite the saved cache for every line if more than 64
+		-- channels are active at once. The record still routes normally.
+		local sessionTime = GetTime and tonumber(GetTime()) or now
+		if sessionTime and self.lastLearnedSourceEvictionAt
+			and sessionTime - self.lastLearnedSourceEvictionAt < LEARNED_SOURCE_EVICTION_INTERVAL then
+			return
+		end
+		settings = addon:GetSmartSettings()
+		local victimId, victimOrder
+		for candidateId, candidate in pairs(self.learnedSources) do
+			if not isLearnedSourcePinned(settings, candidateId) then
+				local order = candidate.lastUsedOrder or 0
+				if not victimId or order < victimOrder
+					or (order == victimOrder and candidateId < victimId) then
+					victimId, victimOrder = candidateId, order
+				end
+			end
+		end
+		if not victimId then return end
+		self.learnedSources[victimId] = nil
+		if type(settings.learnedSources) == "table" then
+			settings.learnedSources[victimId] = nil
+		end
+		self.learnedSourceCount = self.learnedSourceCount - 1
+		self.lastLearnedSourceEvictionAt = sessionTime
 	end
 
 	local definition = {
@@ -1624,13 +1722,16 @@ function Engine:LearnSource(record)
 		sourceLabel = sourceLabel,
 		groupLabel = sourceGroupLabels.channels,
 		learned = true,
+		lastSeenAt = now > 0 and now or (existing and existing.lastSeenAt or 0),
+		persistedLastSeenAt = now > 0 and now or (existing and existing.persistedLastSeenAt or 0),
+		lastUsedOrder = self.learnedSourceUseSerial,
 	}
 	self.learnedSources[sourceId] = definition
 	if not existing then
 		self.learnedSourceCount = self.learnedSourceCount + 1
 	end
 
-	local settings = addon:GetSmartSettings()
+	settings = settings or addon:GetSmartSettings()
 	if type(settings.learnedSources) ~= "table" then
 		settings.learnedSources = {}
 	end
@@ -1638,6 +1739,7 @@ function Engine:LearnSource(record)
 		sourceId = sourceId,
 		sourceGroup = "channels",
 		sourceLabel = sourceLabel,
+		lastSeenAt = definition.persistedLastSeenAt,
 	}
 	local config = addon.CustomConfig
 	if config and config.messageViewsSection == "channels"
@@ -2504,6 +2606,9 @@ end
 local function clearRuntimeHistory(engine)
 	engine.records = {}
 	engine.byId = {}
+	-- Search cursors are session-local. A profile reset or CLEAR invalidates them
+	-- instead of letting reused runtime IDs silently page through another history.
+	engine.historyGeneration = (tonumber(engine.historyGeneration) or 0) + 1
 	engine.sourceHistories = {}
 	engine.conversationHistories = {}
 	engine.historyHead = nil
@@ -3018,6 +3123,96 @@ function Engine:GetMessages(viewId)
 		record = record._historyNext
 	end
 	return messages
+end
+
+-- Search only the currently retained, normal transcript. A page examines at
+-- most 5,000 records and returns at most 200 matches, so a busy multi-channel
+-- history cannot freeze the UI in one call. Continue with the opaque nextCursor;
+-- the next record is resolved by runtime ID in O(1), even after new arrivals.
+-- Results are newest first. This deliberately never searches Blocked Messages
+-- or held stranger whispers, which have separate privacy/review lifecycles.
+local function searchNeedle(value)
+	return string.lower(trim(value, 160))
+end
+
+local function containsSearchNeedle(value, needle)
+	return needle == "" or type(value) == "string"
+		and string.find(string.lower(value), needle, 1, true) ~= nil
+end
+
+local function boundedSearchNumber(value, defaultValue, maximum)
+	local number = tonumber(value)
+	if not number or number ~= number or number == math.huge or number == -math.huge then
+		return defaultValue
+	end
+	return math.max(1, math.min(maximum, math.floor(number)))
+end
+
+function Engine:SearchHistory(query)
+	query = type(query) == "table" and query or {}
+	local result = { records = {}, scanned = 0, hasMore = false, nextCursor = nil }
+	local textNeedle = searchNeedle(query.text)
+	local senderNeedle = searchNeedle(query.sender)
+	local sourceNeedle = searchNeedle(query.source)
+	local onDate = trim(query.date)
+	if onDate ~= "" and not string.match(onDate, "^%d%d%d%d%-%d%d%-%d%d$") then
+		result.error = "invalid-date"
+		return result
+	end
+	local fromEpoch = tonumber(query.fromEpoch)
+	local toEpoch = tonumber(query.toEpoch)
+	if fromEpoch and toEpoch and fromEpoch > toEpoch then
+		result.error = "invalid-epoch-range"
+		return result
+	end
+	local limit = boundedSearchNumber(query.limit, 50, 200)
+	local scanLimit = boundedSearchNumber(query.scanLimit, 2000, 5000)
+	local viewId = type(query.viewId) == "string" and query.viewId ~= "" and query.viewId or nil
+	local settings = viewId and addon.GetSmartSettings and addon:GetSmartSettings() or nil
+	local record = self.historyTail
+	if query.cursor ~= nil then
+		local cursor = query.cursor
+		if type(cursor) ~= "table" or cursor.generation ~= self.historyGeneration then
+			result.error = "stale-cursor"
+			return result
+		end
+		record = self.byId and self.byId[cursor.id]
+		if not record or record.historySequence ~= cursor.sequence then
+			result.error = "stale-cursor"
+			return result
+		end
+	end
+	while record and result.scanned < scanLimit and #result.records < limit do
+		local previous = record._historyPrevious
+		result.scanned = result.scanned + 1
+		local epoch = tonumber(record.epoch)
+		local dateMatches = onDate == "" or epoch and epoch > 0 and date
+			and date("%Y-%m-%d", epoch) == onDate
+		local sourceMatches = sourceNeedle == ""
+			or containsSearchNeedle(record.sourceId, sourceNeedle)
+			or containsSearchNeedle(record.sourceLabel, sourceNeedle)
+			or containsSearchNeedle(record.channel, sourceNeedle)
+			or containsSearchNeedle(record.channelName, sourceNeedle)
+		if not record.blockedByBlockControl
+			and containsSearchNeedle(record.text, textNeedle)
+			and containsSearchNeedle(record.sender, senderNeedle)
+			and sourceMatches and dateMatches
+			and (not fromEpoch or epoch and epoch >= fromEpoch)
+			and (not toEpoch or epoch and epoch <= toEpoch)
+			and (not viewId or self:RecordBelongsToView(record, viewId, settings)) then
+			result.records[#result.records + 1] = record
+		end
+		record = previous
+	end
+	result.hasMore = record ~= nil
+	if record then
+		result.nextCursor = {
+			id = record.id,
+			sequence = record.historySequence,
+			generation = self.historyGeneration,
+		}
+	end
+	return result
 end
 
 -- The rolling-day advert ceiling is a threshold, not just a prospective

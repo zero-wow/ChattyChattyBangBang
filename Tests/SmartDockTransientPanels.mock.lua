@@ -59,7 +59,7 @@ function dock.display:ScrollToBottom() self.scrollOffset = 0 end
 dock.messageScrollbar = frame(16, 62)
 dock.scrollToBottomButton = frame(24, 20)
 dock.emptyState = frame()
-dock.alertBar = frame(356, 34)
+dock.alertBar = frame(356, 40)
 dock.playerActions = frame(356, 46)
 dock.alertActive = false
 
@@ -116,15 +116,15 @@ local _, emptyCenter = offset(dock.emptyState, "CENTER")
 assert(emptyCenter[2] == dock.display and (emptyCenter[3] == nil or emptyCenter[3] == "CENTER"),
 	"empty-state label is not centered in the readable message viewport")
 
--- A timed notice is painted two pixels inside content. Its 34px surface plus
+-- A timed notice is painted two pixels inside content. Its 40px surface plus
 -- two-pixel separation is added ahead of the display's own four-pixel inset,
 -- leaving a real four-pixel visual gutter instead of painting over chat text.
 dock.alertActive = true
 dock.alertBar.shown = true
 refresh("alert")
-assert(offset(dock.display, "TOPLEFT") == -40,
-	"shown alert did not reserve its 34px row, separation, and message gutter")
-assert(offset(dock.messageScrollbar, "TOPRIGHT") == -40,
+assert(offset(dock.display, "TOPLEFT") == -46,
+	"shown alert did not reserve its 40px row, separation, and message gutter")
+assert(offset(dock.messageScrollbar, "TOPRIGHT") == -46,
 	"slim scrollbar still runs underneath the shown alert")
 assert(offset(dock.display, "BOTTOMRIGHT") == 4
 	and offset(dock.scrollToBottomButton, "BOTTOMRIGHT") == 4,
@@ -345,5 +345,19 @@ assert(analysisPoint[4] == -4 and analysisPoint[5] == -4,
 	"analysis drawer lost its right/top border gutters")
 assert(28 + 292 <= dock.analysisPanel:GetWidth() - 4,
 	"analysis route dropdown can cross the narrowed drawer border")
+
+-- The alert itself is built by the full UI path; pin its literal anchors here
+-- so its narrow-state text, close target, and border gutters cannot regress.
+local alertSource = assert(io.open("Core/SmartDock.lua", "rb"))
+local alertLayout = alertSource:read("*a")
+alertSource:close()
+assert(alertLayout:find('alertTitle:SetPoint("TOPLEFT", alertBar, "TOPLEFT", 7, -5)', 1, true)
+	and alertLayout:find('alertMessage:SetPoint("BOTTOMLEFT", alertBar, "BOTTOMLEFT", 7, 5)', 1, true)
+	and alertLayout:find('alertTitle:SetPoint("RIGHT", alertBar, "RIGHT", -34, 0)', 1, true)
+	and alertLayout:find('alertMessage:SetPoint("RIGHT", alertBar, "RIGHT", -34, 0)', 1, true)
+	and alertLayout:find('dismissAlert:SetPoint("RIGHT", alertBar, "RIGHT", -6, 0)', 1, true),
+	"alert text or dismiss control lost its visible border gutters")
+assert(40 - (5 + 14) - (5 + 14) >= 2 and 34 - (6 + 18) >= 8,
+	"alert text rows or dismiss hit target lack a readable gap at minimum size")
 
 print("SmartDock transient-panel layout mock passed")

@@ -76,9 +76,9 @@ local PAGE_GUTTER = 8
 local PAGE_WIDTH = 636
 local PAGE_TOP = 46
 local CONTROL_GAP = 6
--- The sidebar deliberately has no visible scroll bar. Its settings hierarchy
--- can grow when Modules is expanded, but the list still reads like a compact
--- settings block and simply responds to the mouse wheel over that area.
+-- The settings canvas retains one readable control width. Narrow viewports
+-- give navigation its own temporary drawer and scroll the page vertically;
+-- routine resizing never makes every label and hit target smaller.
 local NAV_LEFT = 6
 local NAV_TOP = 8
 local NAV_TITLE_HEIGHT = 14
@@ -92,17 +92,73 @@ local NAV_PAGER_HEIGHT = 17
 local NAV_FOOTER_HEIGHT = 14
 local NAV_ROW_WIDTH = 154
 local NAV_DIVIDER_WIDTH = 1
-local CONFIG_FRAME_WIDTH = 840
 local CONFIG_FRAME_HEIGHT = 570
+local CONFIG_CONTENT_WIDTH = PAGE_WIDTH + (PAGE_GUTTER * 2)
+local CONFIG_CONTENT_HEIGHT = CONFIG_FRAME_HEIGHT - 62
+local CONFIG_MIN_FRAME_WIDTH = CONFIG_CONTENT_WIDTH + 24
+local CONFIG_MIN_FRAME_HEIGHT = 430
 local CONFIG_VIEWPORT_GUTTER = 12
 
--- Keep the settings workspace at one stable logical size so every page can
--- retain its reviewed bounds, then scale the complete console only when the
--- current UIParent viewport cannot provide a real margin around it.  Edge
--- coordinates are converted through effective scale before clamping because
--- Region:GetLeft()/GetRight() use the region's coordinate space when a child
--- has an independent scale.  All APIs used here exist on the 3.3.5 Frame API;
--- callers still guard them so the small no-client mocks remain lightweight.
+function Config:GetNavigationWidth()
+	local measure = self.navMeasure
+	local widest = 0
+	local function include(label)
+		local value = string.upper(tostring(label or ""))
+		local width
+		if measure and measure.SetText and measure.GetStringWidth then
+			measure:SetText(value)
+			local ok, measured = pcall(measure.GetStringWidth, measure)
+			width = ok and tonumber(measured) or nil
+		end
+		if not width or width <= 0 then
+			local fontSize = 10
+			if measure and measure.GetFont then
+				local _, size = measure:GetFont()
+				fontSize = tonumber(size) or fontSize
+			end
+			width = #value * fontSize * 0.65
+		end
+		widest = math.max(widest, width)
+	end
+	for _, item in ipairs(navigation) do include(item.label) end
+	for _, item in ipairs(deskNavigation) do include(item.label) end
+	for _, button in ipairs(self.moduleNavigationButtons or {}) do
+		if button.moduleId and button.label and button.label.GetText then
+			include(button.label:GetText())
+		end
+	end
+	include("/chattychattybangbang")
+	return math.max(170, math.min(320, math.ceil(widest) + 24))
+end
+
+function Config:UpdateSidebarScrollAffordance()
+	local scroll, track, thumb = self.navScroll, self.navScrollTrack, self.navScrollThumb
+	if not scroll or not track or not thumb or not scroll.GetVerticalScrollRange then return end
+	local range = tonumber(scroll:GetVerticalScrollRange()) or 0
+	if range <= 0 then
+		track:Hide()
+		thumb:Hide()
+		return
+	end
+	local viewport = (scroll.GetHeight and tonumber(scroll:GetHeight())) or 0
+	if viewport <= 0 then
+		local frameHeight = self.frame and self.frame.GetHeight and tonumber(self.frame:GetHeight()) or CONFIG_FRAME_HEIGHT
+		viewport = math.max(1, (frameHeight or CONFIG_FRAME_HEIGHT) - 62)
+	end
+	local lane = math.max(28, viewport - 14)
+	local thumbHeight = math.max(26, math.min(lane, math.floor((lane * viewport / (viewport + range)) + 0.5)))
+	local current = scroll.GetVerticalScroll and (tonumber(scroll:GetVerticalScroll()) or 0) or 0
+	local offset = math.floor((lane - thumbHeight) * math.max(0, math.min(1, current / range)) + 0.5)
+	thumb:SetHeight(thumbHeight)
+	thumb:ClearAllPoints()
+	thumb:SetPoint("TOPRIGHT", self.sidebar, "TOPRIGHT", -5, -7 - offset)
+	track:Show()
+	thumb:Show()
+end
+
+-- Pixel-space clamping keeps a dragged window visible after display changes.
+-- Scaling is reserved for screens below the reviewed 700x500 minimum, where
+-- even the fixed 652px page canvas plus explicit outer gutters cannot fit.
 function Config:FitFrameToViewport()
 	local frame = self.frame
 	if not frame or not UIParent or not UIParent.GetWidth or not UIParent.GetHeight then
@@ -115,19 +171,71 @@ function Config:FitFrameToViewport()
 		return false
 	end
 
-	if frame.SetSize then
-		frame:SetSize(CONFIG_FRAME_WIDTH, CONFIG_FRAME_HEIGHT)
-	end
 	local availableWidth = math.max(1, viewportWidth - (CONFIG_VIEWPORT_GUTTER * 2))
 	local availableHeight = math.max(1, viewportHeight - (CONFIG_VIEWPORT_GUTTER * 2))
-	local scale = math.min(1, availableWidth / CONFIG_FRAME_WIDTH, availableHeight / CONFIG_FRAME_HEIGHT)
+	local navWidth = self:GetNavigationWidth()
+	local preferredWidth = CONFIG_CONTENT_WIDTH + navWidth + 18
+	local compact = availableWidth < preferredWidth
+	local frameWidth = compact and math.max(CONFIG_MIN_FRAME_WIDTH, math.min(preferredWidth, availableWidth)) or preferredWidth
+	local frameHeight = math.max(CONFIG_MIN_FRAME_HEIGHT, math.min(CONFIG_FRAME_HEIGHT, availableHeight))
+	local scale = math.min(1, availableWidth / frameWidth, availableHeight / frameHeight)
 	if scale <= 0 then
 		return false
 	end
+	if frame.SetSize then frame:SetSize(frameWidth, frameHeight) end
 	if frame.SetScale then
 		frame:SetScale(scale)
 	end
 	frame._chattyViewportScale = scale
+	self._chattyCompactNavigation = compact
+	if not compact then self.navigationDrawerOpen = false end
+	if self.headerTitle then
+		local fullTitle = "ChattyChattyBangBang"
+		self.headerTitle:SetText(fullTitle)
+		local measured = self.headerTitle.GetStringWidth and tonumber(self.headerTitle:GetStringWidth()) or 0
+		if not measured or measured <= 0 then
+			local fontSize = 12
+			if self.headerTitle.GetFont then
+				local _, size = self.headerTitle:GetFont()
+				fontSize = tonumber(size) or fontSize
+			end
+			measured = #fullTitle * fontSize * 0.8
+		end
+		local modeWidth = self.modeButton and self.modeButton.GetWidth and self.modeButton:GetWidth() or 0
+		local menuWidth = compact and self.navigationMenuButton and self.navigationMenuButton.GetWidth
+			and (self.navigationMenuButton:GetWidth() + 8) or 0
+		local closeWidth = self.closeButton and self.closeButton.GetWidth and self.closeButton:GetWidth() or 30
+		local titleStart = 6 + 8 + 30 + 8
+		local rightReserved = 6 + 8 + closeWidth + 10 + modeWidth + menuWidth
+		local abbreviated = measured + titleStart + rightReserved + 12 > frameWidth
+		if abbreviated then self.headerTitle:SetText("Chatty") end
+		self.headerSubtitle:SetText(abbreviated and self.headerSubtitleCompact or self.headerSubtitleNormal)
+	end
+	if self.sidebar then
+		self.sidebar:SetWidth(navWidth)
+		if compact and not self.navigationDrawerOpen then self.sidebar:Hide() else self.sidebar:Show() end
+	end
+	if self.navContent then self.navContent:SetWidth(navWidth - NAV_DIVIDER_WIDTH) end
+	local rowWidth = navWidth - 16
+	for _, button in pairs(self.navigationButtons or {}) do button:SetWidth(rowWidth) end
+	for _, button in ipairs(self.moduleNavigationButtons or {}) do button:SetWidth(rowWidth - NAV_MODULE_INDENT) end
+	for _, label in pairs(self.navigationSectionLabels or {}) do label:SetWidth(rowWidth) end
+	if self.navFooter then self.navFooter:SetWidth(rowWidth) end
+	if self.navigationMenuButton then
+		if compact then self.navigationMenuButton:Show() else self.navigationMenuButton:Hide() end
+	end
+	if self.contentViewport then
+		self.contentViewport:ClearAllPoints()
+		if compact then
+			self.contentViewport:SetPoint("TOP", frame, "TOP", 0, -56)
+			self.contentViewport:SetPoint("BOTTOM", frame, "BOTTOM", 0, 6)
+			self.contentViewport:SetWidth(CONFIG_CONTENT_WIDTH)
+		else
+			self.contentViewport:SetPoint("TOPLEFT", self.sidebar, "TOPRIGHT", 6, 0)
+			self.contentViewport:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -6, 6)
+		end
+	end
+	self:UpdateSidebarScrollAffordance()
 	if frame.SetClampedToScreen then
 		frame:SetClampedToScreen(true)
 	end
@@ -327,7 +435,7 @@ local function createNavigationRow(parent, label, tooltip)
 	button.label:SetPoint("RIGHT", button, "RIGHT", -7, 0)
 	button.label:SetJustifyH("LEFT")
 	button.label:SetText(label or "")
-	button.tooltipText = tooltip
+	button.tooltipText = tooltip or label
 	button:SetScript("OnEnter", function(self)
 		Config:ApplyNavigationRowStyle(self, self.navActive == true, true)
 		if self.tooltipText and GameTooltip then
@@ -411,6 +519,7 @@ function Config:RefreshNavigation()
 		if self.moduleNavigationNext then self.moduleNavigationNext:Hide() end
 	end
 	self:LayoutNavigation()
+	if self.frame then self:FitFrameToViewport() end
 end
 
 function Config:BuildHomePage()
@@ -13708,6 +13817,12 @@ function Config:ShowPage(id)
 	end
 	self.activePage = id
 	self.pages[id]:Show()
+	-- A selected page owns the full compact workspace. Restore its first row
+	-- after switching and close the temporary navigation drawer.
+	if self.contentViewport and self.contentViewport.SetVerticalScroll then
+		self.contentViewport:SetVerticalScroll(0)
+	end
+	self.navigationDrawerOpen = false
 	self:RefreshNavigation()
 	if id == "desk" then
 		self:RefreshDeskPage()
@@ -14526,6 +14641,7 @@ function Config:LayoutNavigation()
 		scroll:SetVerticalScroll(math.max(0, math.min(range, current or 0)))
 	end
 	self:KeepActiveNavigationVisible()
+	self:UpdateSidebarScrollAffordance()
 end
 
 function Config:KeepActiveNavigationVisible()
@@ -14603,6 +14719,7 @@ function Config:BuildFrame()
 	-- Placement preview is intentionally temporary. Closing the settings window
 	-- must never leave a synthetic NEW marker behind in normal play.
 	frame:HookScript("OnHide", function()
+		Config.navigationDrawerOpen = false
 		if Config.dockMarkerPreviewActive then
 			Config:SetNewMessageIndicatorPreview(false)
 		end
@@ -14632,14 +14749,18 @@ function Config:BuildFrame()
 	local title = Theme:CreateText(header, "GameFontNormal", "goldBright")
 	title:SetPoint("TOPLEFT", icon, "TOPRIGHT", 8, -4)
 	title:SetText("ChattyChattyBangBang")
+	self.headerTitle = title
 	local subtitle = Theme:CreateText(header, "GameFontHighlightSmall", "textMuted")
 	subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -1)
-	subtitle:SetText((addon.ClientAPI and addon.ClientAPI.IsRetail and addon.ClientAPI:IsRetail()
-		and "RETAIL CHAT  v" or "WRATH / ASCENSION CHAT  v") .. getAddonVersion())
+	local isRetail = addon.ClientAPI and addon.ClientAPI.IsRetail and addon.ClientAPI:IsRetail()
+	self.headerSubtitleNormal = (isRetail and "RETAIL CHAT  v" or "WRATH / ASCENSION CHAT  v") .. getAddonVersion()
+	self.headerSubtitleCompact = (isRetail and "RETAIL  v" or "WRATH  v") .. getAddonVersion()
+	subtitle:SetText(self.headerSubtitleNormal)
+	self.headerSubtitle = subtitle
 
 	local close = CreateFrame("Button", nil, header)
-	-- A 30px logical target remains at least 24px wide when the 840px console
-	-- scales down to its reviewed 700px viewport, while the quiet x stays small.
+	-- The close target stays 30px at the reviewed compact size while its quiet
+	-- x remains inset from the header edge.
 	close:SetSize(30, 30)
 	self.closeButton = close
 	close.text = Theme:CreateText(close, "GameFontNormalSmall", "textMuted")
@@ -14670,16 +14791,29 @@ function Config:BuildFrame()
 	sidebar:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 6, 6)
 	sidebar:SetWidth(170)
 	self.sidebar = sidebar
+	local scrollTrack = sidebar:CreateTexture(nil, "ARTWORK")
+	scrollTrack:SetTexture("Interface\\Buttons\\WHITE8X8")
+	scrollTrack:SetPoint("TOPRIGHT", sidebar, "TOPRIGHT", -5, -7)
+	scrollTrack:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", -5, 7)
+	scrollTrack:SetWidth(2)
+	if Theme.RegisterTexture then Theme:RegisterTexture(scrollTrack, "borderMuted") end
+	scrollTrack:Hide()
+	self.navScrollTrack = scrollTrack
+	local scrollThumb = sidebar:CreateTexture(nil, "OVERLAY")
+	scrollThumb:SetTexture("Interface\\Buttons\\WHITE8X8")
+	scrollThumb:SetWidth(3)
+	if Theme.RegisterTexture then Theme:RegisterTexture(scrollThumb, "gold") end
+	scrollThumb:Hide()
+	self.navScrollThumb = scrollThumb
 	local sidebarDivider = sidebar:CreateTexture(nil, "BORDER")
 	sidebarDivider:SetPoint("TOPRIGHT", sidebar, "TOPRIGHT", 0, 0)
 	sidebarDivider:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", 0, 0)
 	sidebarDivider:SetWidth(NAV_DIVIDER_WIDTH)
 	if Theme.RegisterTexture then Theme:RegisterTexture(sidebarDivider, "borderMuted") end
 
-	-- The settings list can grow temporarily when Modules is expanded. Keep it
-	-- in a wheel-only scroll surface instead of letting nested rows push the
-	-- normal sections out of the sidebar. There is intentionally no scrollbar:
-	-- this reads as one compact settings block, not a second list widget.
+	-- A tiny colorway thumb appears only when the navigation actually overflows.
+	-- The scroll surface itself remains full-width, so wheel scrolling works
+	-- over each row without needing to grab the two-pixel cue.
 	local navScroll = CreateFrame("ScrollFrame", nil, sidebar)
 	navScroll:SetPoint("TOPLEFT", sidebar, "TOPLEFT", 0, 0)
 	navScroll:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", -NAV_DIVIDER_WIDTH, 0)
@@ -14694,6 +14828,14 @@ function Config:BuildFrame()
 	end
 	self.navScroll = navScroll
 	self.navContent = navContent
+	if navScroll.SetScript then
+		navScroll:SetScript("OnVerticalScroll", function()
+			Config:UpdateSidebarScrollAffordance()
+		end)
+		navScroll:SetScript("OnScrollRangeChanged", function()
+			Config:UpdateSidebarScrollAffordance()
+		end)
+	end
 
 	local function scrollNavigation(delta)
 		if not navScroll.GetVerticalScrollRange or not navScroll.SetVerticalScroll then
@@ -14705,6 +14847,7 @@ function Config:BuildFrame()
 		end
 		local current = navScroll.GetVerticalScroll and (tonumber(navScroll:GetVerticalScroll()) or 0) or 0
 		navScroll:SetVerticalScroll(math.max(0, math.min(range, current - ((tonumber(delta) or 0) * 34))))
+		Config:UpdateSidebarScrollAffordance()
 	end
 	local function bindNavigationWheel(widget)
 		if not widget then
@@ -14730,6 +14873,8 @@ function Config:BuildFrame()
 	local navTitle = Theme:CreateText(navContent, "GameFontNormalSmall", "gold")
 	navTitle:SetText("SETTINGS")
 	self.navTitle = navTitle
+	self.navMeasure = Theme:CreateText(navContent, "GameFontNormalSmall", "textMuted")
+	self.navMeasure:SetAlpha(0)
 	self.navigationOrder = self:GetMode() == "advanced" and navigation or deskNavigation
 	self.navigationSectionLabels = {}
 	local allNavigation = {}
@@ -14824,14 +14969,40 @@ function Config:BuildFrame()
 	self.modeButton:SetScript("OnClick", function()
 		Config:SetMode(Config:GetMode() == "advanced" and "simple" or "advanced")
 	end)
+	local navigationMenuButton = Theme:CreateTightButton(header, "PAGES", 26, false)
+	navigationMenuButton:SetPoint("RIGHT", self.modeButton, "LEFT", -8, 0)
+	navigationMenuButton:SetTooltip("Pages", "Show or hide the settings pages on compact screens.")
+	navigationMenuButton:SetScript("OnClick", function()
+		Config.navigationDrawerOpen = not Config.navigationDrawerOpen
+		Config:FitFrameToViewport()
+	end)
+	navigationMenuButton:Hide()
+	self.navigationMenuButton = navigationMenuButton
 	self.modulesNavigationExpanded = self.modulesNavigationExpanded and true or false
 	self:RefreshNavigation()
 
-	local content = createQuietShellPanel(frame, "surface")
-	content:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 6, 0)
-	content:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -6, -56)
-	content:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -6, 6)
+	local contentViewport = CreateFrame("ScrollFrame", nil, frame)
+	contentViewport:EnableMouseWheel(true)
+	contentViewport:SetScript("OnScrollRangeChanged", function(self, _, range)
+		local maximum = tonumber(range) or (self.GetVerticalScrollRange and tonumber(self:GetVerticalScrollRange())) or 0
+		local current = self.GetVerticalScroll and (tonumber(self:GetVerticalScroll()) or 0) or 0
+		if current > maximum then self:SetVerticalScroll(math.max(0, maximum)) end
+	end)
+	contentViewport:SetScript("OnMouseWheel", function(self, delta)
+		local range = self.GetVerticalScrollRange and (tonumber(self:GetVerticalScrollRange()) or 0) or 0
+		if range <= 0 then return end
+		local current = self.GetVerticalScroll and (tonumber(self:GetVerticalScroll()) or 0) or 0
+		self:SetVerticalScroll(math.max(0, math.min(range, current - (delta * 34))))
+	end)
+	self.contentViewport = contentViewport
+	local content = createQuietShellPanel(contentViewport, "surface")
+	content:SetSize(CONFIG_CONTENT_WIDTH, CONFIG_CONTENT_HEIGHT)
+	contentViewport:SetScrollChild(content)
 	self.content = content
+	if sidebar.SetFrameLevel and contentViewport.GetFrameLevel then
+		sidebar:SetFrameLevel(contentViewport:GetFrameLevel() + 5)
+	end
+	self:FitFrameToViewport()
 
 	Theme:RegisterRefreshCallback(function()
 		if Config.frame then

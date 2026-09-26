@@ -1359,9 +1359,8 @@ assert(config.navigationButtons.modules.point[2] == config.navContent
 	and config.navigationButtons.modules.point[4] == 6,
 	"main navigation row inherited a module child indent")
 
--- The live Settings sidebar is a wheel-only scroll surface. It retains the
--- expandable flat module list without a visible scrollbar or cascading the
--- subsequent ordinary sections to the child indentation.
+-- The live Settings sidebar keeps a flat wheel-scrolled module list, with a
+-- slim passive overflow cue instead of a wide clickable scrollbar.
 config.frame = nil
 config:BuildFrame()
 assert(config.navScroll and config.navContent and config.navScroll.scrollChild == config.navContent,

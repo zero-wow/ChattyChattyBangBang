@@ -50,7 +50,7 @@ local PLAYER_ACTION_PANEL_COMPACT_HEIGHT = 66
 -- adding its height plus that two-pixel edge run ahead of the display's normal
 -- four-pixel inset leaves a visible four-pixel panel-to-message gutter.
 local TRANSIENT_PANEL_RESERVATION = 2
-local ALERT_PANEL_HEIGHT = 34
+local ALERT_PANEL_HEIGHT = 40
 local TRANSIENT_MESSAGE_LINE_HEIGHT_FALLBACK = 12
 -- Resize targets deliberately live inside the existing outer border.  Four
 -- pixels is enough to be easy to acquire without taking a meaningful slice of
@@ -108,6 +108,14 @@ local MESSAGE_SCROLLBAR_DISPLAY_INSET = MESSAGE_SCROLLBAR_RIGHT_INSET
 local HISTORY_PAGE_SIZE = 400
 local HISTORY_PAGER_HEIGHT = 20
 local HISTORY_PAGER_GUTTER = 4
+-- Search is a temporary reading surface, not another chat view. At the
+-- smallest supported dock its 70px lane takes over the content area; at larger
+-- sizes the ordinary message viewport remains below it with a 4px gutter.
+local SEARCH_DRAWER_MAX_HEIGHT = 132
+local SEARCH_DRAWER_MIN_HEIGHT = 70
+local SEARCH_DRAWER_GUTTER = 4
+local SEARCH_TRIGGER_RESERVED_HEIGHT = 22
+local SEARCH_RESULT_BATCH = 20
 -- Full-width row shading may paint through the otherwise transparent scrollbar
 -- lane, but stops at the backdrop's one-pixel inner inset so the panel border
 -- remains crisp. The message viewport and scrollbar hit geometry never move.
@@ -1500,6 +1508,40 @@ local function frameIsShown(frame)
 	return frame and frame.IsShown and frame:IsShown()
 end
 
+function Dock:GetSearchDrawerHeight(contentHeight, topInset, bottomInset)
+	if not self.searchOpen then return 0 end
+	local available = math.max(0, (tonumber(contentHeight) or 0)
+		- (tonumber(topInset) or 0) - (tonumber(bottomInset) or 0))
+	if (tonumber(bottomInset) or 0) > 4 then
+		available = math.max(0, available - SEARCH_DRAWER_GUTTER)
+	end
+	if available < SEARCH_DRAWER_MIN_HEIGHT then return 0 end
+	return math.min(SEARCH_DRAWER_MAX_HEIGHT, available)
+end
+
+function Dock:RefreshSearchDrawerLayout(topInset, height)
+	local drawer = self.searchDrawer
+	if not drawer then return end
+	if height <= 0 then drawer:Hide(); return end
+	local heightChanged = tonumber(drawer:GetHeight()) ~= height
+	drawer:ClearAllPoints()
+	drawer:SetPoint("TOPLEFT", self.content, "TOPLEFT", 4, -topInset)
+	drawer:SetPoint("TOPRIGHT", self.content, "TOPRIGHT", -4, -topInset)
+	drawer:SetHeight(height)
+	drawer:Show()
+	if heightChanged then self:RefreshSearchDrawer() end
+	if self.searchQueryLabel and self.searchTextEdit and self.searchQueryRow then
+		local measured = self.searchQueryLabel.GetStringWidth
+			and tonumber(self.searchQueryLabel:GetStringWidth()) or 0
+		local width = drawer.GetWidth and tonumber(drawer:GetWidth()) or 0
+		local left = math.max(37, math.ceil(measured) + 7)
+		if width > 0 then left = math.min(left, math.max(37, width - 100)) end
+		self.searchTextEdit:ClearAllPoints()
+		self.searchTextEdit:SetPoint("LEFT", self.searchQueryRow, "LEFT", left, 0)
+		self.searchTextEdit:SetPoint("RIGHT", self.searchGoButton, "LEFT", -4, 0)
+	end
+end
+
 -- Keep every message-surface child inside the same transient viewport. Alerts
 -- reserve the top lane; player-name actions reserve the bottom lane. Releasing
 -- either lane restores the ordinary four-pixel message inset without rebuilding
@@ -1518,6 +1560,32 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 		topInset = topInset + math.max(0, tonumber(self.alertBar:GetHeight()) or ALERT_PANEL_HEIGHT)
 			+ TRANSIENT_PANEL_RESERVATION
 	end
+	if frameIsShown(self.playerActions) then
+		bottomInset = bottomInset
+			+ math.max(0, tonumber(self.playerActions:GetHeight()) or PLAYER_ACTION_PANEL_WIDE_HEIGHT)
+			+ TRANSIENT_PANEL_RESERVATION
+	end
+	local headerHidden = not frameIsShown(self.header)
+	local contentHeight = content.GetHeight and tonumber(content:GetHeight()) or 0
+	local preliminarySearchHeight = self:GetSearchDrawerHeight(contentHeight, topInset, bottomInset)
+	if self.searchContentTrigger then
+		self.searchContentTrigger:ClearAllPoints()
+		self.searchContentTrigger:SetPoint("TOPLEFT", content, "TOPLEFT", 58,
+			-2 - (self.alertActive and frameIsShown(self.alertBar)
+				and (math.max(0, tonumber(self.alertBar:GetHeight()) or ALERT_PANEL_HEIGHT)
+					+ TRANSIENT_PANEL_RESERVATION) or 0))
+		if headerHidden and (not self.searchOpen or preliminarySearchHeight == 0) then
+			self.searchContentTrigger:Show()
+		else self.searchContentTrigger:Hide() end
+	end
+	if headerHidden and frameIsShown(self.searchContentTrigger) then
+		topInset = topInset + SEARCH_TRIGGER_RESERVED_HEIGHT
+	end
+	local searchHeight = self:GetSearchDrawerHeight(contentHeight, topInset, bottomInset)
+	self:RefreshSearchDrawerLayout(topInset, searchHeight)
+	if searchHeight > 0 then
+		topInset = topInset + searchHeight + SEARCH_DRAWER_GUTTER
+	end
 	if self.historyPager then
 		if self.historyPagerAvailable then self.historyPager:Show()
 		else self.historyPager:Hide() end
@@ -1528,13 +1596,7 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 		self.historyPager:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_DISPLAY_INSET, -topInset)
 		topInset = topInset + HISTORY_PAGER_HEIGHT + HISTORY_PAGER_GUTTER
 	end
-	if frameIsShown(self.playerActions) then
-		bottomInset = bottomInset
-			+ math.max(0, tonumber(self.playerActions:GetHeight()) or PLAYER_ACTION_PANEL_WIDE_HEIGHT)
-			+ TRANSIENT_PANEL_RESERVATION
-	end
 	local rightInset = showMessageScrollbar and MESSAGE_SCROLLBAR_DISPLAY_INSET or 4
-	local contentHeight = content.GetHeight and tonumber(content:GetHeight()) or 0
 	local availableHeight = contentHeight > 0 and math.max(0, contentHeight - topInset - bottomInset) or nil
 	local minimumLineHeight = TRANSIENT_MESSAGE_LINE_HEIGHT_FALLBACK
 	if display.GetFont then
@@ -3927,7 +3989,7 @@ end
 function Dock:CanShowDisplayHoverHint()
 	local display = self.display
 	local content = self.content or display
-	if not self.active or not display or isShiftDown()
+	if not self.active or self.searchOpen or not display or isShiftDown()
 		or self.hoveredHyperlink then
 		return false
 	end
@@ -4175,7 +4237,8 @@ function Dock:UpdateSourceColumnAlignmentControl()
 	local overSurface = (self.display and self.display.IsMouseOver and self.display:IsMouseOver())
 		or (self.content and self.content.IsMouseOver and self.content:IsMouseOver())
 		or (button.IsMouseOver and button:IsMouseOver())
-	local visible = self.active and not self:IsCollapsed() and isShiftDown() and overSurface
+	local visible = self.active and not self.searchOpen and not self:IsCollapsed()
+		and isShiftDown() and overSurface
 	if not visible then
 		button:Hide()
 		return
@@ -4840,6 +4903,9 @@ function Dock:RebuildActiveView(alignmentRecords, skipVisibleAlignmentRefresh)
 	if visibleOnly and not skipVisibleAlignmentRefresh then
 		self:RefreshVisibleAlignment()
 	end
+	-- A newly blocked or cleared message must not linger in an open search
+	-- preview after the normal transcript has already removed it.
+	if self.searchOpen then self:RefreshSearchAfterHistoryMutation() end
 end
 
 function Dock:SelectView(viewId)
@@ -7059,6 +7125,36 @@ function Dock:DiscardPartialBuild()
 	self.messageScrollbar = nil
 	self.scrollToBottomButton = nil
 	self.scrollToBottomGlyph = nil
+	self.searchHeaderButton = nil
+	self.searchContentTrigger = nil
+	self.searchDrawer = nil
+	self.searchTitle = nil
+	self.searchCloseButton = nil
+	self.searchOlderButton = nil
+	self.searchNewerButton = nil
+	self.searchFilterButton = nil
+	self.searchBackButton = nil
+	self.searchQueryRow = nil
+	self.searchQueryLabel = nil
+	self.searchGoButton = nil
+	self.searchTextEdit = nil
+	self.searchResultButton = nil
+	self.searchResultButtons = nil
+	self.searchFilterRows = nil
+	self.searchSenderEdit = nil
+	self.searchSourceEdit = nil
+	self.searchDateEdit = nil
+	self.searchTabOnlyButton = nil
+	self.searchApplyButton = nil
+	self.searchPreviewMeta = nil
+	self.searchPreview = nil
+	self.searchResult = nil
+	self.searchGeneration = nil
+	self.searchResultIndex = nil
+	self.searchPageStack = nil
+	self.searchSelectedRecord = nil
+	self.searchFilterMode = nil
+	self.searchOpen = nil
 	self.historyPager = nil
 	self.historyOlderButton = nil
 	self.historyNewerButton = nil
@@ -8334,6 +8430,375 @@ function Dock:BuildChatHelpMenu()
 	return menu
 end
 
+local function setSearchButtonLabel(button, label)
+	if not button then return end
+	if button.SetLabel then button:SetLabel(label)
+	elseif button.text and button.text.SetText then button.text:SetText(label) end
+end
+
+local function searchSingleLine(value)
+	value = tostring(value or "")
+	value = value:gsub("|H.-|h(.-)|h", "%1")
+	value = value:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+	return value:gsub("[%c]", " ")
+end
+
+function Dock:GetSearchQuery(cursor)
+	return {
+		text = self.searchTextEdit and self.searchTextEdit:GetText() or "",
+		sender = self.searchSenderEdit and self.searchSenderEdit:GetText() or "",
+		source = self.searchSourceEdit and self.searchSourceEdit:GetText() or "",
+		date = self.searchDateEdit and self.searchDateEdit:GetText() or "",
+		viewId = self.searchCurrentTabOnly and self.activeView or nil,
+		limit = SEARCH_RESULT_BATCH,
+		cursor = cursor,
+	}
+end
+
+function Dock:ClearSearchFocus()
+	local function clear(field)
+		if field and field.ClearFocus then field:ClearFocus() end
+	end
+	clear(self.searchTextEdit)
+	clear(self.searchSenderEdit)
+	clear(self.searchSourceEdit)
+	clear(self.searchDateEdit)
+end
+
+function Dock:RefreshSearchAfterHistoryMutation()
+	if not self.searchOpen or not self.searchResult then return false end
+	local engine = addon.MessageEngine
+	if not engine or type(engine.byId) ~= "table" then return false end
+	local stale = self.searchGeneration ~= engine.historyGeneration
+	local function includesRemoved(result)
+		for _, record in ipairs(result and result.records or {}) do
+			if record.id and engine.byId[record.id] ~= record then return true end
+		end
+		return false
+	end
+	stale = stale or includesRemoved(self.searchResult)
+	if not stale then
+		for _, page in ipairs(self.searchPageStack or {}) do
+			if includesRemoved(page.result) then stale = true; break end
+		end
+	end
+	if not stale and self.searchSelectedRecord and self.searchSelectedRecord.id then
+		stale = engine.byId[self.searchSelectedRecord.id] ~= self.searchSelectedRecord
+	end
+	if stale then self:RunSearch(nil, false) end
+	return stale
+end
+
+function Dock:RefreshSearchDrawer()
+	if not self.searchDrawer then return end
+	local filtering = self.searchFilterMode == true
+	local selected = self.searchSelectedRecord
+	local result = self.searchResult or { records = {} }
+	local records = result.records or {}
+	local index = math.max(1, math.floor(tonumber(self.searchResultIndex) or 1))
+	local record = records[index]
+	local drawerHeight = self.searchDrawer.GetHeight and tonumber(self.searchDrawer:GetHeight()) or 70
+	local visibleRows = math.max(1, math.min(4,
+		math.floor((drawerHeight - 49 - 18 - 3) / 20) + 1))
+	local hasNewer = index > 1 or #(self.searchPageStack or {}) > 0
+	local hasOlder = index < #records or result.hasMore == true
+	if self.searchQueryRow then
+		if filtering or selected then self.searchQueryRow:Hide() else self.searchQueryRow:Show() end
+	end
+	if self.searchFilterRows then
+		if filtering then self.searchFilterRows:Show() else self.searchFilterRows:Hide() end
+	end
+	if self.searchResultButton then
+		if not filtering and not selected then
+			for row, button in ipairs(self.searchResultButtons or { self.searchResultButton }) do
+				local rowRecord = records[index + row - 1]
+				if row <= visibleRows and (rowRecord or row == 1) then
+					local summary
+					if rowRecord then
+						local source = searchSingleLine(rowRecord.sourceLabel or rowRecord.channelName
+							or rowRecord.view or "Chat")
+						local sender = searchSingleLine(rowRecord.sender)
+						local prefix = (rowRecord.timestamp or "") .. "  " .. source
+						if sender ~= "" then prefix = prefix .. " · " .. sender end
+						summary = prefix .. "  " .. searchSingleLine(rowRecord.text)
+					elseif result.error == "invalid-date" then summary = "Use YYYY-MM-DD for the date filter."
+					elseif result.error == "stale-cursor" then summary = "History changed. Search again."
+					elseif result.hasMore then summary = "No match in this slice. Try older history."
+					else summary = "No matching retained messages." end
+					setSearchButtonLabel(button, summary)
+					button:Show()
+				else button:Hide() end
+			end
+		else
+			for _, button in ipairs(self.searchResultButtons or { self.searchResultButton }) do
+				button:Hide()
+			end
+		end
+	end
+	if self.searchPreview then
+		if selected and not filtering then
+			self.searchPreview:Clear()
+			local source = searchSingleLine(selected.sourceLabel or selected.channelName or selected.view or "Chat")
+			local sender = searchSingleLine(selected.sender)
+			local metadata = (selected.timestamp or "") .. "  " .. source
+				.. (sender ~= "" and " · " .. sender or "")
+			self.searchPreview:AddMessage(metadata .. "\n" .. tostring(selected.text or ""), 1, 1, 1)
+			self.searchPreview:ScrollToTop()
+			self.searchPreview:Show()
+			self.searchPreviewMeta:SetText("Preview only · chat tab unchanged")
+			self.searchPreviewMeta:Show()
+		else
+			self.searchPreview:Hide()
+			self.searchPreviewMeta:Hide()
+		end
+	end
+	if self.searchBackButton then
+		if filtering or selected then self.searchBackButton:Show() else self.searchBackButton:Hide() end
+	end
+	if self.searchFilterButton then
+		if filtering or selected then self.searchFilterButton:Hide() else self.searchFilterButton:Show() end
+	end
+	if self.searchOlderButton then
+		if not filtering and not selected and hasOlder then self.searchOlderButton:Show()
+		else self.searchOlderButton:Hide() end
+	end
+	if self.searchNewerButton then
+		if not filtering and not selected and hasNewer then self.searchNewerButton:Show()
+		else self.searchNewerButton:Hide() end
+	end
+	if self.searchTitle then
+		self.searchTitle:ClearAllPoints()
+		if filtering or selected then
+			self.searchTitle:SetPoint("TOPLEFT", self.searchBackButton, "TOPRIGHT", 6, -2)
+			self.searchTitle:SetPoint("RIGHT", self.searchCloseButton, "LEFT", -4, 0)
+			self.searchTitle:SetText(filtering and "FILTERS" or "MESSAGE")
+		else
+			self.searchTitle:SetPoint("TOPLEFT", self.searchDrawer, "TOPLEFT", 5, -5)
+			self.searchTitle:SetPoint("RIGHT", self.searchDrawer, "RIGHT", -144, 0)
+			self.searchTitle:SetText(record and ("FIND " .. tostring(index) .. "/" .. tostring(#records))
+				or "FIND")
+		end
+	end
+	setSearchButtonLabel(self.searchTabOnlyButton, self.searchCurrentTabOnly and "TAB" or "ALL")
+end
+
+function Dock:RunSearch(cursor, preservePages)
+	if not addon.MessageEngine or type(addon.MessageEngine.SearchHistory) ~= "function" then return false end
+	self:ClearSearchFocus()
+	if not preservePages then self.searchPageStack = {} end
+	self.searchSelectedRecord = nil
+	self.searchFilterMode = false
+	self.searchResult = addon.MessageEngine:SearchHistory(self:GetSearchQuery(cursor))
+	self.searchGeneration = addon.MessageEngine.historyGeneration
+	self.searchResultIndex = 1
+	self:RefreshSearchDrawer()
+	return true
+end
+
+function Dock:StepSearchResult(direction)
+	local result = self.searchResult or { records = {} }
+	local records = result.records or {}
+	local index = tonumber(self.searchResultIndex) or 1
+	if direction > 0 then
+		if index < #records then self.searchResultIndex = index + 1
+		elseif result.hasMore and result.nextCursor then
+			self.searchPageStack = self.searchPageStack or {}
+			table.insert(self.searchPageStack, { result = result, index = index })
+			self:RunSearch(result.nextCursor, true)
+		else return false end
+	elseif index > 1 then self.searchResultIndex = index - 1
+	elseif self.searchPageStack and #self.searchPageStack > 0 then
+		local previous = table.remove(self.searchPageStack)
+		self.searchResult, self.searchResultIndex = previous.result, previous.index
+	else return false end
+	self:RefreshSearchDrawer()
+	return true
+end
+
+function Dock:ToggleSearchDrawer(forceClosed)
+	local open = not forceClosed and not self.searchOpen
+	self.searchOpen = open
+	self.searchSelectedRecord = nil
+	self.searchFilterMode = false
+	if not open then self:ClearSearchFocus() end
+	if open then
+		self:HideChatHelpMenu(false)
+		self:HideDisplayHoverHint()
+		self:RunSearch(nil, false)
+	end
+	self:RefreshSearchDrawer()
+	self:RefreshTransientMessageLayout()
+	self:UpdateSourceColumnAlignmentControl()
+	return open
+end
+
+function Dock:BuildSearchDrawer()
+	if self.searchDrawer or not self.content then return end
+	local content = self.content
+	local drawer = Theme:CreatePanel(content, "surfaceRaised", "borderMuted")
+	drawer:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -4)
+	drawer:SetPoint("TOPRIGHT", content, "TOPRIGHT", -4, -4)
+	drawer:SetHeight(SEARCH_DRAWER_MIN_HEIGHT)
+	drawer:SetFrameLevel(content:GetFrameLevel() + 21)
+	drawer:Hide()
+	self.searchDrawer = drawer
+	local title = Theme:CreateText(drawer, "GameFontNormalSmall", "goldBright")
+	title:SetPoint("TOPLEFT", drawer, "TOPLEFT", 5, -5)
+	title:SetPoint("RIGHT", drawer, "RIGHT", -144, 0)
+	title:SetJustifyH("LEFT")
+	if title.SetWordWrap then title:SetWordWrap(false) end
+	self.searchTitle = title
+	local close = Theme:CreateButton(drawer, "X", 18, 18, false)
+	close:SetPoint("TOPRIGHT", drawer, "TOPRIGHT", -4, -3)
+	close:SetScript("OnClick", function() Dock:ToggleSearchDrawer(true) end)
+	self.searchCloseButton = close
+	self:BindDockControlTooltip(close, "Close search", "Returns the normal chat viewport without changing tabs or history.")
+	local older = Theme:CreateButton(drawer, ">", 22, 18, false)
+	older:SetPoint("RIGHT", close, "LEFT", -4, 0)
+	older:SetScript("OnClick", function() Dock:StepSearchResult(1) end)
+	self.searchOlderButton = older
+	self:BindDockControlTooltip(older, "Older result", "Step toward older matching messages.")
+	local newer = Theme:CreateButton(drawer, "<", 22, 18, false)
+	newer:SetPoint("RIGHT", older, "LEFT", -4, 0)
+	newer:SetScript("OnClick", function() Dock:StepSearchResult(-1) end)
+	self.searchNewerButton = newer
+	self:BindDockControlTooltip(newer, "Newer result", "Step toward newer matching messages.")
+	local filters = Theme:CreateButton(drawer, "FLT", 36, 18, false)
+	filters:SetPoint("RIGHT", newer, "LEFT", -4, 0)
+	filters:SetScript("OnClick", function()
+		Dock.searchFilterMode = true
+		Dock:RefreshSearchDrawer()
+	end)
+	self.searchFilterButton = filters
+	self:BindDockControlTooltip(filters, "Search filters", "Filter by sender, source, date, or current tab.")
+	local back = Theme:CreateButton(drawer, "BACK", 52, 18, false)
+	back:SetPoint("TOPLEFT", drawer, "TOPLEFT", 4, -3)
+	back:SetScript("OnClick", function()
+		Dock.searchFilterMode = false
+		Dock.searchSelectedRecord = nil
+		Dock:RefreshSearchDrawer()
+	end)
+	back:Hide()
+	self.searchBackButton = back
+
+	local queryRow = CreateFrame("Frame", nil, drawer)
+	queryRow:SetPoint("TOPLEFT", drawer, "TOPLEFT", 4, -25)
+	queryRow:SetPoint("TOPRIGHT", drawer, "TOPRIGHT", -4, -25)
+	queryRow:SetHeight(20)
+	self.searchQueryRow = queryRow
+	local queryLabel = Theme:CreateText(queryRow, "GameFontNormalSmall", "textMuted")
+	queryLabel:SetPoint("LEFT", queryRow, "LEFT", 1, 0)
+	queryLabel:SetText("TEXT")
+	self.searchQueryLabel = queryLabel
+	local go = Theme:CreateButton(queryRow, "GO", 32, 20, true)
+	go:SetPoint("RIGHT", queryRow, "RIGHT", 0, 0)
+	go:SetScript("OnClick", function() Dock:RunSearch(nil, false) end)
+	self.searchGoButton = go
+	local query = Theme:CreateEditBox(queryRow, 100, 20, false)
+	query:SetPoint("LEFT", queryRow, "LEFT", 37, 0)
+	query:SetPoint("RIGHT", go, "LEFT", -4, 0)
+	query:SetScript("OnEnterPressed", function(self)
+		self:ClearFocus()
+		Dock:RunSearch(nil, false)
+	end)
+	self.searchTextEdit = query
+
+	local resultButton = Theme:CreateButton(drawer, "No matching retained messages.", 40, 18, false)
+	resultButton:SetPoint("TOPLEFT", drawer, "TOPLEFT", 4, -49)
+	resultButton:SetPoint("TOPRIGHT", drawer, "TOPRIGHT", -4, -49)
+	resultButton:SetScript("OnClick", function()
+		local result = Dock.searchResult
+		local record = result and result.records and result.records[Dock.searchResultIndex or 1]
+		if record then Dock.searchSelectedRecord = record; Dock:RefreshSearchDrawer() end
+	end)
+	if resultButton.text then
+		resultButton.text:SetJustifyH("LEFT")
+		if resultButton.text.SetWordWrap then resultButton.text:SetWordWrap(false) end
+	end
+	self.searchResultButton = resultButton
+	self.searchResultButtons = { resultButton }
+	for row = 2, 4 do
+		local hit = Theme:CreateButton(drawer, "", 40, 18, false)
+		hit:SetPoint("TOPLEFT", drawer, "TOPLEFT", 4, -49 - (row - 1) * 20)
+		hit:SetPoint("TOPRIGHT", drawer, "TOPRIGHT", -4, -49 - (row - 1) * 20)
+		hit:SetScript("OnClick", function()
+			local result = Dock.searchResult
+			local record = result and result.records
+				and result.records[(Dock.searchResultIndex or 1) + row - 1]
+			if record then Dock.searchSelectedRecord = record; Dock:RefreshSearchDrawer() end
+		end)
+		if hit.text then
+			hit.text:SetJustifyH("LEFT")
+			if hit.text.SetWordWrap then hit.text:SetWordWrap(false) end
+		end
+		hit:Hide()
+		self.searchResultButtons[row] = hit
+	end
+
+	local filterRows = CreateFrame("Frame", nil, drawer)
+	filterRows:SetPoint("TOPLEFT", drawer, "TOPLEFT", 4, -25)
+	filterRows:SetPoint("TOPRIGHT", drawer, "TOPRIGHT", -4, -25)
+	filterRows:SetHeight(42)
+	filterRows:Hide()
+	self.searchFilterRows = filterRows
+	local senderLabel = Theme:CreateText(filterRows, "GameFontNormalSmall", "textMuted")
+	senderLabel:SetPoint("TOPLEFT", filterRows, "TOPLEFT", 0, -3)
+	senderLabel:SetText("BY")
+	local sender = Theme:CreateEditBox(filterRows, 80, 19, false)
+	sender:SetPoint("TOPLEFT", filterRows, "TOPLEFT", 37, 0)
+	self.searchSenderEdit = sender
+	self:BindDockControlTooltip(sender, "Sender", "Only messages from names containing this text.")
+	local sourceLabel = Theme:CreateText(filterRows, "GameFontNormalSmall", "textMuted")
+	sourceLabel:SetPoint("LEFT", sender, "RIGHT", 6, 0)
+	sourceLabel:SetText("IN")
+	local source = Theme:CreateEditBox(filterRows, 90, 19, false)
+	source:SetPoint("LEFT", sourceLabel, "RIGHT", 4, 0)
+	source:SetPoint("RIGHT", filterRows, "RIGHT", 0, 0)
+	self.searchSourceEdit = source
+	self:BindDockControlTooltip(source, "Source", "Channel or message source containing this text.")
+	local dateLabel = Theme:CreateText(filterRows, "GameFontNormalSmall", "textMuted")
+	dateLabel:SetPoint("TOPLEFT", filterRows, "TOPLEFT", 0, -26)
+	dateLabel:SetText("ON")
+	local dateEdit = Theme:CreateEditBox(filterRows, 82, 19, false)
+	dateEdit:SetPoint("TOPLEFT", filterRows, "TOPLEFT", 37, -23)
+	self.searchDateEdit = dateEdit
+	local tabOnly = Theme:CreateButton(filterRows, "ALL", 58, 19, false)
+	tabOnly:SetPoint("LEFT", dateEdit, "RIGHT", 6, 0)
+	tabOnly:SetScript("OnClick", function()
+		Dock.searchCurrentTabOnly = not Dock.searchCurrentTabOnly
+		Dock:RefreshSearchDrawer()
+	end)
+	self.searchTabOnlyButton = tabOnly
+	self:BindDockControlTooltip(tabOnly, "Search scope", "ALL searches retained normal chat; TAB searches only the tab currently open.")
+	local apply = Theme:CreateButton(filterRows, "APPLY", 60, 19, true)
+	apply:SetPoint("LEFT", tabOnly, "RIGHT", 6, 0)
+	apply:SetScript("OnClick", function() Dock:RunSearch(nil, false) end)
+	self.searchApplyButton = apply
+	self:BindDockControlTooltip(dateEdit, "Date filter", "YYYY-MM-DD in your local time zone.")
+
+	local previewMeta = Theme:CreateText(drawer, "GameFontHighlightSmall", "textMuted")
+	previewMeta:SetPoint("TOPLEFT", drawer, "TOPLEFT", 5, -26)
+	previewMeta:SetPoint("RIGHT", drawer, "RIGHT", -5, 0)
+	previewMeta:SetJustifyH("LEFT")
+	if previewMeta.SetWordWrap then previewMeta:SetWordWrap(false) end
+	previewMeta:Hide()
+	self.searchPreviewMeta = previewMeta
+	local preview = CreateFrame("ScrollingMessageFrame", nil, drawer)
+	preview:SetPoint("TOPLEFT", drawer, "TOPLEFT", 5, -43)
+	preview:SetPoint("BOTTOMRIGHT", drawer, "BOTTOMRIGHT", -5, 4)
+	preview:SetFontObject(ChatFontNormal)
+	preview:SetFading(false)
+	preview:SetInsertMode("BOTTOM")
+	preview:SetMaxLines(80)
+	preview:EnableMouseWheel(true)
+	preview:SetScript("OnMouseWheel", function(self, delta)
+		if delta > 0 then self:ScrollUp() else self:ScrollDown() end
+	end)
+	preview:Hide()
+	self.searchPreview = preview
+	self:RefreshSearchDrawer()
+end
+
 function Dock:Build()
 	if self.frame and self.built then
 		return true
@@ -8379,6 +8844,10 @@ function Dock:Build()
 		end
 	end)
 	frame:SetScript("OnHide", function()
+		Dock.searchOpen = false
+		Dock.searchSelectedRecord = nil
+		Dock:ClearSearchFocus()
+		if Dock.searchDrawer then Dock.searchDrawer:Hide() end
 		Dock:RestoreNativeChat()
 		Dock:CancelHeaderHoverRefresh()
 		Dock:CancelResize()
@@ -8520,6 +8989,13 @@ function Dock:Build()
 	end)
 	newButton:Hide()
 	self.newButton = newButton
+	local findHeader = Theme:CreateButton(header, "FIND", 42, 18, false)
+	findHeader:SetPoint("RIGHT", newButton, "LEFT", -4, 0)
+	findHeader:SetScript("OnClick", function() Dock:ToggleSearchDrawer() end)
+	self.searchHeaderButton = findHeader
+	self:BindHeaderHover(findHeader)
+	self:BindDockControlTooltip(findHeader, "Find retained messages",
+		"Search text, sender, source, date, or just this tab. Blocked messages and held whispers are excluded.")
 	self.newMessageIndicatorDefaultFontObject = GameFontNormalSmall
 	self.newMessageIndicatorDefaultFontPath,
 		self.newMessageIndicatorDefaultFontSize,
@@ -8532,7 +9008,7 @@ function Dock:Build()
 	end)
 	self:BindHeaderHover(newButton)
 	self:BindDockControlTooltip(newButton, "Newest messages", "Click: jump to newest. SHIFT-drag: move this marker inside the chat dock.")
-	title:SetPoint("RIGHT", newButton, "LEFT", -2, 0)
+	title:SetPoint("RIGHT", findHeader, "LEFT", -4, 0)
 
 	local rail = Theme:CreatePanel(frame, "inset", "borderMuted")
 	rail:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -2)
@@ -8637,6 +9113,15 @@ function Dock:Build()
 	content:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -2, 28)
 	content:EnableMouse(true)
 	self.content = content
+	local findInContent = Theme:CreateButton(content, "FIND", 42, 18, false)
+	findInContent:SetPoint("TOPLEFT", content, "TOPLEFT", 58, -2)
+	findInContent:SetFrameLevel(content:GetFrameLevel() + 21)
+	findInContent:SetScript("OnClick", function() Dock:ToggleSearchDrawer() end)
+	findInContent:Hide()
+	self.searchContentTrigger = findInContent
+	self:BindHeaderHover(findInContent)
+	self:BindDockControlTooltip(findInContent, "Find retained messages",
+		"Search is available here when the title bar is hidden.")
 	-- Message-band textures live on the content parent, below the child
 	-- ScrollingMessageFrame. They never intercept mouse input or replace chat's
 	-- native hyperlink renderer.
@@ -8905,22 +9390,24 @@ function Dock:Build()
 	self.alertBar = alertBar
 	self:BindHeaderHover(alertBar)
 	local alertTitle = Theme:CreateText(alertBar, "GameFontNormalSmall", "goldBright")
-	alertTitle:SetPoint("TOPLEFT", alertBar, "TOPLEFT", 4, -3)
-	alertTitle:SetPoint("RIGHT", alertBar, "RIGHT", -24, 0)
+	alertTitle:SetPoint("TOPLEFT", alertBar, "TOPLEFT", 7, -5)
+	alertTitle:SetPoint("RIGHT", alertBar, "RIGHT", -34, 0)
 	alertTitle:SetJustifyH("LEFT")
 	self.alertTitle = alertTitle
 	local alertMessage = Theme:CreateText(alertBar, "GameFontHighlightSmall", "text")
-	alertMessage:SetPoint("BOTTOMLEFT", alertBar, "BOTTOMLEFT", 4, 3)
-	alertMessage:SetPoint("RIGHT", alertBar, "RIGHT", -24, 0)
+	alertMessage:SetPoint("BOTTOMLEFT", alertBar, "BOTTOMLEFT", 7, 5)
+	alertMessage:SetPoint("RIGHT", alertBar, "RIGHT", -34, 0)
 	alertMessage:SetJustifyH("LEFT")
 	if alertMessage.SetWordWrap then alertMessage:SetWordWrap(false) end
 	self.alertMessage = alertMessage
 	local dismissAlert = createTightButton(alertBar, "X", 18, false)
-	dismissAlert:SetPoint("RIGHT", alertBar, "RIGHT", -2, 0)
+	dismissAlert:SetPoint("RIGHT", alertBar, "RIGHT", -6, 0)
 	dismissAlert:SetScript("OnClick", function()
 		Dock:DismissAlert(true)
 	end)
 	self:BindHeaderHover(dismissAlert)
+	self:BindDockControlTooltip(dismissAlert, "Dismiss alert",
+		"Closes this alert without changing the message or its history.")
 
 	-- The dock's border itself is the resize control: four-pixel edge strips
 	-- and compact corners choose their matching resize direction, then light
@@ -8932,6 +9419,7 @@ function Dock:Build()
 	self:BuildMessageBlockControls()
 	self:BuildSourceColumnAlignmentControl()
 	self:BuildChatHelpMenu()
+	self:BuildSearchDrawer()
 	self.built = true
 	local dockSettings = addon:GetSmartSettings().dock
 	if self.visibleState == nil then self.visibleState = dockSettings.visible ~= false end

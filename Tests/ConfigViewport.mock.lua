@@ -1,6 +1,6 @@
--- Focused no-client contract for the fixed-size settings workspace.  The
--- console keeps its reviewed 840x570 logical layout, but scales and clamps as
--- one unit when UIParent is smaller or its effective viewport changes.
+-- Focused no-client contract for the responsive settings workspace. The page
+-- canvas remains readable at 652px, while compact screens use a page scroller
+-- and temporary navigation drawer rather than shrinking the whole console.
 
 local Frame = {}
 Frame.__index = Frame
@@ -55,6 +55,8 @@ function Frame:StartMoving() self.moving = true end
 function Frame:StopMovingOrSizing() self.moving = false end
 function Frame:SetText(value) self.textValue = tostring(value or "") end
 function Frame:GetText() return self.textValue or "" end
+local textUnit = 6
+function Frame:GetStringWidth() return #self:GetText() * textUnit end
 function Frame:IsShown() return self.shown ~= false end
 function Frame:Enable() self.enabled = true end
 function Frame:Disable() self.enabled = false end
@@ -195,14 +197,14 @@ local function assertViewportGutters(widget, width, height, context)
 		context .. " lost its vertical 12px screen gutters")
 end
 
--- Open and OnShow both apply the viewport fit. The page keeps its logical
--- dimensions while the whole console uses the limiting height ratio.
+-- At 800x540 the panel reflows to an unscaled 776x516 compact workspace.
 config:Open()
-local expectedSmallScale = (540 - 24) / 570
-assert(config.frame:GetWidth() == 840 and config.frame:GetHeight() == 570,
-	"viewport fitting changed the reviewed 840x570 logical workspace")
-assert(nearlyEqual(config.frame:GetScale(), expectedSmallScale),
-	"small viewport did not scale the complete settings workspace")
+assert(config.frame:GetWidth() == 776 and config.frame:GetHeight() == 516,
+	"compact viewport did not reflow the workspace")
+assert(config.headerTitle:GetText() == "ChattyChattyBangBang",
+	"the full brand title disappeared despite room in the header")
+assert(nearlyEqual(config.frame:GetScale(), 1),
+	"compact viewport shrank all settings text and hit targets")
 assert(config.frame.clampedToScreen,
 	"settings frame did not retain the client's built-in screen clamp")
 assertViewportGutters(config.frame, 800, 540, "small viewport")
@@ -223,19 +225,53 @@ local function hasAnchor(widget, point, relative, relativePoint, x, y)
 	return false
 end
 
--- The 170px sidebar ends 6 logical pixels before the workspace. The page's
--- reviewed 636px controls then sit 8px inside the 652px workspace on both
--- sides; these margins remain visible even at the smallest viewport scale.
+-- The fixed page canvas has 8px control gutters and its centered compact
+-- viewport retains ample side margins. The drawer stays closed until asked.
 assert(config.sidebar:GetWidth() == 170
 	and hasAnchor(config.sidebar, "TOPLEFT", config.frame, "TOPLEFT", 6, -56)
-	and hasAnchor(config.content, "TOPLEFT", config.sidebar, "TOPRIGHT", 6, 0)
-	and hasAnchor(config.content, "TOPRIGHT", config.frame, "TOPRIGHT", -6, -56)
-	and 8 + 636 + 8 == 840 - (6 + 170 + 6 + 6),
+	and config.content:GetWidth() == 652
+	and config.contentViewport:GetWidth() == 652
+	and config.contentViewport.scrollChild == config.content
+	and hasAnchor(config.contentViewport, "TOP", config.frame, "TOP", 0, -56)
+	and not config.sidebar:IsShown() and config.navigationMenuButton:IsShown(),
 	"settings workspace or page control lost its explicit divider/edge gutters")
-assert(config.navContent:GetWidth() == 168
+assert(config.navContent:GetWidth() == 169
 	and config.navigationButtons.desk:GetWidth() == 154
 	and hasAnchor(config.navigationButtons.desk, "TOPLEFT", config.navContent, "TOPLEFT", 6, -42),
 	"sidebar navigation row no longer leaves space before its divider")
+assert(config.content:GetHeight() == 508 and config.frame:GetHeight() - 62 == 454
+	and hasAnchor(config.contentViewport, "BOTTOM", config.frame, "BOTTOM", 0, 6),
+	"compact settings lost the scrollable excess page height")
+config.navigationMenuButton.scripts.OnClick()
+assert(config.sidebar:IsShown(), "compact PAGES control did not reveal navigation")
+config.navigationMenuButton.scripts.OnClick()
+assert(not config.sidebar:IsShown(), "compact PAGES control did not close navigation")
+
+-- The slim cue stays off when every page fits; once the hierarchy overflows,
+-- its thumb follows scroll position and is separated from row and divider.
+assert(not config.navScrollTrack:IsShown() and not config.navScrollThumb:IsShown(),
+	"non-overflowing navigation showed a misleading scroll cue")
+config.navScroll.verticalScrollRange = 120
+config:UpdateSidebarScrollAffordance()
+assert(config.navScrollTrack:IsShown() and config.navScrollThumb:IsShown()
+	and config.navScrollThumb:GetWidth() == 3 and config.navScrollTrack:GetWidth() == 2,
+	"overflowing navigation did not expose a slim scroll cue")
+assert(config.navigationButtons.desk:GetWidth() + 6 <= config.sidebar:GetWidth() - 10
+	and config.navScrollTrack.point[4] == -5,
+	"navigation row, scroll cue, and sidebar divider lost their visible gutters")
+local topThumbOffset = config.navScrollThumb.point[5]
+config.navScroll:SetVerticalScroll(60)
+config:UpdateSidebarScrollAffordance()
+assert(config.navScrollThumb.point[5] < topThumbOffset,
+	"sidebar scroll thumb did not follow its scroll position")
+config.navScroll.verticalScrollRange = 0
+config:UpdateSidebarScrollAffordance()
+assert(not config.navScrollTrack:IsShown() and not config.navScrollThumb:IsShown(),
+	"sidebar cue remained visible after content fit")
+config.contentViewport.verticalScrollRange = 94
+config.contentViewport.scripts.OnMouseWheel(config.contentViewport, -1)
+assert(config.contentViewport:GetVerticalScroll() == 34,
+	"compact page viewport did not scroll a tall settings page")
 
 -- Both target-client viewport events are registered. A larger display restores
 -- exact 1:1 scale without moving any edge beyond the safe screen area.
@@ -243,9 +279,28 @@ assert(config.frame.events.UI_SCALE_CHANGED and config.frame.events.DISPLAY_SIZE
 	"settings frame did not register both viewport-change events")
 UIParent:SetSize(1600, 1000)
 config.frame.scripts.OnEvent(config.frame, "DISPLAY_SIZE_CHANGED")
-assert(nearlyEqual(config.frame:GetScale(), 1),
-	"large viewport incorrectly upscaled or retained the compact scale")
+assert(config.frame:GetWidth() == 840 and config.frame:GetHeight() == 570
+	and nearlyEqual(config.frame:GetScale(), 1),
+	"large viewport did not restore the unscaled side-by-side workspace")
+assert(config.sidebar:IsShown() and not config.navigationMenuButton:IsShown()
+	and hasAnchor(config.contentViewport, "TOPLEFT", config.sidebar, "TOPRIGHT", 6, 0),
+	"wide viewport did not restore the sidebar and workspace gutter")
 assertViewportGutters(config.frame, 1600, 1000, "large viewport")
+
+-- A wide-font theme is measured from actual text rather than forcing a
+-- 170px rail that clips the longest label. Content keeps its own 652px canvas.
+textUnit = 10
+config:FitFrameToViewport()
+assert(config.sidebar:GetWidth() == 234 and config.navContent:GetWidth() == 233
+	and config.navigationButtons.desk:GetWidth() == 218
+	and config.frame:GetWidth() == 904 and config.content:GetWidth() == 652,
+	"wide navigation labels did not receive width without shrinking pages")
+for _, button in pairs(config.navigationButtons) do
+	assert(#button.label:GetText() * textUnit <= button:GetWidth() - 14,
+		"wide-font navigation label clipped inside its row")
+end
+textUnit = 6
+config:FitFrameToViewport()
 
 -- A moved panel may be beyond two edges when scale/display settings change.
 -- The UI-scale event must pull only the offending position back inside.
@@ -259,12 +314,42 @@ assertViewportGutters(config.frame, 1600, 1000, "off-screen clamp")
 UIParent:SetSize(700, 500)
 config.frame:Hide()
 config.frame:Show()
-local expectedNarrowScale = (700 - 24) / 840
-assert(nearlyEqual(config.frame:GetScale(), expectedNarrowScale),
-	"OnShow did not refit the workspace to the new limiting width")
+assert(config.frame:GetWidth() == 676 and config.frame:GetHeight() == 476
+	and nearlyEqual(config.frame:GetScale(), 1),
+	"OnShow did not reflow to the minimum unscaled 700x500 layout")
+assert(config.headerTitle:GetText() == "ChattyChattyBangBang",
+	"minimum-width header shortened its title although its controls fit")
 assertViewportGutters(config.frame, 700, 500, "OnShow viewport")
+assert(config.frame:GetHeight() - 62 == 414 and config.content:GetHeight() == 508,
+	"minimum viewport did not keep its pages scrollable at normal text size")
 assert(close:GetWidth() * close:GetEffectiveScale() >= 24
 	and close:GetHeight() * close:GetEffectiveScale() >= 24,
 	"settings close hit target became too small at the minimum reviewed viewport")
+
+-- If a theme's glyphs are very wide, the title abbreviates before it can
+-- collide with PAGES, the mode switch, or the close target.
+textUnit = 16
+local normalModeWidth, normalMenuWidth = config.modeButton:GetWidth(), config.navigationMenuButton:GetWidth()
+config.modeButton:SetWidth(#config.modeButton.text:GetText() * textUnit + 16)
+config.navigationMenuButton:SetWidth(#config.navigationMenuButton.text:GetText() * textUnit + 16)
+config:FitFrameToViewport()
+assert(config.headerTitle:GetText() == "Chatty",
+	"wide-font minimum header did not abbreviate before controls collide")
+local titleEnd = 6 + 8 + 30 + 8 + (#config.headerTitle:GetText() * textUnit)
+local rightReserved = 6 + 8 + close:GetWidth() + 10 + config.modeButton:GetWidth()
+	+ config.navigationMenuButton:GetWidth() + 8
+assert(titleEnd + 12 <= config.frame:GetWidth() - rightReserved,
+	"wide-font header title still overlaps its right-side controls")
+config.modeButton:SetWidth(normalModeWidth)
+config.navigationMenuButton:SetWidth(normalMenuWidth)
+textUnit = 6
+config:FitFrameToViewport()
+
+-- Below the reviewed minimum, fitting the fixed page canvas requires a
+-- bounded fallback scale; it still cannot drift outside the screen gutters.
+UIParent:SetSize(600, 400)
+config:FitFrameToViewport()
+assert(config.frame:GetScale() < 1, "sub-minimum viewport did not use its emergency fit")
+assertViewportGutters(config.frame, 600, 400, "sub-minimum viewport")
 
 print("Config viewport mock tests passed")
