@@ -9,6 +9,8 @@ local MAX_DISMISSED = 96
 local DEFAULT_THRESHOLD = 5
 local DEFAULT_WINDOW = 900
 local DEFAULT_MAX_SUGGESTIONS = 24
+local GLOBAL_PRUNE_INTERVAL = 15
+local CAPACITY_PRUNE_INTERVAL = 5
 
 local acceptedEvents = {
 	CHAT_MSG_SAY = true,
@@ -190,6 +192,9 @@ end
 function Suggestions:ResetForProfile()
 	self.tracked = {}
 	self.trackedCount = 0
+	self.lastGlobalPruneAt = nil
+	self.lastGlobalPruneWindow = nil
+	self.lastCapacityPruneAt = nil
 	self.knownTerms = nil
 	self.knownRevision = nil
 	local settings = getSettings()
@@ -224,33 +229,43 @@ local function isCandidateTerm(term, known)
 		and not string.find(term, "^%d", 1)
 end
 
-function Suggestions:PruneTracked(now, window)
-	for term, entry in pairs(self.tracked or {}) do
-		if not entry.lastSeen or now < entry.lastSeen or now - entry.lastSeen > window then
-			self.tracked[term] = nil
-			self.trackedCount = math.max(0, (self.trackedCount or 1) - 1)
-		else
-			for fingerprint, occurrence in pairs(entry.messages or {}) do
-				local seenAt = tonumber(type(occurrence) == "table" and occurrence.time or occurrence) or 0
-				if now < seenAt or now - seenAt > window then
-					local sender = type(occurrence) == "table" and occurrence.sender or nil
-					entry.messages[fingerprint] = nil
-					entry.count = math.max(0, (entry.count or 1) - 1)
-					if sender and entry.senderCounts and entry.senderCounts[sender] then
-						entry.senderCounts[sender] = entry.senderCounts[sender] - 1
-						if entry.senderCounts[sender] <= 0 then
-							entry.senderCounts[sender] = nil
-							entry.distinctSenders = math.max(0, (entry.distinctSenders or 1) - 1)
-						end
-					end
+local function pruneTrackedEntry(self, term, entry, now, window)
+	if not entry.lastSeen or now < entry.lastSeen or now - entry.lastSeen > window then
+		self.tracked[term] = nil
+		self.trackedCount = math.max(0, (self.trackedCount or 1) - 1)
+		return
+	end
+	for fingerprint, occurrence in pairs(entry.messages or {}) do
+		local seenAt = tonumber(type(occurrence) == "table" and occurrence.time or occurrence) or 0
+		if now < seenAt or now - seenAt > window then
+			local sender = type(occurrence) == "table" and occurrence.sender or nil
+			entry.messages[fingerprint] = nil
+			entry.count = math.max(0, (entry.count or 1) - 1)
+			if sender and entry.senderCounts and entry.senderCounts[sender] then
+				entry.senderCounts[sender] = entry.senderCounts[sender] - 1
+				if entry.senderCounts[sender] <= 0 then
+					entry.senderCounts[sender] = nil
+					entry.distinctSenders = math.max(0, (entry.distinctSenders or 1) - 1)
 				end
-			end
-			if (entry.count or 0) <= 0 then
-				self.tracked[term] = nil
-				self.trackedCount = math.max(0, (self.trackedCount or 1) - 1)
 			end
 		end
 	end
+	if (entry.count or 0) <= 0 then
+		self.tracked[term] = nil
+		self.trackedCount = math.max(0, (self.trackedCount or 1) - 1)
+	else
+		entry.lastPrunedAt = now
+		entry.lastPrunedWindow = window
+	end
+end
+
+function Suggestions:PruneTracked(now, window)
+	for term, entry in pairs(self.tracked or {}) do
+		pruneTrackedEntry(self, term, entry, now, window)
+	end
+	self.lastGlobalPruneAt = now
+	self.lastGlobalPruneWindow = window
+	self.lastCapacityPruneAt = now
 end
 
 local function trimEntryMessages(entry)
@@ -328,7 +343,14 @@ function Suggestions:Observe(record)
 	end
 	local now = nowForRecord(record)
 	self.tracked = self.tracked or {}
-	self:PruneTracked(now, settings.window)
+	-- A full 120-term sweep on every public line scales badly in a busy city.
+	-- Sweep periodically; a term seen on this line is still pruned immediately
+	-- below, so its rolling threshold and distinct-sender count stay exact.
+	if not self.lastGlobalPruneAt or now < self.lastGlobalPruneAt
+		or now - self.lastGlobalPruneAt >= GLOBAL_PRUNE_INTERVAL
+		or self.lastGlobalPruneWindow ~= settings.window then
+		self:PruneTracked(now, settings.window)
+	end
 	local known = self:RefreshKnownTerms()
 	local clean = cleanMessage(record.text)
 	local senderKey = string.lower(trim(record.guid or record.sender or "unknown", 96))
@@ -344,11 +366,21 @@ function Suggestions:Observe(record)
 				break
 			end
 			local entry = self.tracked[term]
+			if entry and (entry.lastPrunedAt ~= now or entry.lastPrunedWindow ~= settings.window) then
+				pruneTrackedEntry(self, term, entry, now, settings.window)
+				entry = self.tracked[term]
+			end
 			if not entry then
 				if self.trackedCount and self.trackedCount >= MAX_TRACKED_TERMS then
-					break
+					if not self.lastCapacityPruneAt or now < self.lastCapacityPruneAt
+						or now - self.lastCapacityPruneAt >= CAPACITY_PRUNE_INTERVAL then
+						self:PruneTracked(now, settings.window)
+					end
+					if self.trackedCount >= MAX_TRACKED_TERMS then break end
 				end
-				entry = { count = 0, firstSeen = now, lastSeen = now, firstEpoch = epochForRecord(record), messages = {}, senderCounts = {}, distinctSenders = 0 }
+				entry = { count = 0, firstSeen = now, lastSeen = now,
+					lastPrunedAt = now, lastPrunedWindow = settings.window,
+					firstEpoch = epochForRecord(record), messages = {}, senderCounts = {}, distinctSenders = 0 }
 				self.tracked[term] = entry
 				self.trackedCount = (self.trackedCount or 0) + 1
 			end
@@ -443,5 +475,8 @@ function addon:ClearKeywordSuggestions()
 	local settings = getSettings()
 	settings.queue = {}
 	if Suggestions.tracked then Suggestions.tracked = {}; Suggestions.trackedCount = 0 end
+	Suggestions.lastGlobalPruneAt = nil
+	Suggestions.lastGlobalPruneWindow = nil
+	Suggestions.lastCapacityPruneAt = nil
 	return true
 end

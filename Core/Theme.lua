@@ -875,9 +875,10 @@ local function resolveNamedScrollBarRegion(scrollBar, suffix)
 	return name and _G[name .. suffix] or nil
 end
 
--- Scrollbars are deliberately quieter than ordinary controls.  The eight-pixel
--- interaction lane has no painted rail or arrow caps; only a six-pixel thumb is
--- visible, using the current Colorway's accent and gold hover colors.
+-- Scrollbars are deliberately quieter than ordinary controls. The configured
+-- interaction lane has no painted rail or arrow caps; only its narrow thumb is
+-- visible, using the current Colorway's accent and gold hover colors. Callers
+-- may therefore provide a forgiving hit width without making the chrome wider.
 function Theme:ApplyScrollBar(scrollBar)
 	local style = scrollBar and self.scrollBars[scrollBar]
 	if not style then return end
@@ -981,16 +982,20 @@ function Theme:SkinScrollBar(scrollBar, options)
 	return scrollBar
 end
 
-function Theme:CreateSlimScrollbar(parent)
+function Theme:CreateSlimScrollbar(parent, options)
+	options = options or {}
+	local width = math.max(4, tonumber(options.width) or 8)
+	local thumbWidth = math.max(2, tonumber(options.thumbWidth) or 6)
+	local thumbHeight = math.max(8, tonumber(options.thumbHeight) or 28)
 	local scrollBar = CreateFrame("Slider", nil, parent)
 	scrollBar:SetOrientation("VERTICAL")
-	scrollBar:SetWidth(8)
+	scrollBar:SetWidth(width)
 	scrollBar:SetMinMaxValues(0, 0)
 	scrollBar:SetValueStep(1)
 	self:SkinScrollBar(scrollBar, {
-		width = 8,
-		thumbWidth = 6,
-		thumbHeight = 28,
+		width = width,
+		thumbWidth = thumbWidth,
+		thumbHeight = thumbHeight,
 		orientation = "VERTICAL",
 	})
 	return scrollBar

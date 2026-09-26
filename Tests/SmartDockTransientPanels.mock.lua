@@ -56,8 +56,8 @@ function dock.display:AtBottom() return (self.scrollOffset or 0) == 0 end
 function dock.display:GetCurrentScroll() return self.scrollOffset or 0 end
 function dock.display:SetScrollOffset(value) self.scrollOffset = value end
 function dock.display:ScrollToBottom() self.scrollOffset = 0 end
-dock.messageScrollbar = frame(8, 62)
-dock.scrollToBottomButton = frame(10, 16)
+dock.messageScrollbar = frame(16, 62)
+dock.scrollToBottomButton = frame(24, 20)
 dock.emptyState = frame()
 dock.alertBar = frame(356, 34)
 dock.playerActions = frame(356, 46)
@@ -87,16 +87,31 @@ local function refresh(label)
 end
 
 -- Baseline: the chat viewport owns its ordinary four-pixel inset, the slim
--- scrollbar retains its V-button lane, and the empty label follows the actual
+-- scrollbar retains its END-action lane, and the empty label follows the actual
 -- message viewport rather than the unreserved content panel.
 refresh("baseline")
 assert(offset(dock.display, "TOPLEFT") == -4 and offset(dock.display, "BOTTOMRIGHT") == 4,
 	"baseline message viewport insets changed")
 assert(offset(dock.messageScrollbar, "TOPRIGHT") == -4
-	and offset(dock.messageScrollbar, "BOTTOMRIGHT") == 24,
+	and offset(dock.messageScrollbar, "BOTTOMRIGHT") == 28,
 	"baseline slim-scrollbar lane changed")
 assert(offset(dock.scrollToBottomButton, "BOTTOMRIGHT") == 4,
 	"baseline jump-to-bottom inset changed")
+local displayRight = assert(pointFor(dock.display, "BOTTOMRIGHT"),
+	"message viewport lost its reserved right edge")
+local scrollRight = assert(pointFor(dock.messageScrollbar, "BOTTOMRIGHT"),
+	"scrollbar lost its reserved right edge")
+local bottomRight = assert(pointFor(dock.scrollToBottomButton, "BOTTOMRIGHT"),
+	"bottom action lost its reserved right edge")
+assert(displayRight[4] == -31 and scrollRight[4] == -7 and bottomRight[4] == -3,
+	"main-chat scroll controls lost their explicit border/text gutters")
+assert((math.abs(displayRight[4]) - (math.abs(bottomRight[4]) + dock.scrollToBottomButton:GetWidth())) == 4,
+	"END action no longer leaves four pixels between its hit target and chat text")
+assert((math.abs(displayRight[4]) - (math.abs(scrollRight[4]) + dock.messageScrollbar:GetWidth())) == 8,
+	"wide invisible thumb target crossed into the readable chat lane")
+assert(offset(dock.messageScrollbar, "BOTTOMRIGHT")
+	- (offset(dock.scrollToBottomButton, "BOTTOMRIGHT") + dock.scrollToBottomButton:GetHeight()) == 4,
+	"scrollbar and END action no longer retain their four-pixel vertical gutter")
 local _, emptyCenter = offset(dock.emptyState, "CENTER")
 assert(emptyCenter[2] == dock.display and (emptyCenter[3] == nil or emptyCenter[3] == "CENTER"),
 	"empty-state label is not centered in the readable message viewport")
@@ -152,7 +167,7 @@ assert(dock.analysisRecord == exactAnalysisRecord and dock.hoveredHyperlink == "
 	"alert dismissal damaged Shift analysis or hyperlink state")
 
 -- The player menu uses its live height: 46px in one row, 66px at narrow width.
--- The display, V button, and slim scrollbar all move together, so neither a
+-- The display, END action, and slim scrollbar all move together, so neither a
 -- clickable name menu nor a message control covers text at the minimum dock.
 dock.playerActionName = frame()
 dock.playerActionButtons = {}
@@ -163,7 +178,7 @@ assertInteractionState("wide player actions")
 assert(offset(dock.display, "BOTTOMRIGHT") == 52,
 	"wide player actions did not reserve their live row and message gutter")
 assert(offset(dock.scrollToBottomButton, "BOTTOMRIGHT") == 52
-	and offset(dock.messageScrollbar, "BOTTOMRIGHT") == 72,
+	and offset(dock.messageScrollbar, "BOTTOMRIGHT") == 76,
 	"bottom message controls still overlap the wide player-action row")
 
 dock.playerActions:SetHeight(66)
@@ -171,7 +186,7 @@ refresh("compact player actions")
 assert(offset(dock.display, "BOTTOMRIGHT") == 72,
 	"compact player actions did not reserve both rows and message gutter")
 assert(offset(dock.scrollToBottomButton, "BOTTOMRIGHT") == 72
-	and offset(dock.messageScrollbar, "BOTTOMRIGHT") == 92,
+	and offset(dock.messageScrollbar, "BOTTOMRIGHT") == 96,
 	"bottom message controls still overlap compact player actions")
 local panelTop = dock.content:GetHeight() - (2 + dock.playerActions:GetHeight())
 local displayBottom = dock.content:GetHeight() - offset(dock.display, "BOTTOMRIGHT")
@@ -184,7 +199,7 @@ dock.actionRecord = exactPlayerRecord
 dock:HidePlayerActions()
 assert(offset(dock.display, "BOTTOMRIGHT") == 4
 	and offset(dock.scrollToBottomButton, "BOTTOMRIGHT") == 4
-	and offset(dock.messageScrollbar, "BOTTOMRIGHT") == 24,
+	and offset(dock.messageScrollbar, "BOTTOMRIGHT") == 28,
 	"player-action dismissal did not restore bottom message bounds")
 assert(dock.actionRecord == nil and dock.analysisRecord == exactAnalysisRecord,
 	"closing player actions did not clear only its own linked record")

@@ -37,14 +37,17 @@ expect(archive.historyPage == 1 and archive.historyPageCount == 3
 	"newest archive page or concise pager label is wrong")
 
 shell.frame:SetSize(300, 160)
+shell:ApplyChromeLayout(true)
 local top = display.points[1]
 local right = display.points[2]
 local pagerPoint = shell.historyPrevious.points[1]
 local railPoint = shell.messageScrollbar.points[1]
-expect(top and top[1] == "TOPLEFT" and top[4] == 4 and top[5] == -22
-	and right and right[4] == -18 and railPoint and railPoint[5] == -22
-	and pagerPoint and pagerPoint[4] == 4 and pagerPoint[5] == -2
-	and shell.historyNext:GetWidth() == 20,
+expect(top and top[1] == "TOPLEFT" and top[4] == 4 and top[5] == -26
+	and right and right[4] == -26 and railPoint and railPoint[5] == -26
+	and pagerPoint and pagerPoint[4] == 4 and pagerPoint[5] == -3
+	and shell.historyPrevious.labelValue == "OLDER"
+	and shell.historyNext.labelValue == "NEWER"
+	and shell.historyNext:GetWidth() >= 42 and shell.newButton.labelValue == "LATEST",
 	"minimum Messenger did not reserve a border gutter, pager row, and scroll lane")
 
 display.currentScroll = 33
@@ -127,7 +130,7 @@ expect(archive.pendingVisible == 2 and shell.newButton:IsShown(),
 shell.newButton.scripts.OnClick()
 expect(archive.historyPage == 1 and archive.pendingVisible == 0
 	and archive.renderedIds[427] and archive.renderedIds[428]
-	and not shell.newButton:IsShown()
+	and shell.newButton:IsShown() and shell.newButton.labelValue == "LATEST"
 	and display.currentScroll == 0,
 	"NEW did not jump to the latest page and clear its marker")
 

@@ -84,20 +84,24 @@ local RAIL_MOUSE_WHEEL_STEP = 44
 local ALIGNMENT_SETTINGS_FULL_LABEL_MIN_CONTENT_WIDTH = 320
 local ALIGNMENT_SETTINGS_LABEL_PADDING = 8
 local ALIGNMENT_SETTINGS_CONTROL_GAP = 4
--- The message scroller is intentionally thumb-only.  Its eight-pixel hit lane
--- sits three pixels from both the outer edge and rendered text, so neither the
--- control nor its hit target touches a border or steals a wide chat column.
-local MESSAGE_SCROLLBAR_WIDTH = 8
+-- The message scroller is intentionally thumb-only. Its forgiving sixteen-
+-- pixel interaction lane paints only a six-pixel thumb. The separate END action
+-- is centered on the same visual axis, while a stable four-pixel gutter keeps
+-- both hit targets away from rendered text at every supported dock size.
+local MESSAGE_SCROLLBAR_HIT_WIDTH = 16
 local MESSAGE_SCROLLBAR_THUMB_WIDTH = 6
 local MESSAGE_SCROLLBAR_MIN_THUMB_HEIGHT = 18
 local MESSAGE_SCROLLBAR_RIGHT_INSET = 3
-local MESSAGE_SCROLLBAR_TEXT_GUTTER = 3
+local MESSAGE_SCROLLBAR_TEXT_GUTTER = 4
 local MESSAGE_SCROLLBAR_VERTICAL_INSET = 4
-local MESSAGE_SCROLL_TO_BOTTOM_WIDTH = 10
-local MESSAGE_SCROLL_TO_BOTTOM_HEIGHT = 16
+local MESSAGE_SCROLL_TO_BOTTOM_WIDTH = 24
+local MESSAGE_SCROLL_TO_BOTTOM_HEIGHT = 20
 local MESSAGE_SCROLL_TO_BOTTOM_GAP = 4
+local MESSAGE_SCROLL_TO_BOTTOM_LABEL = "END"
+local MESSAGE_SCROLLBAR_TRACK_RIGHT_INSET = MESSAGE_SCROLLBAR_RIGHT_INSET
+	+ math.floor((MESSAGE_SCROLL_TO_BOTTOM_WIDTH - MESSAGE_SCROLLBAR_HIT_WIDTH) / 2)
 local MESSAGE_SCROLLBAR_DISPLAY_INSET = MESSAGE_SCROLLBAR_RIGHT_INSET
-	+ math.max(MESSAGE_SCROLLBAR_WIDTH, MESSAGE_SCROLL_TO_BOTTOM_WIDTH)
+	+ math.max(MESSAGE_SCROLLBAR_HIT_WIDTH, MESSAGE_SCROLL_TO_BOTTOM_WIDTH)
 	+ MESSAGE_SCROLLBAR_TEXT_GUTTER
 -- The native chat frame holds at most 500 AddMessage entries. Show one bounded
 -- history page at a time, leaving room for new arrivals on the latest page.
@@ -1004,6 +1008,10 @@ function Dock:ScrollMessageDisplayToBottom()
 	return true
 end
 
+function Dock:GetScrollToBottomLabel()
+	return MESSAGE_SCROLL_TO_BOTTOM_LABEL
+end
+
 function Dock:RefreshMessageScrollbar()
 	local scrollBar = self.messageScrollbar
 	local display = self.display
@@ -1585,9 +1593,9 @@ function Dock:RefreshTransientMessageLayout(skipViewportRefresh)
 	end
 	if self.messageScrollbar then
 		self.messageScrollbar:ClearAllPoints()
-		self.messageScrollbar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+		self.messageScrollbar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_TRACK_RIGHT_INSET,
 			-topInset)
-		self.messageScrollbar:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+		self.messageScrollbar:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_TRACK_RIGHT_INSET,
 			bottomInset + MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP)
 	end
 	if self.scrollToBottomButton then
@@ -8762,10 +8770,13 @@ function Dock:Build()
 	self.historyLatestButton = latestButton
 	self:BindHeaderHover(historyPager)
 
-	local messageScrollbar = Theme:CreateSlimScrollbar(content)
-	messageScrollbar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+	local messageScrollbar = Theme:CreateSlimScrollbar(content, {
+		width = MESSAGE_SCROLLBAR_HIT_WIDTH,
+		thumbWidth = MESSAGE_SCROLLBAR_THUMB_WIDTH,
+	})
+	messageScrollbar:SetPoint("TOPRIGHT", content, "TOPRIGHT", -MESSAGE_SCROLLBAR_TRACK_RIGHT_INSET,
 		-MESSAGE_SCROLLBAR_VERTICAL_INSET)
-	messageScrollbar:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
+	messageScrollbar:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_TRACK_RIGHT_INSET,
 		MESSAGE_SCROLLBAR_VERTICAL_INSET + MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP)
 	messageScrollbar:EnableMouseWheel(true)
 	messageScrollbar:SetScript("OnValueChanged", function(_, value)
@@ -8783,8 +8794,8 @@ function Dock:Build()
 	self:BindHeaderHover(messageScrollbar)
 
 	-- Keep the jump affordance inside the dedicated right lane instead of
-	-- overlaying a readable or clickable message. The small V is the familiar
-	-- scrollbar-end cue; its full meaning is stated in the hover tooltip.
+	-- overlaying a readable or clickable message. END remains compact, but is
+	-- explicit and substantially easier to acquire than the former tiny V.
 	local scrollToBottom = CreateFrame("Button", nil, content)
 	scrollToBottom:SetSize(MESSAGE_SCROLL_TO_BOTTOM_WIDTH, MESSAGE_SCROLL_TO_BOTTOM_HEIGHT)
 	scrollToBottom:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
@@ -8793,7 +8804,7 @@ function Dock:Build()
 	local scrollToBottomGlyph = Theme:CreateText(scrollToBottom, "GameFontNormalSmall", "accent")
 	scrollToBottomGlyph:SetAllPoints(scrollToBottom)
 	scrollToBottomGlyph:SetJustifyH("CENTER")
-	scrollToBottomGlyph:SetText("V")
+	scrollToBottomGlyph:SetText(Dock:GetScrollToBottomLabel())
 	scrollToBottom:HookScript("OnEnter", function()
 		Theme:RegisterText(scrollToBottomGlyph, "goldBright")
 	end)
@@ -8807,8 +8818,8 @@ function Dock:Build()
 	self.scrollToBottomButton = scrollToBottom
 	self.scrollToBottomGlyph = scrollToBottomGlyph
 	self:BindHeaderHover(scrollToBottom)
-	self:BindDockControlTooltip(scrollToBottom, "Go to latest message",
-		"Jumps directly to the bottom of this tab and clears its new-message marker.")
+	self:BindDockControlTooltip(scrollToBottom, "Go to bottom",
+		"Jumps directly to the newest message in this tab and clears its new-message marker.")
 
 	-- Keep the typing lane part of the same dark surface as the message body.
 	-- The optional field treatment below is the only element that may add its

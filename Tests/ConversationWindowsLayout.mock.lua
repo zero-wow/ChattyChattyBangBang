@@ -384,8 +384,8 @@ window:ApplyChromeLayout(true)
 
 expect(window.header:IsShown(), "default inherited title should be visible")
 expect(window.actions:IsShown(), "default inherited actions should be visible")
-expect(window.actionToggle:IsShown() and window.actionToggle.labelValue == "-",
-	"Messenger should expose a separate compact action-strip control")
+expect(window.actionToggle:IsShown() and window.actionToggle.labelValue == "- ACTIONS",
+	"Messenger should label its separate action-strip control")
 expect(window.composer:IsShown(), "default inherited composer should be visible")
 expect(window.actions.parent == window.tabStrip, "actions must share the tab rail")
 expect(rawget(window.actions, "themedPanel") ~= true, "actions must not create a second boxed toolbar")
@@ -398,7 +398,7 @@ end
 window.actionToggle.scripts.OnClick()
 expect(settings.conversations.actionStripCollapsed == true and not window.actions:IsShown(),
 	"action-strip control did not collapse and persist the social buttons")
-expect(window.actionToggle.labelValue == "+", "collapsed action strip did not show an expand affordance")
+expect(window.actionToggle.labelValue == "+ ACTIONS", "collapsed action strip did not show a labeled expand affordance")
 window.actionToggle.scripts.OnClick()
 expect(settings.conversations.actionStripCollapsed == false and window.actions:IsShown(),
 	"action-strip control did not restore the social buttons")
@@ -826,9 +826,11 @@ settings.conversations.tabNameMaxLength = 14
 local longNameWindow = Manager:OpenForPlayer("abcdefghijklmnop", true)
 local longNameSession = longNameWindow:GetActiveSession()
 local longNameTab = longNameSession.tab
-expect(longNameTab.text:GetText() == "abcdefghijklm~"
+expect(string.sub(longNameTab.text:GetText(), -1) == "~"
+	and utf8MockLength(longNameTab.text:GetText()) <= 14
+	and longNameTab.labelMeasuredWidth <= longNameTab.labelAvailableWidth
 	and not string.find(longNameTab.text:GetText(), "%.%.%."),
-	"Messenger tab did not count its compact ~ marker inside the fourteen-character limit")
+	"Messenger tab did not fit its compact ~ marker within the fourteen-character budget")
 expect(longNameTab.tooltipTitle == "abcdefghijklmnop"
 	and longNameTab.tooltipBody == "~ marks a shortened name.",
 	"shortened Messenger tab did not expose its full player name and marker explanation")
@@ -964,7 +966,7 @@ for index = 1, #themedButtons do
 		"Messenger retained a +/- scroll button beside the slim scrollbar")
 end
 expect(window.scrollToBottomButton and window.scrollToBottomGlyph
-	and window.scrollToBottomGlyph:GetText() == "V",
+	and window.scrollToBottomGlyph:GetText() == "↓",
 	"Messenger slim scrollbar did not expose its separate bottom-jump affordance")
 
 local display = window.display
@@ -1130,21 +1132,22 @@ expect(display:GetNumMessages() == 1 and activeSession.renderedIds[1],
 	"Messenger hid a fresh message after Clear History reused an old ID")
 
 -- The minimum 300x160 shell must keep readable content clear of the 8px rail,
--- with an additional visible gutter before the 10px V hit target.
+-- with a visible gutter before the enlarged 16px bottom-jump hit target.
 window.frame:SetSize(300, 160)
 local displayRight = window.display.points[2]
 local scrollTop, scrollBottom = scrollBar.points[1], scrollBar.points[2]
 local bottomPoint = window.scrollToBottomButton.points[1]
-expect(displayRight and displayRight[1] == "BOTTOMRIGHT" and displayRight[4] == -18,
-	"minimum Messenger did not reserve its original eighteen-pixel scrollbar lane")
+expect(displayRight and displayRight[1] == "BOTTOMRIGHT" and displayRight[4] == -26,
+	"minimum Messenger did not reserve its enlarged scrollbar/bottom-control lane")
 expect(scrollTop and scrollTop[1] == "TOPRIGHT" and scrollTop[4] == -3 and scrollTop[5] == -4
 	and scrollBottom and scrollBottom[1] == "BOTTOMRIGHT" and scrollBottom[4] == -3
-	and scrollBottom[5] >= 18,
+	and scrollBottom[5] >= 26,
 	"Messenger slim thumb escaped its protected minimum-size right lane")
 expect(bottomPoint and bottomPoint[1] == "BOTTOMRIGHT" and bottomPoint[4] == -3
-	and bottomPoint[5] == 4 and window.scrollToBottomButton:GetWidth() == 10
-	and math.abs(displayRight[4]) - (math.abs(bottomPoint[4]) + window.scrollToBottomButton:GetWidth()) >= 4,
-	"Messenger V control overlaps text or the minimum-shell border gutter")
+	and bottomPoint[5] == 4 and window.scrollToBottomButton:GetWidth() == 16
+	and window.scrollToBottomButton:GetHeight() == 18
+	and math.abs(displayRight[4]) - (math.abs(bottomPoint[4]) + window.scrollToBottomButton:GetWidth()) >= 6,
+	"Messenger bottom control overlaps text or the minimum-shell border gutter")
 
 -- Background, border, text, and whole-window opacity are independent. The
 -- appearance pass must cover the live display and dynamic FontStrings, then

@@ -1639,6 +1639,11 @@ function Engine:LearnSource(record)
 		sourceGroup = "channels",
 		sourceLabel = sourceLabel,
 	}
+	local config = addon.CustomConfig
+	if config and config.messageViewsSection == "channels"
+		and type(config.RefreshChannelTabSuggestions) == "function" then
+		config:RefreshChannelTabSuggestions()
+	end
 end
 
 function Engine:EnsureSource(record)

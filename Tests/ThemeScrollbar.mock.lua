@@ -95,6 +95,18 @@ assert(scrollbar.valueStep == 1, "message scrollbar did not move in whole visual
 assert(scrollbar.ScrollUpButton == nil and scrollbar.ScrollDownButton == nil,
 	"new slim scrollbar recreated the stock arrow buttons")
 
+-- Smart Chat widens only the invisible Slider hit lane. The painted thumb must
+-- remain slim and centered by the native Slider implementation.
+local wideHitScrollbar = Theme:CreateSlimScrollbar(UIParent, {
+	width = 16,
+	thumbWidth = 6,
+})
+assert(wideHitScrollbar:GetWidth() == 16,
+	"custom slim scrollbar did not preserve its forgiving interaction width")
+assert(wideHitScrollbar:GetThumbTexture()
+	and wideHitScrollbar:GetThumbTexture().width == 6,
+	"widening the scrollbar hit lane also widened its visible thumb")
+
 local thumb = scrollbar:GetThumbTexture()
 local track = scrollbar._themeTrack
 assert(thumb and thumb == scrollbar:GetThumbTexture(),

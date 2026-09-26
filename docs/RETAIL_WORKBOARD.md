@@ -6,7 +6,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Current focus:** fix message loss, stale visibility, and whisper-safety state first. A green item means its code and focused local checks passed; it does **not** mean it was tested inside WoW. Purple is for work that cannot be considered locally complete until Zero validates it in-game.
 
-**Progress:** 37/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
+**Progress:** 44/100 locally verified; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
 ## Add — missing capabilities
 
@@ -19,7 +19,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | A05 | 🟢 | Readable Community chat now routes with stable club/stream source IDs, defaults to General, and preserves saved source choices; focused mocks pass. Lockdown fallback and in-game behavior remain unverified. |
 | A06 | 🟢 | Messenger distinguishes local failure, pending send, client echo, and no echo without claiming delivery; failed sends retain the draft. |
 | A07 | 🟢 | Messenger pages 200 records at a time, preserving per-tab scroll/drafts/NEW; 450-entry rollover and small-window mocks pass. |
-| A08 | 🔴 | Accept/ignore tab suggestion for newly learned channels. |
+| A08 | 🟢 | New Channels shows passively learned public/Community sources; Add Tab, Ignore, and deletion choices preserve existing views. Focused config/routing mocks pass. |
 | A09 | 🔴 | Search retained messages by text, sender, source, and date. |
 | A10 | 🔴 | Sender-history view from player actions. |
 | A11 | 🔴 | Bookmarks for retained messages. |
@@ -82,7 +82,7 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | I08 | 🔴 | Unify message visibility and unread-count membership logic. |
 | I09 | 🔴 | Batch route edits before retained-history reclassification. |
 | I10 | 🔴 | Coalesce rapid full-display redraws. |
-| I11 | 🔴 | Amortize keyword-suggestion cleanup. |
+| I11 | 🟢 | Periodic global cleanup avoids full sweeps on every line while the observed term keeps exact rolling expiry; focused threshold and sweep-count mocks pass. |
 | I12 | 🔴 | Prefer recently used learned channels at the 64-channel cap. |
 | I13 | 🔴 | Preserve route-decision provenance: “then” versus “now.” |
 | I14 | 🔴 | Add precise alert matching and a match preview. |
@@ -116,14 +116,14 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 | P12 | 🔴 | Let Start Here warnings/notes grow with copy. |
 | P13 | 🔴 | Size Start Here option rows to their content. |
 | P14 | 🔴 | Replace repeated explanatory prefixes with cleaner hierarchy. |
-| P15 | 🔴 | Clarify/enlarge Messenger's Go to Bottom control. |
+| P15 | 🟢 | Messenger's Go to Bottom arrow has a 16×18 target in its own 26px right lane; compact-window layout mocks pass. |
 | P16 | 🔴 | Add units and breathing room to sale-ad numeric settings. |
 | P17 | 🔴 | Label each colorway swatch's role. |
 | P18 | 🔴 | Reveal full colorway descriptions on hover. |
 | P19 | 🔴 | Use one selected-theme indicator, not ACTIVE plus CURRENT. |
 | P20 | 🔴 | Enlarge/clarify theme pager controls. |
-| P21 | 🔴 | Widen the invisible scrollbar drag target, not its visual thumb. |
-| P22 | 🔴 | Clarify/enlarge main chat's Go to Bottom control. |
-| P23 | 🔴 | Enlarge and separate Older/Newer/Latest history controls. |
+| P21 | 🟢 | Main chat's invisible scrollbar drag lane is 16px while its themed thumb stays 6px; bounds and theme mocks pass. |
+| P22 | 🟢 | Main chat's END action has a 24×20 target and a separate right lane; compact-layout mocks pass. |
+| P23 | 🟢 | Messenger's Older/Newer/Latest controls have larger targets and a reserved row that releases when unused; 300×160 layout mocks pass. |
 | P24 | 🔴 | Give alert text and dismiss control a stronger border gutter. |
-| P25 | 🔴 | Space and label Messenger tab/action controls more clearly. |
+| P25 | 🟢 | Messenger tabs, action buttons, pager, close controls, and ACT/ACTIONS toggle have explicit gutters and tooltips; compact-layout mocks pass. |

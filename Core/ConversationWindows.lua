@@ -25,8 +25,10 @@ local MESSAGE_SCROLLBAR_RIGHT_INSET = 3
 local MESSAGE_SCROLLBAR_VERTICAL_INSET = 4
 local MESSAGE_SCROLLBAR_THUMB_WIDTH = 6
 local MESSAGE_SCROLLBAR_MIN_THUMB_HEIGHT = 18
-local MESSAGE_SCROLL_TO_BOTTOM_WIDTH = 10
-local MESSAGE_SCROLL_TO_BOTTOM_HEIGHT = 14
+local MESSAGE_VIEW_RIGHT_INSET = 26
+local MESSAGE_HISTORY_TOP_INSET = 26
+local MESSAGE_SCROLL_TO_BOTTOM_WIDTH = 16
+local MESSAGE_SCROLL_TO_BOTTOM_HEIGHT = 18
 local MESSAGE_SCROLL_TO_BOTTOM_GAP = 4
 local TAB_NAME_DEFAULT_LENGTH = 14
 local TAB_NAME_MIN_LENGTH = 4
@@ -38,6 +40,14 @@ local TAB_TEXT_CONTROL_GAP = 2
 local TAB_CLOSE_WIDTH = 11
 local TAB_CLOSE_RIGHT_INSET = 2
 local TAB_BADGE_RIGHT_INSET = 16
+local TAB_ITEM_GAP = 3
+local TAB_GROUP_GAP = 4
+local ACTION_BUTTON_GAP = 3
+
+local function actionToggleLabel(collapsed, stripWidth)
+	local prefix = collapsed and "+ " or "- "
+	return prefix .. (stripWidth < 340 and "ACT" or "ACTIONS")
+end
 
 local whisperEvents = {
 	CHAT_MSG_WHISPER = true,
@@ -462,8 +472,12 @@ end
 
 local function addTooltip(button, text)
 	button._tooltipText = text
+	if button.SetTooltip then
+		button:SetTooltip(text)
+		return
+	end
 	button:HookScript("OnEnter", function(self)
-		if not self.usesIcon or not GameTooltip then
+		if not GameTooltip then
 			return
 		end
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
@@ -566,12 +580,26 @@ end
 
 function Window:UpdateNewButton()
 	local session = self:GetActiveSession()
-	if not session or not session.pendingVisible or session.pendingVisible < 1 then
+	local pending = session and math.max(0, tonumber(session.pendingVisible) or 0) or 0
+	local hasPages = session and (session.historyPageCount or 1) > 1
+	if pending < 1 and not hasPages then
 		self.newButton:Hide()
+		self:RefreshHistoryPager(session)
 		return
 	end
-	setTightButtonLabel(self.newButton, tostring(session.pendingVisible) .. " NEW")
+	local label
+	if hasPages then
+		label = pending > 0 and ("LATEST " .. (pending > 99 and "99+" or tostring(pending))) or "LATEST"
+	else
+		label = tostring(pending) .. " NEW"
+	end
+	setTightButtonLabel(self.newButton, label)
+	if self.newButton.SetTooltip then
+		self.newButton:SetTooltip("Go to latest whisper", pending > 0
+			and (tostring(pending) .. " new " .. (pending == 1 and "message" or "messages")) or nil)
+	end
 	self.newButton:Show()
+	self:RefreshHistoryPager(session)
 end
 
 function Window:SaveReaderPosition(session)
@@ -585,20 +613,48 @@ function Window:RefreshHistoryPager(session)
 	if not self.historyPrevious then return end
 	local pageCount = session and session.historyPageCount or 1
 	local visible = pageCount > 1
-	if self.historyPagerVisible ~= visible then
-		self.historyPagerVisible = visible
+	local rowVisible = visible or (session ~= nil and (tonumber(session.pendingVisible) or 0) > 0)
+	if self.historyPagerVisible ~= rowVisible then
+		self.historyPagerVisible = rowVisible
 		self.display:ClearAllPoints()
-		self.display:SetPoint("TOPLEFT", self.content, "TOPLEFT", 4, visible and -22 or -4)
-		self.display:SetPoint("BOTTOMRIGHT", self.content, "BOTTOMRIGHT", -18, 4)
+		self.display:SetPoint("TOPLEFT", self.content, "TOPLEFT", 4,
+			rowVisible and -MESSAGE_HISTORY_TOP_INSET or -4)
+		self.display:SetPoint("BOTTOMRIGHT", self.content, "BOTTOMRIGHT", -MESSAGE_VIEW_RIGHT_INSET, 4)
 		self.messageScrollbar:ClearAllPoints()
 		self.messageScrollbar:SetPoint("TOPRIGHT", self.content, "TOPRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
-			visible and -22 or -MESSAGE_SCROLLBAR_VERTICAL_INSET)
+			rowVisible and -MESSAGE_HISTORY_TOP_INSET or -MESSAGE_SCROLLBAR_VERTICAL_INSET)
 		self.messageScrollbar:SetPoint("BOTTOMRIGHT", self.content, "BOTTOMRIGHT", -MESSAGE_SCROLLBAR_RIGHT_INSET,
 			MESSAGE_SCROLLBAR_VERTICAL_INSET + MESSAGE_SCROLL_TO_BOTTOM_HEIGHT + MESSAGE_SCROLL_TO_BOTTOM_GAP)
 	end
 	if visible then
 		local page = session.historyPage or 1
 		self.historyLabel:SetText(page .. "/" .. pageCount)
+		setTightButtonLabel(self.historyPrevious, "OLDER")
+		setTightButtonLabel(self.historyNext, "NEWER")
+		self.historyPrevious:SetWidth(math.max(42, self.historyPrevious:GetWidth()))
+		self.historyNext:SetWidth(math.max(42, self.historyNext:GetWidth()))
+		local state = self.visibilityState or self:GetVisibilityState()
+		local sideInset = state.actions and not state.actionsCollapsed
+			and state.actionOrientation == "vertical" and ((tonumber(self.actionWidth) or 24) + 3) or 0
+		local contentWidth = math.max(1, (self.frame:GetWidth() or 300) - 4 - sideInset)
+		local leftEdge = 4 + self.historyPrevious:GetWidth() + 4 + self.historyLabel:GetWidth()
+			+ 4 + self.historyNext:GetWidth()
+		local latestLeft = contentWidth - 28 - (self.newButton:IsShown() and self.newButton:GetWidth() or 0)
+		if leftEdge + 6 > latestLeft then
+			setTightButtonLabel(self.historyPrevious, "<")
+			setTightButtonLabel(self.historyNext, ">")
+			self.historyPrevious:SetWidth(26)
+			self.historyNext:SetWidth(26)
+			leftEdge = 4 + self.historyPrevious:GetWidth() + 4 + self.historyLabel:GetWidth()
+				+ 4 + self.historyNext:GetWidth()
+			if leftEdge + 6 > latestLeft then
+				setTightButtonLabel(self.newButton, "LATEST")
+				latestLeft = contentWidth - 28 - self.newButton:GetWidth()
+				if leftEdge + 6 > latestLeft then
+					setTightButtonLabel(self.newButton, "GO")
+				end
+			end
+		end
 		self.historyPrevious:SetAlpha(page < pageCount and 1 or 0.45)
 		self.historyNext:SetAlpha(page > 1 and 1 or 0.45)
 		self.historyPrevious:Show()
@@ -668,6 +724,7 @@ function Window:SetMessageScrollbarOffset(value)
 		or tonumber(self.messageScrollMaximum) or 0))
 	local sliderValue = math.max(0, math.min(maximum, math.floor((tonumber(value) or 0) + 0.5)))
 	setMessengerDisplayScrollOffset(display, maximum - sliderValue)
+	local previousRow = self.historyPagerVisible
 	local session = self:GetActiveSession()
 	if session and (session.historyPage or 1) == 1 and not session.pendingOutsideSnapshot
 		and (maximum - sliderValue == 0 or (display.AtBottom and display:AtBottom())) then
@@ -675,7 +732,7 @@ function Window:SetMessageScrollbarOffset(value)
 		session.pendingIds = {}
 		self:UpdateNewButton()
 	end
-	self:RefreshMessageScrollbar(false)
+	self:RefreshMessageScrollbar(previousRow ~= self.historyPagerVisible)
 	return true
 end
 
@@ -696,7 +753,7 @@ function Window:ScrollMessageDisplayToBottom()
 		self:SaveReaderPosition(session)
 	end
 	self:UpdateNewButton()
-	self:RefreshMessageScrollbar(false)
+	self:RefreshMessageScrollbar(true)
 	return true
 end
 
@@ -930,8 +987,8 @@ function Window:AddRecord(record, suppressScrollNotice)
 		session.pendingIds = session.pendingIds or {}
 		session.pendingIds[record.id] = true
 		session.pendingVisible = session.pendingVisible + 1
-		self:UpdateNewButton()
 	end
+	self:UpdateNewButton()
 	self:RefreshMessageScrollbar(true)
 end
 
@@ -1166,7 +1223,8 @@ function Window:ApplyChromeLayout(force)
 	if self.actionToggle then
 		if state.actions then
 			self.actionToggle:Show()
-			self.actionToggle:SetLabel(state.actionsCollapsed and "+" or "-")
+			setTightButtonLabel(self.actionToggle,
+				actionToggleLabel(state.actionsCollapsed, sizingWidth - sideInset))
 			if self.actionToggle.SetTooltip then
 				self.actionToggle:SetTooltip("Player actions", state.actionMode == "collapsed"
 					and "Temporarily show or hide Reply, Invite, Friend, Mute, and Block. This policy always starts collapsed."
@@ -1208,6 +1266,7 @@ function Window:ApplyChromeLayout(force)
 		self.grip:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -2 - sideInset, -1)
 	end
 
+	self:UpdateNewButton()
 	self:RefreshTabs()
 	self:RefreshAppearance()
 end
@@ -1499,6 +1558,7 @@ function Window:CreateTab(session)
 	close:SetScript("OnClick", function()
 		Manager:Close(session.playerKey)
 	end)
+	addTooltip(close, "Close conversation tab")
 	tab.close = close
 
 	tab:SetScript("OnClick", function()
@@ -1641,9 +1701,9 @@ function Window:RefreshActionButtonSizing(state, stripWidth)
 			required = required + 18
 		end
 		if self.actionToggle then
-			required = required + (self.actionToggle:GetWidth() or 18) + 3
+			required = required + (self.actionToggle:GetWidth() or 18) + TAB_GROUP_GAP
 		end
-		required = required + (tonumber(self.actionWidth) or 0) + 3
+		required = required + (tonumber(self.actionWidth) or 0) + TAB_GROUP_GAP
 		compact = stripWidth < required
 		if compact then
 			self:UpdateActionButtons(true, orientation)
@@ -1672,6 +1732,9 @@ function Window:RefreshTabs()
 	end
 	local state = self.visibilityState or self:GetVisibilityState()
 	local actionsExpanded = state.actions and not state.actionsCollapsed
+	if state.actions and self.actionToggle then
+		setTightButtonLabel(self.actionToggle, actionToggleLabel(state.actionsCollapsed, stripWidth))
+	end
 	self:RefreshActionButtonSizing(state, stripWidth)
 	local closeOnStrip = not state.title
 	local rightReserve = 2
@@ -1684,15 +1747,15 @@ function Window:RefreshTabs()
 	end
 	if state.actions and self.actionToggle then
 		self.actionToggle:ClearAllPoints()
-		self.actionToggle:SetPoint("RIGHT", rightAnchor, rightAnchorPoint, -3, 0)
-		rightReserve = rightReserve + (self.actionToggle:GetWidth() or 18) + 3
+		self.actionToggle:SetPoint("RIGHT", rightAnchor, rightAnchorPoint, -TAB_GROUP_GAP, 0)
+		rightReserve = rightReserve + (self.actionToggle:GetWidth() or 18) + TAB_GROUP_GAP
 		rightAnchor = self.actionToggle
 		rightAnchorPoint = "LEFT"
 	end
 	if actionsExpanded and state.actionOrientation == "horizontal" then
 		self.actions:ClearAllPoints()
-		self.actions:SetPoint("RIGHT", rightAnchor, rightAnchorPoint, -3, 0)
-		rightReserve = rightReserve + (tonumber(self.actionWidth) or 0) + 3
+		self.actions:SetPoint("RIGHT", rightAnchor, rightAnchorPoint, -TAB_GROUP_GAP, 0)
+		rightReserve = rightReserve + (tonumber(self.actionWidth) or 0) + TAB_GROUP_GAP
 		rightAnchor = self.actions
 		rightAnchorPoint = "LEFT"
 	end
@@ -1709,7 +1772,7 @@ function Window:RefreshTabs()
 	for index = 1, #order do
 		local session = Manager.sessionsByKey[order[index]]
 		if session and session.tab then
-			total = total + session.tab:GetWidth() + 2
+			total = total + session.tab:GetWidth() + TAB_ITEM_GAP
 		end
 	end
 
@@ -1739,7 +1802,7 @@ function Window:RefreshTabs()
 				local naturalWidth = tonumber(tab.naturalWidth) or tab:GetWidth()
 				local minimumWidth = math.min(available,
 					tonumber(tab.minimumWidth) or TAB_MINIMUM_WIDTH)
-				local leadingGap = previous and 2 or 0
+				local leadingGap = previous and TAB_ITEM_GAP or 0
 				local remaining = math.max(0, available - used - leadingGap)
 				local fittedWidth = math.min(naturalWidth, remaining)
 				local nextWidth = fittedWidth + leadingGap
@@ -1749,7 +1812,7 @@ function Window:RefreshTabs()
 					self:FitTabLabel(session, tab, appliedWidth, maximumLength, marker)
 					tab:ClearAllPoints()
 					if previous then
-						tab:SetPoint("LEFT", previous, "RIGHT", 2, 0)
+						tab:SetPoint("LEFT", previous, "RIGHT", TAB_ITEM_GAP, 0)
 					else
 						tab:SetPoint("LEFT", self.tabStrip, "LEFT", controlsVisible and 20 or 2, 0)
 					end
@@ -1800,6 +1863,7 @@ function Window:UpdateActionButtons(forceIcons, orientation)
 		button._tooltipText = isBnet and index > 1
 			and "Manage this Battle.net contact in the game's Friends UI."
 			or definition.tooltip
+		if button.SetTooltip then button:SetTooltip(button._tooltipText) end
 		button.usesIcon = useIcons
 		if useIcons then
 			button:SetWidth(20)
@@ -1818,7 +1882,7 @@ function Window:UpdateActionButtons(forceIcons, orientation)
 		if orientation == "horizontal" then
 			totalWidth = totalWidth + buttonWidth
 			if index > 1 then
-				totalWidth = totalWidth + 2
+				totalWidth = totalWidth + ACTION_BUTTON_GAP
 			end
 		else
 			totalHeight = totalHeight + buttonHeight
@@ -1840,7 +1904,7 @@ function Window:UpdateActionButtons(forceIcons, orientation)
 				button:SetPoint("TOP", self.actions, "TOP", 0, -4)
 			end
 		elseif previous then
-			button:SetPoint("LEFT", previous, "RIGHT", 2, 0)
+			button:SetPoint("LEFT", previous, "RIGHT", ACTION_BUTTON_GAP, 0)
 		else
 			button:SetPoint("LEFT", self.actions, "LEFT", 2, 0)
 		end
@@ -1975,6 +2039,7 @@ function Manager:BuildWindow()
 		-- next whisper.  Individual tab x buttons close one conversation.
 		window:Hide()
 	end)
+	addTooltip(close, "Hide Messenger; keep conversation tabs")
 	window.close = close
 
 	local tabStrip = Theme:CreatePanel(frame, "surface", "borderMuted")
@@ -1996,23 +2061,26 @@ function Manager:BuildWindow()
 	end)
 
 	local tabPrevious = Theme:CreateTightButton(tabStrip, "<", 16, false)
+	tabPrevious:SetWidth(18)
 	tabPrevious:SetPoint("LEFT", tabStrip, "LEFT", 2, 0)
 	tabPrevious:SetScript("OnClick", function()
 		window:MoveTabOffset(-1)
 	end)
+	if tabPrevious.SetTooltip then tabPrevious:SetTooltip("Previous conversation tab") end
 	window.tabPrevious = tabPrevious
 
 	local tabNext = Theme:CreateTightButton(tabStrip, ">", 16, false)
+	tabNext:SetWidth(18)
 	tabNext:SetPoint("RIGHT", tabStrip, "RIGHT", -2, 0)
 	tabNext:SetScript("OnClick", function()
 		window:MoveTabOffset(1)
 	end)
+	if tabNext.SetTooltip then tabNext:SetTooltip("Next conversation tab") end
 	window.tabNext = tabNext
 
 	-- This is deliberately separate from the < / > tab pager. It is always a
 	-- compact, obvious control for the selected player's social-action strip.
-	local actionToggle = Theme:CreateTightButton(tabStrip, "+", 18, false)
-	actionToggle:SetWidth(18)
+	local actionToggle = Theme:CreateTightButton(tabStrip, "+ ACT", 18, false)
 	actionToggle:SetScript("OnClick", function()
 		window:ToggleActionStrip()
 	end)
@@ -2132,7 +2200,7 @@ function Manager:BuildWindow()
 
 	local display = CreateFrame("ScrollingMessageFrame", nil, content)
 	display:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -4)
-	display:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -18, 4)
+	display:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -MESSAGE_VIEW_RIGHT_INSET, 4)
 	display:SetFontObject(ChatFontNormal)
 	display:SetJustifyH("LEFT")
 	display:SetFading(false)
@@ -2156,7 +2224,7 @@ function Manager:BuildWindow()
 				window:UpdateNewButton()
 			end
 		end
-		window:RefreshMessageScrollbar(false)
+		window:RefreshMessageScrollbar(true)
 	end)
 	display:SetScript("OnHyperlinkClick", function(_, link, text, button)
 		if ChatFrame_OnHyperlinkShow then
@@ -2204,7 +2272,7 @@ function Manager:BuildWindow()
 				window:UpdateNewButton()
 			end
 		end
-		window:RefreshMessageScrollbar(false)
+		window:RefreshMessageScrollbar(true)
 	end)
 	window.messageScrollbar = messageScrollbar
 
@@ -2215,7 +2283,7 @@ function Manager:BuildWindow()
 	local scrollToBottomGlyph = Theme:CreateText(scrollToBottom, "GameFontNormalSmall", "accent")
 	scrollToBottomGlyph:SetAllPoints(scrollToBottom)
 	scrollToBottomGlyph:SetJustifyH("CENTER")
-	scrollToBottomGlyph:SetText("V")
+	scrollToBottomGlyph:SetText("↓")
 	scrollToBottom:HookScript("OnEnter", function()
 		Theme:RegisterText(scrollToBottomGlyph, "goldBright")
 	end)
@@ -2225,24 +2293,24 @@ function Manager:BuildWindow()
 	scrollToBottom:SetScript("OnClick", function()
 		window:ScrollMessageDisplayToBottom()
 	end)
-	addTooltip(scrollToBottom, "Go to the latest whisper")
+	addTooltip(scrollToBottom, "Go to bottom (latest whisper)")
 	scrollToBottom:Hide()
 	window.scrollToBottomButton = scrollToBottom
 	window.scrollToBottomGlyph = scrollToBottomGlyph
 
 	local newButton = Theme:CreateTightButton(content, "NEW", 16, true)
-	newButton:SetPoint("TOPRIGHT", content, "TOPRIGHT", -20, -2)
+	newButton:SetPoint("TOPRIGHT", content, "TOPRIGHT", -28, -3)
 	newButton:SetScript("OnClick", function()
 		window:ScrollMessageDisplayToBottom()
 	end)
 	newButton:Hide()
 	window.newButton = newButton
 
-	-- Only multi-page history consumes this eighteen-pixel row. The message
-	-- surface and thumb start below it, leaving a visible gutter at 300x160.
-	local historyPrevious = Theme:CreateTightButton(content, "<", 16, false)
-	historyPrevious:SetWidth(20)
-	historyPrevious:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -2)
+	-- The history/NEW row claims its own height only while needed. At 300x160,
+	-- message text and the thumb start below the eighteen-pixel hit targets.
+	local historyPrevious = Theme:CreateTightButton(content, "OLDER", 18, false)
+	historyPrevious:SetWidth(42)
+	historyPrevious:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -3)
 	historyPrevious:SetScript("OnClick", function() window:ChangeHistoryPage(1) end)
 	addTooltip(historyPrevious, "Older whispers")
 	historyPrevious:Hide()
@@ -2250,20 +2318,21 @@ function Manager:BuildWindow()
 
 	local historyLabel = Theme:CreateText(content, "GameFontNormalSmall", "textMuted")
 	historyLabel:SetWidth(40)
-	historyLabel:SetHeight(16)
+	historyLabel:SetHeight(18)
 	historyLabel:SetPoint("LEFT", historyPrevious, "RIGHT", 4, 0)
 	historyLabel:SetJustifyH("CENTER")
 	historyLabel:Hide()
 	window.historyLabel = historyLabel
 
-	local historyNext = Theme:CreateTightButton(content, ">", 16, false)
-	historyNext:SetWidth(20)
+	local historyNext = Theme:CreateTightButton(content, "NEWER", 18, false)
+	historyNext:SetWidth(42)
 	historyNext:SetPoint("LEFT", historyLabel, "RIGHT", 4, 0)
 	historyNext:SetScript("OnClick", function() window:ChangeHistoryPage(-1) end)
 	addTooltip(historyNext, "Newer whispers")
 	historyNext:Hide()
 	window.historyNext = historyNext
 	content:SetScript("OnSizeChanged", function()
+		window:UpdateNewButton()
 		window:RefreshMessageScrollbar(true)
 	end)
 

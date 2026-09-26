@@ -101,6 +101,29 @@ engine:PruneTracked(100, 10)
 local rolling = engine.tracked.rollingstone
 assert(rolling and rolling.count == 1 and rolling.distinctSenders == 1, "rolling window retained expired message/sender counts")
 
+-- Busy public chat should not sweep every tracked term on each line. The term
+-- being observed still expires its own old occurrences before counting this
+-- line, even between global sweeps.
+addon:ClearKeywordSuggestions()
+addon:GetSmartSettings().keywordSuggestions.window = 60
+engine:ResetForProfile()
+local originalPrune = engine.PruneTracked
+local fullSweeps = 0
+function engine:PruneTracked(...)
+	fullSweeps = fullSweeps + 1
+	return originalPrune(self, ...)
+end
+for tick = 1, 10 do
+	engine:Observe(record("Windowforge M" .. tick, tick % 2 == 0 and "Beta" or "Alpha", tick))
+end
+assert(fullSweeps == 1, "keyword tracker still swept every term on every public line")
+engine:Observe(record("Neutralforge M55", "Beta", 55))
+local sweepsBefore = fullSweeps
+engine:Observe(record("Windowforge M62", "Beta", 62))
+assert(fullSweeps == sweepsBefore and engine.tracked.windowforge.count == 10,
+	"observed term kept expired messages or forced an unnecessary global sweep")
+engine.PruneTracked = originalPrune
+
 -- Private and guild delivery is deliberately excluded before any sample can
 -- enter the persisted report queue. Party/raid remains eligible group chat.
 addon:ClearKeywordSuggestions()

@@ -992,15 +992,48 @@ assert(config.railSourcePrevious:IsShown() == false and config.railSourceNext:Is
 assert(config.viewEditorTitle:GetText() == "GENERAL",
 	"sticky inspector header included editing instructions instead of only the selected name")
 assert(config.messageViewsSourcesButton.text:GetText() == "CONTENTS"
-	and config.messageViewsDetailsButton.text:GetText() == "LABEL & RULES"
-	and config.messageViewsTextButton.text:GetText() == "TEXT",
-	"message-view inspector lost its three user-goal panes")
+	and config.messageViewsDetailsButton.text:GetText() == "RULES"
+	and config.messageViewsTextButton.text:GetText() == "TEXT"
+	and config.messageViewsChannelsButton.text:GetText() == "CHANNELS",
+	"message-view inspector lost its four user-goal panes")
 local activeMessageViewTab = config.messageViewsSection == "sources" and config.messageViewsSourcesButton
 	or (config.messageViewsSection == "text" and config.messageViewsTextButton)
 	or config.messageViewsDetailsButton
 assert(config.messageViewsSourcesButton._configTab and config.messageViewsDetailsButton._configTab
-	and config.messageViewsTextButton._configTab and activeMessageViewTab._configTabSelected,
+	and config.messageViewsTextButton._configTab and config.messageViewsChannelsButton._configTab
+	and activeMessageViewTab._configTabSelected,
 	"message-view pane navigation still looks like unrelated action buttons")
+assert(config.messageViewsSourcesButton.width + config.messageViewsDetailsButton.width
+	+ config.messageViewsTextButton.width + config.messageViewsChannelsButton.width + (3 * 6) <= 416,
+	"four tab labels overran the compact inspector under the partner's wide-font metrics")
+local originalChannelTabSuggestions = addon.GetChannelTabSuggestions
+addon.GetChannelTabSuggestions = function()
+	return {
+		{ sourceId = "channel:craftinghub", label = "CraftingHub", state = "new" },
+		{ sourceId = "community:111:3", label = "Community 111 / 3", state = "ignored" },
+	}
+end
+config:SetMessageViewsSection("channels", true)
+assert(config.messageViewsChannelsPane:IsShown() and not config.messageViewsDetailsPane:IsShown()
+	and config.messageViewsChannelsButton._configTabSelected
+	and config.channelTabRows[1].label:GetText() == "CraftingHub"
+	and config.channelTabRows[1].ignoreButton:IsShown()
+	and not config.channelTabRows[2].ignoreButton:IsShown(),
+	"new channel suggestions did not show explicit Add tab / Ignore choices")
+assert(config.channelTabRows[1].label.width == 248
+	and config.channelTabRows[1].addButton.point[4] - config.channelTabRows[1].label.width >= 6
+	and config.channelTabRows[1].addButton.point[4] + 68 + 8 + 58 <= 398 - 6
+	and config.channelTabRows[1].ignoreButton.point[4] == 8
+	and config.channelTabRows[6].point[5] == -254,
+	"channel suggestion labels or controls lost their gutters or bounded row spacing")
+local clickedChannel
+local originalChannelTabAccept = config.AcceptChannelTabSuggestion
+config.AcceptChannelTabSuggestion = function(_, sourceId) clickedChannel = sourceId end
+config.channelTabRows[1].addButton.scripts.OnClick()
+assert(clickedChannel == "channel:craftinghub", "Add tab did not require an explicit click")
+config.AcceptChannelTabSuggestion = originalChannelTabAccept
+addon.GetChannelTabSuggestions = originalChannelTabSuggestions
+config:SetMessageViewsSection("details", true)
 assert(config.viewNameEdit.parent == config.messageViewsDetailsPane
 	and config.viewKeyEdit.parent == config.messageViewsDetailsPane,
 	"label fields leaked out of LABEL & RULES into the sticky inspector header")

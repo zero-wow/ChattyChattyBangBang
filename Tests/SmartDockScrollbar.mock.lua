@@ -19,6 +19,9 @@ dofile("Core/SmartDock.lua")
 local addon = ChattyChattyBangBang
 local dock = addon.SmartDock
 
+assert(dock:GetScrollToBottomLabel() == "END",
+	"main-chat bottom affordance did not replace the ambiguous V with an explicit label")
+
 local display = {
 	width = 400,
 	height = 40,
@@ -148,7 +151,7 @@ assert(bar.value == 16,
 assert(not bottom:IsShown(),
 	"scroll-to-bottom affordance remained visible after reaching the bottom")
 
--- With no overflow the eight-pixel layout lane may remain reserved to prevent
+-- With no overflow the stable right-side layout lane may remain reserved to prevent
 -- rewrap jitter, but the thumb and its hit target must disappear.
 dock.displayRecords = {
 	{ record = { id = 1 }, lines = 1 },

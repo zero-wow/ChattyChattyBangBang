@@ -308,6 +308,9 @@ local defaults = {
 	-- a default feed from that view.
 	viewOptions = {},
 	learnedSources = {},
+	-- A learned channel never creates a tab by itself. Keep the player's
+	-- explicit Add tab / Ignore decision separate from source discovery.
+	channelTabDecisions = {},
 	-- Exact public-channel routing corrections made from Shift > ANALYZE. Keys
 	-- are lower-cased, whitespace-collapsed public message text; this is never
 	-- consulted for whispers, Battle.net, local UI feedback, or add-on traffic.
@@ -3142,6 +3145,13 @@ function addon:DeleteCustomView(id)
 		if customViews[index].id == id then
 			table.remove(customViews, index)
 			settings.views[id] = nil
+			-- Deleting a tab created from a channel suggestion is an explicit
+			-- decision too. Do not immediately nag the player to add it again.
+			if type(settings.channelTabDecisions) == "table" then
+				for sourceId, decision in pairs(settings.channelTabDecisions) do
+					if decision == id then settings.channelTabDecisions[sourceId] = "ignored" end
+				end
+			end
 			if type(settings.viewOptions) == "table" then
 				settings.viewOptions[id] = nil
 			end
@@ -4068,6 +4078,119 @@ function addon:GetSmartSettings()
 	end
 	refreshSyncRoutingCache(self, profile.smartChat)
 	return profile.smartChat
+end
+
+local knownChannelTabSources = {
+	["channel:general"] = true,
+	["channel:zone"] = true,
+	["channel:world"] = true,
+	["channel:newcomers"] = true,
+	["channel:ascension"] = true,
+}
+
+local function isChannelTabCandidate(settings, sourceId)
+	if type(sourceId) ~= "string" or not (string.match(sourceId, "^channel:[%w%-]+$")
+		or string.match(sourceId, "^community:%d+:%d+$")) then
+		return false
+	end
+	if knownChannelTabSources[sourceId] or sourceHomeViewById[sourceId] then
+		return false
+	end
+	-- Purpose-built channels already have a factual home. Only an unfamiliar
+	-- General-family channel or a stable Community stream needs a suggestion.
+	return getDefaultSourceHome(settings, sourceId, "channels") == "general"
+end
+
+local function findCustomSourceView(settings, sourceId, customViews)
+	for index = 1, #customViews do
+		local view = customViews[index]
+		local options = getViewOptions(settings, view.id, false)
+		if options and type(options.sources) == "table" and options.sources[sourceId] == true then
+			return view.id
+		end
+	end
+	return nil
+end
+
+-- Discovery is passive: no routing or tab state changes until the player uses
+-- one of the explicit actions in Views & Tabs > New Channels. Existing
+-- source-fed custom tabs are recognized so migrations never suggest a duplicate.
+function addon:GetChannelTabSuggestions()
+	local settings = self:GetSmartSettings()
+	local learned = type(settings.learnedSources) == "table" and settings.learnedSources or {}
+	local decisions = type(settings.channelTabDecisions) == "table" and settings.channelTabDecisions or {}
+	local customViews = normalizeStoredCustomViews(settings)
+	local suggestions = {}
+	for sourceId, definition in pairs(learned) do
+		if isChannelTabCandidate(settings, sourceId) and type(definition) == "table" then
+			local label = trim(definition.sourceLabel or definition.label, 80)
+			if label ~= "" then
+				local linkedView = findCustomSourceView(settings, sourceId, customViews)
+				local choice = decisions[sourceId]
+				local state = linkedView and "added" or (choice == "ignored" and "ignored" or "new")
+				table.insert(suggestions, {
+					sourceId = sourceId,
+					label = label,
+					state = state,
+					viewId = linkedView,
+				})
+			end
+		end
+	end
+	table.sort(suggestions, function(left, right)
+		local rank = { new = 1, ignored = 2, added = 3 }
+		if rank[left.state] ~= rank[right.state] then
+			return rank[left.state] < rank[right.state]
+		end
+		if left.label ~= right.label then return left.label < right.label end
+		return left.sourceId < right.sourceId
+	end)
+	return suggestions
+end
+
+function addon:IgnoreChannelTabSuggestion(sourceId)
+	local settings = self:GetSmartSettings()
+	if not isChannelTabCandidate(settings, sourceId)
+		or type(settings.learnedSources) ~= "table"
+		or type(settings.learnedSources[sourceId]) ~= "table" then
+		return false, "not-found"
+	end
+	if findCustomSourceView(settings, sourceId, normalizeStoredCustomViews(settings)) then
+		return false, "already-added"
+	end
+	if type(settings.channelTabDecisions) ~= "table" then settings.channelTabDecisions = {} end
+	settings.channelTabDecisions[sourceId] = "ignored"
+	return true
+end
+
+function addon:AcceptChannelTabSuggestion(sourceId)
+	local settings = self:GetSmartSettings()
+	local learned = type(settings.learnedSources) == "table" and settings.learnedSources[sourceId]
+	if not isChannelTabCandidate(settings, sourceId) or type(learned) ~= "table" then
+		return nil, "not-found"
+	end
+	local existing = findCustomSourceView(settings, sourceId, normalizeStoredCustomViews(settings))
+	if existing then return nil, "already-added" end
+	if isSourceFeedLocked(settings, "custom", sourceId, "channels") then
+		return nil, "sync-quarantined"
+	end
+	local label = trim(learned.sourceLabel or learned.label, 40)
+	if label == "" then return nil, "invalid-source" end
+	local view, err = self:CreateCustomView({
+		label = label,
+		description = "Messages from " .. label .. ". Existing views keep their messages.",
+		terms = {},
+		enabled = true,
+	})
+	if not view then return nil, err end
+	local linked, linkError = self:SetViewSourceEnabled(view.id, sourceId, true)
+	if not linked then
+		self:DeleteCustomView(view.id)
+		return nil, linkError or "source-link-failed"
+	end
+	if type(settings.channelTabDecisions) ~= "table" then settings.channelTabDecisions = {} end
+	settings.channelTabDecisions[sourceId] = view.id
+	return view
 end
 
 -- Rendering only reads the live profile tree. Prepare it on the first read (or

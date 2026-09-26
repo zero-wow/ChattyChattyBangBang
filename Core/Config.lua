@@ -4742,8 +4742,81 @@ function Config:RefreshSmartChatTextAppearanceControls()
 	self:RefreshSmartChatTextFontPicker()
 end
 
+function Config:RefreshChannelTabSuggestions()
+	if not self.channelTabRows then return end
+	local suggestions = {}
+	if type(addon.GetChannelTabSuggestions) == "function" then
+		local ok, result = pcall(addon.GetChannelTabSuggestions, addon)
+		if ok and type(result) == "table" then suggestions = result end
+	end
+	local pageSize = #self.channelTabRows
+	local pageCount = math.max(1, math.ceil(#suggestions / pageSize))
+	self.channelTabPage = math.max(1, math.min(self.channelTabPage or 1, pageCount))
+	local first = (self.channelTabPage - 1) * pageSize + 1
+	for index = 1, pageSize do
+		local row = self.channelTabRows[index]
+		local suggestion = suggestions[first + index - 1]
+		row.suggestion = suggestion
+		if suggestion then
+			row.label:SetText(suggestion.label)
+			row.detail:SetText(suggestion.state == "added" and "TAB ADDED · original views unchanged"
+				or (suggestion.state == "ignored" and "IGNORED · normal views unchanged"
+					or "NEW · normal views unchanged"))
+			row.addButton:SetLabel(suggestion.state == "added" and "OPEN TAB" or "ADD TAB")
+			if suggestion.state ~= "new" then row.ignoreButton:Hide()
+			else row.ignoreButton:Show() end
+			row:Show()
+		else
+			row:Hide()
+		end
+	end
+	if #suggestions == 0 then
+		self.channelTabEmpty:SetText("No new channels yet. Chatty lists a channel here after it sees a message.")
+		self.channelTabEmpty:Show()
+	else
+		self.channelTabEmpty:Hide()
+	end
+	self.channelTabCount:SetText(#suggestions == 0 and "0 CHANNELS"
+		or (first .. "-" .. math.min(#suggestions, first + pageSize - 1) .. " / " .. #suggestions))
+	if self.channelTabPage > 1 then self.channelTabPrevious:Enable()
+	else self.channelTabPrevious:Disable() end
+	if self.channelTabPage < pageCount then self.channelTabNext:Enable()
+	else self.channelTabNext:Disable() end
+end
+
+function Config:AcceptChannelTabSuggestion(sourceId)
+	if type(addon.AcceptChannelTabSuggestion) ~= "function" then return false end
+	local ok, view, err = pcall(addon.AcceptChannelTabSuggestion, addon, sourceId)
+	if not ok or not view then
+		local message = ok and err or view
+		if message == "limit" then message = "Tab limit reached. Remove an unused custom tab first."
+		elseif message == "sync-quarantined" then message = "This channel is set to SYNC. Switch it to NORMAL first."
+		else message = "Could not add this channel tab: " .. tostring(message or "unknown error") end
+		self:SetViewsStatus(message, "warning")
+		self:RefreshChannelTabSuggestions()
+		return false
+	end
+	self:RefreshMessageViewsPage(true)
+	self:SelectRail(view.id)
+	self:SetMessageViewsSection("channels", true)
+	self:SetViewsStatus("Added " .. (view.label or "channel") .. " as its own tab. Existing views kept their messages.", "success")
+	return true
+end
+
+function Config:IgnoreChannelTabSuggestion(sourceId)
+	if type(addon.IgnoreChannelTabSuggestion) ~= "function" then return false end
+	local ok, accepted, err = pcall(addon.IgnoreChannelTabSuggestion, addon, sourceId)
+	if not ok or accepted ~= true then
+		self:SetViewsStatus("Could not ignore this suggestion: " .. tostring((ok and err) or accepted), "warning")
+		return false
+	end
+	self:RefreshChannelTabSuggestions()
+	self:SetViewsStatus("Suggestion ignored. Messages from this channel still appear in their normal views.", "success")
+	return true
+end
+
 function Config:SetMessageViewsSection(section, quiet)
-	if section ~= "sources" and section ~= "text" then
+	if section ~= "sources" and section ~= "text" and section ~= "channels" then
 		section = "details"
 	end
 	if section ~= "text" then
@@ -4759,16 +4832,22 @@ function Config:SetMessageViewsSection(section, quiet)
 	if self.messageViewsTextPane then
 		if section == "text" then self.messageViewsTextPane:Show() else self.messageViewsTextPane:Hide() end
 	end
+	if self.messageViewsChannelsPane then
+		if section == "channels" then self.messageViewsChannelsPane:Show() else self.messageViewsChannelsPane:Hide() end
+	end
 	setTabStyle(self.messageViewsDetailsButton, section == "details")
 	setTabStyle(self.messageViewsSourcesButton, section == "sources")
 	setTabStyle(self.messageViewsTextButton, section == "text")
+	setTabStyle(self.messageViewsChannelsButton, section == "channels")
 	if section == "sources" then self:RefreshRailSources() end
 	if section == "text" then self:RefreshSmartChatTextAppearanceControls() end
+	if section == "channels" then self:RefreshChannelTabSuggestions() end
 	if section == "details" then self:RefreshMessageViewSemanticCatalog() end
 	if not quiet then
 		local status = section == "sources" and "Choose what this tab contains and how noisy add-on channels are handled."
 			or (section == "text" and "Choose all-tab text or a local override for the selected tab."
-				or "Change the tab label and the rules that identify messages for this view.")
+				or (section == "channels" and "Add a tab only when you want one; ignoring a channel never hides its messages."
+					or "Change the tab label and the rules that identify messages for this view."))
 		self:SetViewsStatus(status, "textMuted")
 	end
 end
@@ -5094,7 +5173,7 @@ function Config:BuildViewsPage()
 	self.messageViewsSourcesButton:SetScript("OnClick", function()
 		Config:SetMessageViewsSection("sources")
 	end)
-	self.messageViewsDetailsButton = Theme:CreateTightButton(work, "LABEL & RULES", 20, false)
+	self.messageViewsDetailsButton = Theme:CreateTightButton(work, "RULES", 20, false)
 	self.messageViewsDetailsButton:SetPoint("LEFT", self.messageViewsSourcesButton, "RIGHT", CONTROL_GAP, 0)
 	setControlTooltip(self.messageViewsDetailsButton, "Label and rules", "Rename the tab and edit the words that identify messages for a custom view.")
 	self.messageViewsDetailsButton:SetScript("OnClick", function()
@@ -5105,6 +5184,13 @@ function Config:BuildViewsPage()
 	setControlTooltip(self.messageViewsTextButton, "Text", "Choose the font, size, outline, and aligned-column spacing for this view.")
 	self.messageViewsTextButton:SetScript("OnClick", function()
 		Config:SetSmartChatTextAppearanceScope(Config.selectedRailId or "global", true)
+	end)
+	self.messageViewsChannelsButton = Theme:CreateTightButton(work, "CHANNELS", 20, false)
+	self.messageViewsChannelsButton:SetPoint("LEFT", self.messageViewsTextButton, "RIGHT", CONTROL_GAP, 0)
+	setControlTooltip(self.messageViewsChannelsButton, "New channel tabs",
+		"Review newly discovered public and Community channels. Nothing creates a tab until you choose ADD TAB.")
+	self.messageViewsChannelsButton:SetScript("OnClick", function()
+		Config:SetMessageViewsSection("channels")
 	end)
 
 	local details = CreateFrame("Frame", nil, work)
@@ -5701,6 +5787,71 @@ function Config:BuildViewsPage()
 	self.messageViewsResetSourcesButton:SetPoint("BOTTOMRIGHT", sources, "BOTTOMRIGHT", 0, 0)
 	setControlTooltip(self.messageViewsResetSourcesButton, "Restore expected feeds", "Returns this tab to its clean factual sources. Routing and custom match rules remain unchanged.")
 	self.messageViewsResetSourcesButton:SetScript("OnClick", function() Config:ResetRailSources() end)
+
+	local channels = CreateFrame("Frame", nil, work)
+	channels:SetPoint("TOPLEFT", work, "TOPLEFT", 202, -74)
+	channels:SetPoint("BOTTOMRIGHT", work, "BOTTOMRIGHT", -10, 8)
+	channels:Hide()
+	self.messageViewsChannelsPane = channels
+	local channelTitle = Theme:CreateText(channels, "GameFontNormalSmall", "gold")
+	channelTitle:SetPoint("TOPLEFT", channels, "TOPLEFT", 0, 0)
+	channelTitle:SetText("NEW CHANNELS")
+	local channelHint = Theme:CreateText(channels, "GameFontHighlightSmall", "textMuted")
+	channelHint:SetPoint("TOPLEFT", channels, "TOPLEFT", 0, -20)
+	channelHint:SetWidth(398)
+	channelHint:SetJustifyH("LEFT")
+	channelHint:SetText("Add a separate tab or ignore the suggestion. Neither choice hides existing chat.")
+	self.channelTabRows = {}
+	for index = 1, 6 do
+		local row = CreateFrame("Frame", nil, channels)
+		row:SetPoint("TOPLEFT", channels, "TOPLEFT", 0, -54 - ((index - 1) * 40))
+		row:SetSize(398, 38)
+		row.label = Theme:CreateText(row, "GameFontHighlightSmall", "text")
+		row.label:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -2)
+		row.label:SetWidth(248)
+		row.label:SetJustifyH("LEFT")
+		row.detail = Theme:CreateText(row, "GameFontHighlightSmall", "textMuted")
+		row.detail:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -19)
+		row.detail:SetWidth(248)
+		row.detail:SetJustifyH("LEFT")
+		row.addButton = Theme:CreateButton(row, "ADD TAB", 68, 22, true)
+		row.addButton:SetPoint("TOPLEFT", row, "TOPLEFT", 255, -7)
+		row.addButton:SetScript("OnClick", function()
+			local choice = row.suggestion
+			if not choice then return end
+			if choice.state == "added" and choice.viewId then
+				Config:SelectRail(choice.viewId)
+				Config:SetMessageViewsSection("details")
+			else
+				Config:AcceptChannelTabSuggestion(choice.sourceId)
+			end
+		end)
+		row.ignoreButton = Theme:CreateButton(row, "IGNORE", 58, 22, false)
+		row.ignoreButton:SetPoint("LEFT", row.addButton, "RIGHT", 8, 0)
+		row.ignoreButton:SetScript("OnClick", function()
+			if row.suggestion then Config:IgnoreChannelTabSuggestion(row.suggestion.sourceId) end
+		end)
+		self.channelTabRows[index] = row
+	end
+	self.channelTabEmpty = Theme:CreateText(channels, "GameFontHighlightSmall", "textMuted")
+	self.channelTabEmpty:SetPoint("TOPLEFT", channels, "TOPLEFT", 0, -57)
+	self.channelTabEmpty:SetWidth(390)
+	self.channelTabEmpty:SetJustifyH("LEFT")
+	self.channelTabCount = Theme:CreateText(channels, "GameFontHighlightSmall", "textMuted")
+	self.channelTabCount:SetPoint("BOTTOMLEFT", channels, "BOTTOMLEFT", 0, 7)
+	self.channelTabCount:SetWidth(118)
+	self.channelTabPrevious = Theme:CreateButton(channels, "<", 24, 20, false)
+	self.channelTabPrevious:SetPoint("LEFT", self.channelTabCount, "RIGHT", 6, 0)
+	self.channelTabPrevious:SetScript("OnClick", function()
+		Config.channelTabPage = math.max(1, (Config.channelTabPage or 1) - 1)
+		Config:RefreshChannelTabSuggestions()
+	end)
+	self.channelTabNext = Theme:CreateButton(channels, ">", 24, 20, false)
+	self.channelTabNext:SetPoint("LEFT", self.channelTabPrevious, "RIGHT", CONTROL_GAP, 0)
+	self.channelTabNext:SetScript("OnClick", function()
+		Config.channelTabPage = (Config.channelTabPage or 1) + 1
+		Config:RefreshChannelTabSuggestions()
+	end)
 
 	self.viewsStatus = Theme:CreateText(work, "GameFontHighlightSmall", "textMuted")
 	self.viewsStatus:SetPoint("BOTTOMLEFT", work, "BOTTOMLEFT", 202, 43)
@@ -13057,6 +13208,10 @@ local deskTasks = {
 			},
 		},
 	},
+	deskTabs = {
+		title = "Choose Tabs", hint = "Show the tabs you use. Review new channels before adding their own tab.",
+		advanced = "views",
+	},
 	deskRoutes = {
 		title = "Sort Messages", hint = "Keep sales and group searches out of ordinary conversation.",
 		advanced = "semantic",
@@ -13341,6 +13496,17 @@ function Config:RefreshDeskPage()
 		elseif taskId == "deskSpam" then
 			self.deskReviewButton:SetLabel("REVIEW BLOCKED")
 			self.deskReviewButton:Show()
+		elseif taskId == "deskTabs" then
+			local pending = 0
+			if type(addon.GetChannelTabSuggestions) == "function" then
+				for _, suggestion in ipairs(addon:GetChannelTabSuggestions()) do
+					if suggestion.state == "new" then pending = pending + 1 end
+				end
+			end
+			self.deskReviewButton:SetLabel(pending > 0 and ("NEW CHANNELS (" .. pending .. ")") or "NEW CHANNELS")
+			setControlTooltip(self.deskReviewButton, "New channel tabs",
+				"Review public and Community channels Chatty discovered. Add a tab or ignore each suggestion; nothing moves automatically.")
+			self.deskReviewButton:Show()
 		else
 			self.deskReviewButton:Hide()
 		end
@@ -13470,6 +13636,9 @@ function Config:BuildDeskPage()
 		elseif taskId == "deskSpam" then
 			Config:ShowPage("blocks")
 			Config:SetBlocksSection("archive")
+		elseif taskId == "deskTabs" then
+			Config:ShowPage("views")
+			Config:SetMessageViewsSection("channels")
 		end
 	end)
 	setControlTooltip(self.deskReviewButton, "Private review",
@@ -13971,9 +14140,17 @@ function Config:ReloadProfile()
 	self.messageViewsDetailsButton = nil
 	self.messageViewsSourcesButton = nil
 	self.messageViewsTextButton = nil
+	self.messageViewsChannelsButton = nil
 	self.messageViewsDetailsPane = nil
 	self.messageViewsSourcesPane = nil
 	self.messageViewsTextPane = nil
+	self.messageViewsChannelsPane = nil
+	self.channelTabRows = nil
+	self.channelTabEmpty = nil
+	self.channelTabCount = nil
+	self.channelTabPrevious = nil
+	self.channelTabNext = nil
+	self.channelTabPage = nil
 	self.messageViewsSemanticCatalogPanel = nil
 	self.messageViewsSemanticCatalogTitle = nil
 	self.messageViewsSemanticCatalogOpen = nil
