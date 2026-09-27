@@ -8,12 +8,13 @@ This is the source-of-truth checklist for the 100-item Retail audit. It tracks i
 
 **Progress:** 94/100 locally verified; 5 in progress; 0 queued; 1 audit claim invalidated. **Retail base version:** 2.26.1 (unchanged).
 
-**Latest follow-up:** 🟢 Add-on slash-command replies now copy into the tab where the command ran; guild ads with later role requests route to Guild Invites; a larger analysis inspector previews safe permanent phrase rules. Alternating bands stay with whole messages, and old factory 1px text spacing becomes 3px. Catch-up status now separates restored, withheld without a line ID, expired, and filtered/held lines. 🟣 All visual behavior, live slash-command output, and Retail recovery still await Zero's in-game check; no `/reload` or log scan was run.
+**Latest follow-up:** 🟢 Alternating-band positions now use the installed font's measured line height, measured wrapped-line counts, and Retail's native visible-row capacity; partially clipped top rows are clipped correctly. A focused regression reproduces the old one-row shift. 🟣 The appearance still awaits Zero's in-game check; no `/reload` or log scan was run.
 
 ### Focused follow-up (26 September)
 
 | Status | Feature |
 | --- | --- |
+| 🟢 | Alternating bands use native Retail row counts and measured font advance instead of nominal font size; top-clipped and underfilled viewport cases have regression tests. |
 | 🟢 | Screen-centered Message Analysis and editable ALL/NONE phrase-rule preview with source scope, save, and undo; exact MOVE remains separate. |
 | 🟢 | Guild recruitment introduction outranks incidental `LF healers/DPS`; default General no longer mirrors any re-routed public line, while an explicit Contents check still can. |
 | 🟢 | Add-on slash-command replies copy into their typed Chatty tab without re-routing unrelated native chat; immediate default-frame output only. |

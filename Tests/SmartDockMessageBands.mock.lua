@@ -227,6 +227,55 @@ assert(dock:RefreshMessageBands() and dock.messageBandVisibleCount == 1,
 assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -22,
 	"clipped gap band escaped the viewport or claimed both halves")
 
+-- A real font may advance farther than its nominal GetFont() size, and Retail
+-- can report one partly clipped row beyond floor(frame height / advance).
+-- The old estimate shifted the shade one line below the first wrapped row.
+display.height = 54
+display.spacing = 1
+display.scroll = 0
+display.GetNumVisibleLines = function() return 4 end
+measure.GetLineHeight = function() return 14 end
+measure.GetStringHeight = function(self)
+	return self.text == "Hg\nHg" and 27 or 13
+end
+measure.GetNumLines = function(self)
+	return self.text == "wrapped body" and 2 or 1
+end
+dock.displayLineMetrics = nil
+assert(dock:GetDisplayLineHeight() == 15,
+	"band stride used nominal font size instead of the mirrored font's line height")
+assert(dock:MeasureDisplayRecordLines("wrapped body") == 2,
+	"wrapped entry count ignored Retail's measured visible rows")
+dock.displayMeasurementWidth = display.width
+dock.displayRecords = {
+	{ record = { text = "one" }, lines = 1, bandAlternate = false },
+	{ record = { text = "two" }, lines = 2, bandAlternate = true },
+	{ record = { text = "three" }, lines = 1, bandAlternate = false },
+	{ record = { text = "four" }, lines = 1, bandAlternate = true },
+}
+local _, measuredGeometry = dock:GetVisibleDisplayRecordEntries()
+assert(measuredGeometry.capacity == 4 and measuredGeometry.topInset == -6,
+	"native partly clipped top row was lost to floor-based viewport geometry")
+assert(dock:RefreshMessageBands() and dock.messageBandVisibleCount == 2,
+	"calibrated visible rows lost alternating entries")
+assert(textures[1].points[1][5] == 0 and textures[1].points[2][5] == -24,
+	"wrapped band's first row was left unshaded or painted outside the viewport")
+assert(textures[2].points[1][5] == -39 and textures[2].points[2][5] == -54,
+	"calibrated row advance displaced the next logical entry")
+
+-- When only a few messages exist, the same native viewport bottom-aligns
+-- their rows rather than painting an empty strip above them.
+dock.displayRecords = {
+	{ record = { text = "one" }, lines = 1, bandAlternate = false },
+	{ record = { text = "two" }, lines = 1, bandAlternate = true },
+}
+local _, underfilled = dock:GetVisibleDisplayRecordEntries()
+assert(underfilled.topInset == 24,
+	"underfilled native viewport did not preserve bottom alignment")
+assert(dock:RefreshMessageBands() and textures[1].points[1][5] == -39
+	and textures[1].points[2][5] == -54,
+	"underfilled band did not stay behind its own message")
+
 bandSettings.enabled = false
 assert(dock:RefreshMessageBands() == false and textures[1].shown == false,
 	"disabling alternating entries left a stale background visible")

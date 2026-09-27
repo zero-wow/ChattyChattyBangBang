@@ -800,6 +800,7 @@ function Dock:ApplySmartChatTextAppearance(viewId)
 
 	if applied then
 		self.smartChatTextAppearance = appearance
+		self.displayLineMetrics = nil
 		self.displayMeasurementWidth = nil
 		self.displayColumnCapacityWidth = nil
 		self.displayColumnCapacity = nil
@@ -819,6 +820,7 @@ function Dock:ApplySmartChatTextAppearance(viewId)
 			end
 		end
 	end
+	if spacingApplied then self.displayLineMetrics = nil end
 	return applied, spacingApplied
 end
 
@@ -3562,10 +3564,45 @@ function Dock:GetDisplayLineHeight()
 	if not self.display then
 		return 13
 	end
-	local _, fontHeight = self.display:GetFont()
+	local fontPath, fontHeight, fontFlags = self.display:GetFont()
 	fontHeight = tonumber(fontHeight) or 12
 	local spacing = self.display.GetSpacing and tonumber(self.display:GetSpacing()) or 1
-	return math.max(1, fontHeight + (spacing or 0))
+	local key = table.concat({ tostring(fontPath), tostring(fontHeight),
+		tostring(fontFlags), tostring(spacing) }, "|")
+	local cached = self.displayLineMetrics
+	if cached and cached.key == key then return cached.advance end
+	local glyphHeight, fontAdvance = fontHeight, fontHeight
+	local lineHeightMeasured = false
+	local measure = self.messageMeasure
+	if measure and type(measure.GetLineHeight) == "function" then
+		local measuredLineHeight = tonumber(measure:GetLineHeight())
+		if measuredLineHeight and measuredLineHeight > 0 then
+			fontAdvance = measuredLineHeight
+			lineHeightMeasured = true
+		end
+	end
+	if measure and type(measure.SetWidth) == "function"
+		and type(measure.SetText) == "function"
+		and type(measure.GetStringHeight) == "function" then
+		-- GetFont() reports the requested size, not necessarily the distance
+		-- between rendered rows for that face. Measure the installed face itself.
+		local width = tonumber(self.display:GetWidth()) or 4096
+		measure:SetWidth(4096)
+		measure:SetText("Hg")
+		local one = tonumber(measure:GetStringHeight())
+		measure:SetText("Hg\nHg")
+		local two = tonumber(measure:GetStringHeight())
+		measure:SetWidth(width)
+		measure:SetText("")
+		if one and one > 0 then glyphHeight = one end
+		if not lineHeightMeasured and one and two and two > one then
+			fontAdvance = two - one
+		end
+	end
+	local advance = math.max(1, fontAdvance + (spacing or 0))
+	self.displayLineMetrics = { key = key, glyphHeight = glyphHeight,
+		fontAdvance = fontAdvance, advance = advance }
+	return advance
 end
 
 function Dock:MeasureDisplayRecordLines(renderedText)
@@ -3578,15 +3615,24 @@ function Dock:MeasureDisplayRecordLines(renderedText)
 	if width < 1 then
 		return 1
 	end
+	-- Refresh the calibrated metrics before changing the measurement text.
+	-- Retail FontString:GetNumLines, when present, is more reliable than
+	-- deriving a wrapped-row count from total glyph height.
+	self:GetDisplayLineHeight()
 	measure:SetWidth(width)
 	measure:SetText(renderedText or "")
+	if type(measure.GetNumLines) == "function" then
+		local count = tonumber(measure:GetNumLines())
+		if count and count >= 1 then return math.floor(count + 0.5) end
+	end
 	local textHeight = tonumber(measure:GetStringHeight()) or 0
-	local _, fontHeight = display:GetFont()
-	fontHeight = math.max(1, tonumber(fontHeight) or 12)
-	-- FontString reports glyph height without ScrollingMessageFrame's inter-line
-	-- spacing.  Round rather than ceiling so a one-line glyph-height variance
-	-- does not make every record appear to occupy an extra line.
-	return math.max(1, math.floor((textHeight / fontHeight) + 0.45))
+	local metrics = self.displayLineMetrics or {}
+	local glyphHeight = math.max(1, tonumber(metrics.glyphHeight) or 12)
+	local fontAdvance = math.max(1, tonumber(metrics.fontAdvance) or glyphHeight)
+	-- The first row contributes its full glyph box; each later row contributes
+	-- one measured font advance. Native ScrollingMessageFrame spacing does not
+	-- belong in this FontString-only line-count calculation.
+	return math.max(1, math.floor(1 + (textHeight - glyphHeight) / fontAdvance + 0.45))
 end
 
 function Dock:GetDisplayRecordGapRows(index)
@@ -3645,7 +3691,11 @@ function Dock:GetVisibleDisplayRecordEntries()
 	local lineHeight = self:GetDisplayLineHeight()
 	local displayHeight = tonumber(display.GetHeight and display:GetHeight()) or 0
 	if displayHeight < 1 then return {}, nil end
-	local capacity = math.max(1, math.floor(displayHeight / lineHeight))
+	local nativeCapacity = display.GetNumVisibleLines
+		and tonumber(display:GetNumVisibleLines()) or nil
+	local capacity = nativeCapacity and nativeCapacity >= 1
+		and math.floor(nativeCapacity + 0.5)
+		or math.max(1, math.floor(displayHeight / lineHeight))
 	local totalLines = 0
 	for index = 1, #records do
 		totalLines = totalLines + math.max(1, tonumber(records[index].lines) or 1)
@@ -3697,8 +3747,9 @@ function Dock:GetVisibleDisplayRecordEntries()
 		visibleLines = visibleLines,
 		firstVisibleLine = firstVisibleLine,
 		lastVisibleLine = lastVisibleLine,
-		topInset = math.max(0, displayHeight - capacity * lineHeight)
-			+ math.max(0, capacity - visibleLines) * lineHeight,
+		-- Native Retail may include a partially clipped top line in its row
+		-- capacity. Keep the signed inset so overlays share that exact origin.
+		topInset = displayHeight - visibleLines * lineHeight,
 	}
 end
 
@@ -3993,8 +4044,9 @@ function Dock:ShowMessageActionHighlight(record)
 			or (targetId ~= nil and visibleRecord and visibleRecord.id ~= nil
 				and tostring(visibleRecord.id) == tostring(targetId))
 		if sameRecord and visible.hasVisibleContent then
-			local top = geometry.topInset
+			local top = math.max(0, geometry.topInset
 				+ (visible.visibleContentFirstLine - geometry.firstVisibleLine) * geometry.lineHeight
+			)
 			local bottom = math.min(geometry.displayHeight,
 				geometry.topInset
 				+ (visible.visibleContentLastLine - geometry.firstVisibleLine + 1) * geometry.lineHeight)
